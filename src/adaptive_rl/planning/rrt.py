@@ -79,10 +79,7 @@ class RRTPlanner(BasePlanner):
         """Check whether point lies within bounds and clears all obstacles."""
         for dim in range(self.dimension):
             min_b, max_b = self.bounds[dim]
-            if (
-                point[dim] < min_b + self.agent_radius
-                or point[dim] > max_b - self.agent_radius
-            ):
+            if point[dim] < min_b + self.agent_radius or point[dim] > max_b - self.agent_radius:
                 return False
 
         for obs in self.obstacles:
@@ -117,9 +114,7 @@ class RRTPlanner(BasePlanner):
         point = np.zeros(self.dimension, dtype=np.float64)
         for dim in range(self.dimension):
             min_b, max_b = self.bounds[dim]
-            point[dim] = self._rng.uniform(
-                min_b + self.agent_radius, max_b - self.agent_radius
-            )
+            point[dim] = self._rng.uniform(min_b + self.agent_radius, max_b - self.agent_radius)
         return point
 
     @staticmethod
@@ -549,7 +544,11 @@ class RRTPlannerPolicy(PlannerPolicy):
 
     def _extract_positions(self, observation: Any) -> Tuple[np.ndarray, np.ndarray]:
         """Extract agent and goal coordinates from environment or observation."""
-        if self.env is not None and hasattr(self.env, "agent_pos") and hasattr(self.env, "goal_pos"):
+        if (
+            self.env is not None
+            and hasattr(self.env, "agent_pos")
+            and hasattr(self.env, "goal_pos")
+        ):
             return np.array(self.env.agent_pos, dtype=np.float64), np.array(
                 self.env.goal_pos, dtype=np.float64
             )

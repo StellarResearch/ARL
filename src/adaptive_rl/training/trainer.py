@@ -190,7 +190,7 @@ class PPOTrainer(BaseTrainer):
                     episode=i + 1,
                     reward=float(rew),
                     length=int(length),
-                    success=False,   # per-episode success not tracked separately at this level
+                    success=False,  # per-episode success not tracked separately at this level
                     collision=False,
                     timestep=cumulative_ts,
                 )
@@ -213,9 +213,9 @@ class PPOTrainer(BaseTrainer):
             checkpoint_paths=[cp["path"] for cp in self.checkpoint_manager.list_checkpoints()],
             config_snapshot=self.config.model_dump(mode="python"),
             adaptive_rl_version=adaptive_rl.__version__,
-            finished_at=__import__("datetime").datetime.fromtimestamp(
-                finished_at, tz=__import__("datetime").timezone.utc
-            ).isoformat(),
+            finished_at=__import__("datetime")
+            .datetime.fromtimestamp(finished_at, tz=__import__("datetime").timezone.utc)
+            .isoformat(),
             duration_seconds=round(duration, 3),
         )
         metadata_path = metadata.save(metadata_dir, name=self.config.name)
@@ -417,9 +417,9 @@ class SACTrainer(BaseTrainer):
             checkpoint_paths=[cp["path"] for cp in self.checkpoint_manager.list_checkpoints()],
             config_snapshot=self.config.model_dump(mode="python"),
             adaptive_rl_version=adaptive_rl.__version__,
-            finished_at=__import__("datetime").datetime.fromtimestamp(
-                finished_at, tz=__import__("datetime").timezone.utc
-            ).isoformat(),
+            finished_at=__import__("datetime")
+            .datetime.fromtimestamp(finished_at, tz=__import__("datetime").timezone.utc)
+            .isoformat(),
             duration_seconds=round(duration, 3),
         )
         metadata_path = metadata.save(metadata_dir, name=self.config.name)

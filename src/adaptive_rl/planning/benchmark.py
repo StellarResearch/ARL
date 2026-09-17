@@ -12,9 +12,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from adaptive_rl.environments.registry import make_env
-from adaptive_rl.planning.astar import AStarPlanner, AStarPlannerPolicy
+from adaptive_rl.planning.astar import AStarPlannerPolicy
 from adaptive_rl.planning.base import PlannerPolicy
-from adaptive_rl.planning.rrt import RRTPlannerPolicy, RRTStarPlanner
+from adaptive_rl.planning.rrt import RRTPlannerPolicy
 
 
 @dataclass
@@ -186,9 +186,7 @@ class ClassicalBenchmarkRunner:
             steps += 1
 
             curr_pos = self._extract_agent_position(env, obs)
-            dist_step = math.sqrt(
-                sum((c2 - c1) ** 2 for c1, c2 in zip(prev_pos, curr_pos))
-            )
+            dist_step = math.sqrt(sum((c2 - c1) ** 2 for c1, c2 in zip(prev_pos, curr_pos)))
             total_path_dist += dist_step
             prev_pos = curr_pos
 
@@ -200,9 +198,7 @@ class ClassicalBenchmarkRunner:
             done = terminated or truncated
 
         timing_metric = (
-            float(np.mean(inference_times_ms))
-            if is_rl and inference_times_ms
-            else plan_duration_ms
+            float(np.mean(inference_times_ms)) if is_rl and inference_times_ms else plan_duration_ms
         )
 
         return (
@@ -302,9 +298,7 @@ class ClassicalBenchmarkRunner:
         p_mean_plan_ms = (
             float(np.mean([r.planner_planning_time_ms for r in results])) if n > 0 else 0.0
         )
-        r_mean_step_ms = (
-            float(np.mean([r.rl_mean_step_time_ms for r in results])) if n > 0 else 0.0
-        )
+        r_mean_step_ms = float(np.mean([r.rl_mean_step_time_ms for r in results])) if n > 0 else 0.0
 
         return ClassicalBenchmarkReport(
             experiment_name=experiment_name,

@@ -165,9 +165,7 @@ class AStarPlanner(BasePlanner):
         # Priority queue entries: (f_score, counter, current_node)
         counter = 0
         open_set: List[Tuple[float, int, Coordinate2D]] = []
-        heapq.heappush(
-            open_set, (self._heuristic_fn(start_node, goal_node), counter, start_node)
-        )
+        heapq.heappush(open_set, (self._heuristic_fn(start_node, goal_node), counter, start_node))
 
         came_from: Dict[Coordinate2D, Coordinate2D] = {}
         g_score: Dict[Coordinate2D, float] = {start_node: 0.0}
@@ -297,7 +295,11 @@ class AStarPlannerPolicy(PlannerPolicy):
 
     def _extract_positions(self, observation: Any) -> Tuple[Coordinate2D, Coordinate2D]:
         """Extract current agent position and goal position."""
-        if self.env is not None and hasattr(self.env, "agent_pos") and hasattr(self.env, "goal_pos"):
+        if (
+            self.env is not None
+            and hasattr(self.env, "agent_pos")
+            and hasattr(self.env, "goal_pos")
+        ):
             agent_pos = (int(self.env.agent_pos[0]), int(self.env.agent_pos[1]))
             goal_pos = (int(self.env.goal_pos[0]), int(self.env.goal_pos[1]))
             return agent_pos, goal_pos

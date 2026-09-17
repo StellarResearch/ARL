@@ -12,12 +12,9 @@ from typer.testing import CliRunner
 from adaptive_rl.cli import app
 from adaptive_rl.environments.gridworld.grid import GridWorldEnv
 from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
-from adaptive_rl.environments.registry import make_env
 from adaptive_rl.planning.astar import AStarPlanner, AStarPlannerPolicy
 from adaptive_rl.planning.benchmark import (
-    ClassicalBenchmarkReport,
     ClassicalBenchmarkRunner,
-    PlannerComparisonResult,
 )
 from adaptive_rl.planning.rrt import (
     RRTPlanner,
@@ -83,7 +80,10 @@ def test_astar_heuristics_and_validation() -> None:
     assert res_cheb.success is True
     # Diagonal steps cost sqrt(2) each (Euclidean step cost), so 3 diagonal steps = 3*sqrt(2)
     import math
-    assert abs(res_cheb.cost - 3 * math.sqrt(2)) < 1e-9, f"Expected 3*sqrt(2)={3*math.sqrt(2):.6f}, got {res_cheb.cost:.6f}"
+
+    assert abs(res_cheb.cost - 3 * math.sqrt(2)) < 1e-9, (
+        f"Expected 3*sqrt(2)={3 * math.sqrt(2):.6f}, got {res_cheb.cost:.6f}"
+    )
 
     with pytest.raises(ValueError, match="Unknown heuristic"):
         AStarPlanner(width=4, height=4, heuristic="unknown_metric")
@@ -199,9 +199,9 @@ def test_rrt_planner_policy_execution() -> None:
         arena_height=16.0,
         start_pos=(2.0, 2.0),
         goal_pos=(14.0, 14.0),
-        num_obstacles=0,   # No obstacles: direct RRT path, no stuck-near-obstacle risk
+        num_obstacles=0,  # No obstacles: direct RRT path, no stuck-near-obstacle risk
         obstacle_radius=1.0,
-        max_steps=200,     # Generous budget for waypoint tracking
+        max_steps=200,  # Generous budget for waypoint tracking
     )
     obs, _ = env.reset(seed=42)
 

@@ -1095,6 +1095,103 @@ def benchmark(
             raise typer.Exit(code=1)
 
 
+@app.command(name="benchmark-planners")
+def run_benchmark_planners_command(
+    config: Optional[Path] = typer.Option(
+        None, "--config", "-c", help="Path to experiment configuration YAML"
+    ),
+    planner: str = typer.Option(
+        "auto", "--planner", "-p", help="Planner algorithm: 'auto', 'astar', 'rrt', 'rrt_star'"
+    ),
+    episodes: int = typer.Option(10, "--episodes", "-n", help="Number of benchmark seeds"),
+    start_seed: int = typer.Option(100, "--start-seed", help="Starting procedural generation seed"),
+    model_path: Optional[Path] = typer.Option(
+        None, "--model-path", "-m", help="Optional path to trained SB3 model weights"
+    ),
+    output_report: Optional[Path] = typer.Option(
+        None, "--output-report", "-o", help="Optional path to export the JSON report"
+    ),
+) -> None:
+    """Compare a classical planner against an optional RL policy."""
+    from adaptive_rl.planning.benchmark import ClassicalBenchmarkRunner
+
+    if episodes < 1:
+        console.print("[bold red]Episodes must be at least 1.[/bold red]")
+        raise typer.Exit(code=1)
+
+    env_name = "gridworld"
+    env_params: Dict[str, Any] = {}
+    algorithm: Optional[Any] = None
+
+    if config is None:
+        config = Path("configs/benchmark_planners_gridworld.yaml")
+    try:
+        if config.exists():
+            exp_config = load_config(config)
+            env_name = exp_config.environment.name
+            env_params = dict(exp_config.environment.parameters)
+            env_params.setdefault("max_steps", exp_config.environment.max_steps)
+    except ConfigError as err:
+        console.print(f"[bold red]Configuration error:[/bold red] {err}")
+        raise typer.Exit(code=1)
+
+    if model_path is not None:
+        try:
+            from adaptive_rl.algorithms.ppo import PPOAlgorithm
+
+            algorithm = PPOAlgorithm.from_pretrained(model_path)
+        except Exception as err:
+            console.print(f"[bold red]Could not load RL model:[/bold red] {err}")
+            raise typer.Exit(code=1)
+
+    seeds = list(range(start_seed, start_seed + episodes))
+    try:
+        runner = ClassicalBenchmarkRunner(
+            environment_name=env_name,
+            planner_type=planner,
+            environment_parameters=env_params,
+        )
+        report = runner.run_benchmark(
+            seeds=seeds,
+            rl_algorithm=algorithm,
+            experiment_name=f"benchmark_{env_name}_{planner}",
+        )
+    except Exception as err:
+        console.print(f"[bold red]Planning benchmark failed:[/bold red] {err}")
+        raise typer.Exit(code=1)
+
+    table = Table(
+        title=f"Classical vs RL Benchmark: {report.environment_name} "
+        f"({report.planner_name} vs {report.rl_algorithm_name})"
+    )
+    table.add_column("Metric", style="cyan")
+    table.add_column("Classical Planner", style="green", justify="right")
+    table.add_column("RL Policy", style="magenta", justify="right")
+    table.add_row(
+        "Success Rate",
+        f"{report.planner_success_rate * 100:.1f}%",
+        f"{report.rl_success_rate * 100:.1f}%",
+    )
+    table.add_row(
+        "Collision Rate",
+        f"{report.planner_collision_rate * 100:.1f}%",
+        f"{report.rl_collision_rate * 100:.1f}%",
+    )
+    table.add_row(
+        "Mean Reward", f"{report.planner_mean_reward:.2f}", f"{report.rl_mean_reward:.2f}"
+    )
+    table.add_row(
+        "Mean Path Length",
+        f"{report.planner_mean_path_length:.2f}",
+        f"{report.rl_mean_path_length:.2f}",
+    )
+    console.print(table)
+
+    if output_report is not None:
+        saved_path = report.save_json(output_report)
+        console.print(f"\n[bold green]Benchmark report saved to:[/bold green] {saved_path}")
+
+
 # ---------------------------------------------------------------------------
 # Dashboard command
 # ---------------------------------------------------------------------------
@@ -1137,4 +1234,3 @@ def dashboard(
 
 if __name__ == "__main__":
     app()
-
