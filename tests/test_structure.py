@@ -46,6 +46,7 @@ def test_target_repository_structure() -> None:
         "models",
         "visualization",
         "experiments",
+        "planning",
     ]
     for sp in subpackages:
         sp_dir = src / sp

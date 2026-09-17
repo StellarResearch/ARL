@@ -21,6 +21,8 @@ def test_cli_help() -> None:
     assert "curriculum" in result.output
     assert "train" in result.output
     assert "evaluate" in result.output
+    assert "generalization" in result.output
+    assert "benchmark-planners" in result.output
 
 
 def test_cli_version() -> None:
@@ -47,6 +49,7 @@ def test_cli_info() -> None:
     assert "Phase 9" in result.output
     assert "Phase 10" in result.output
     assert "Phase 11" in result.output
+    assert "Phase 12" in result.output
 
 
 def test_cli_config_validate_success() -> None:
