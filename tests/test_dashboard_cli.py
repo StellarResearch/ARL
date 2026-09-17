@@ -1,4 +1,4 @@
-"""Tests for Phase 17 — Dashboard and CLI integration for new commands."""
+"""Tests for the dashboard and CLI integration."""
 
 from __future__ import annotations
 
@@ -432,26 +432,27 @@ class TestBenchmarkCLI:
 
 
 class TestInfoAndVersion:
-    """Tests that Phase 12-17 show in info and version output."""
+    """Tests for current info and version output."""
 
-    def test_version_shows_phases(self) -> None:
-        """version command shows phase completion info."""
+    def test_version_shows_version(self) -> None:
+        """version command shows the package version."""
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
+        assert "0.1.0" in result.output
 
-    def test_info_shows_phase_12(self) -> None:
-        """info command shows Phase 12 roadmap entry."""
+    def test_info_shows_planning_support(self) -> None:
+        """info command shows classical planning support."""
         result = runner.invoke(app, ["info"])
         assert result.exit_code == 0
-        assert "Phase 12" in result.output
-        assert "IMPLEMENTED & TESTED" in result.output
+        assert "Planning" in result.output
+        assert "A*" in result.output
 
-    def test_info_shows_phase_17(self) -> None:
-        """info command shows Phase 17 roadmap entry."""
+    def test_info_shows_experiment_support(self) -> None:
+        """info command shows experiment provenance support."""
         result = runner.invoke(app, ["info"])
         assert result.exit_code == 0
-        assert "Phase 17" in result.output
-        assert "IMPLEMENTED & TESTED" in result.output
+        assert "Experiments" in result.output
+        assert "Provenance" in result.output
 
     def test_algorithm_help(self) -> None:
         """algorithm --help returns exit code 0."""

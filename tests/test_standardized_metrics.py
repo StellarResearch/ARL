@@ -1,4 +1,4 @@
-"""Tests for Phase 16 — Standardized Result Metrics and Serialization."""
+"""Tests for standardized result metrics and serialization."""
 
 from __future__ import annotations
 

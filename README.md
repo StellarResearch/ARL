@@ -18,29 +18,17 @@
 
 ---
 
-## 2. Current Development Status
+## 2. Current Platform
 
-AdaptiveRL is developed incrementally across verifiable phases.
+AdaptiveRL is a reusable Gymnasium-based RL platform with a drone-navigation
+flagship and reproducible scientific evaluation. It currently provides:
 
-| Phase | Milestone | Status | Description |
-| :--- | :--- | :--- | :--- |
-| **Phase 1** | **Repository Foundation & Skeleton** | **Implemented & Tested** | Project structure, packaging, YAML configuration schemas, honest interfaces, and CLI. |
-| **Phase 2** | **Environment Abstraction & Registry** | **Implemented & Tested** | Gymnasium environment wrapper contract, registry, and factory. |
-| **Phase 3** | **Procedural GridWorld** | **Experimentally Validated** | Procedurally generated 2D grid navigation with BFS path verification and ASCII rendering. |
-| **Phase 4** | **PPO Training Engine** | **Experimentally Validated** | Stable-Baselines3 PPO adapter, metric callbacks, checkpointing, and end-to-end trainer. |
-| **Phase 5** | **Evaluation Engine & Standard Metrics** | **Implemented & Tested** | Multi-episode benchmarking, success/collision tracking, scenario testing, and JSON reports. |
-| **Phase 6** | **Continuous 2D Navigation** | **Experimentally Validated** | Continuous velocity control, 8-ray LiDAR rangefinders, circular obstacles, and SAC continuous actor-critic. |
-| **Phase 7** | **Curriculum Learning** | **Experimentally Validated** | Staged obstacle density and disturbance curriculum, automated graduation criteria, and CurriculumTrainer. |
-| **Phase 8** | **Traffic Signal Optimization** | **Experimentally Validated** | Non-spatial 4-way intersection queue & delay optimization, signal transitions, and multi-objective rewards. |
-| **Phase 9** | **Autonomous 3D Drone Navigation** | **Experimentally Validated** | 3D quadrotor translation kinematics, aerodynamic drag, 16-ray 3D spherical LiDAR, and SAC/PPO continuous control. |
-| **Phase 10** | **Drone Disturbances & Constraints** | **Experimentally Validated** | Atmospheric wind fields, Ornstein-Uhlenbeck turbulence, battery depletion, dynamic 3D obstacles. |
-| **Phase 11** | **Generalization to Unseen Environments** | **Experimentally Validated** | Strictly partitioned train/test seed distributions, zero-overlap validation, generalization gap tracking. |
-| **Phase 12** | **Classical Navigation Baselines (A* & RRT*)** | **Implemented & Tested** | A* discrete shortest-path planner and RRT* continuous 2D motion planner, `BasePlanner`, `PlannerAdapter`. |
-| **Phase 13** | **Algorithm Registry & SAC Hardening** | **Implemented & Tested** | `AlgorithmRegistry` with capability metadata, `AlgorithmKind` enum, `adaptive-rl algorithm list/inspect/resolve`. |
-| **Phase 14** | **Reproducible Experiment Manager** | **Implemented & Tested** | `ExperimentManager` with date-based IDs, provenance manifests (git commit, Python, packages), YAML-driven runs. |
-| **Phase 15** | **Benchmarking & Ablation Framework** | **Implemented & Tested** | `BenchmarkRunner` multi-seed evaluation, `AggregateStats` (mean ± std, min, max), `ComparisonReport` for ablations. |
-| **Phase 16** | **Standardized Metrics Schema** | **Implemented & Tested** | `StandardizedExperimentMetrics` cross-paradigm schema, `EvaluationMetrics` & `PlannerEvaluationMetrics` adapters, CSV export. |
-| **Phase 17** | **Experiment Dashboard (Rich TUI)** | **Implemented & Tested** | Terminal dashboard via `adaptive-rl dashboard` using Rich, showing overview, per-experiment metrics, and comparisons. |
+* GridWorld, continuous 2D navigation, traffic control, Drone3D, and disturbed Drone3D environments.
+* PPO and SAC adapters backed by Stable-Baselines3.
+* A* and RRT* classical baselines for planner comparisons.
+* Curriculum learning, multi-seed benchmarking, and disjoint-distribution generalization tests.
+* Experiment manifests containing configuration, environment, seed, package, and Git provenance.
+* CLI workflows for inspection, training, evaluation, experiments, benchmarking, and reporting.
 
 ---
 
@@ -242,7 +230,7 @@ evaluator.save_report(metrics, "experiments/results/eval_report.json")
 
 ## 9. Continuous 2D Navigation & SAC Algorithm
 
-Phase 6 introduces continuous action space control and distance-based rangefinder (LiDAR) sensing.
+Continuous navigation introduces continuous action space control and distance-based rangefinder (LiDAR) sensing.
 
 * **Continuous Action Space:** `Box(-1.0, 1.0, shape=(2,))` governing continuous 2D planar velocity $[v_x, v_y]$.
 * **14-Dimensional Observation Space:**
@@ -333,7 +321,7 @@ print(f"Final model saved to: {result.final_model_path}")
 
 ## 11. Traffic Signal Optimization Environment
 
-Phase 8 demonstrates the domain-agnostic capability of AdaptiveRL by implementing a discrete, non-spatial queuing optimization benchmark: a **4-way signalized intersection** (`TrafficSignalEnv`, registered as `traffic` and `traffic_signal`).
+Traffic demonstrates the domain-agnostic capability of AdaptiveRL through a discrete, non-spatial queuing optimization benchmark: a **4-way signalized intersection** (`TrafficSignalEnv`, registered as `traffic` and `traffic_signal`).
 
 * **Intersection Queuing Dynamics:**
   * 4 directional approach lanes: **North (N)**, **South (S)**, **East (E)**, and **West (W)**.
@@ -415,7 +403,7 @@ env.close()
 
 ## 12. Autonomous 3D Drone Navigation Environment
 
-Phase 9 implements a continuous 3D quadrotor flight environment (`DroneNavigation3DEnv`, registered as `drone`, `drone_3d`, and `drone_navigation`), combining second-order translation kinematics, aerodynamic drag damping, procedural 3D spherical obstacle fields, and multi-directional 3D spherical LiDAR rangefinders.
+The flagship environment is a continuous 3D quadrotor flight environment (`DroneNavigation3DEnv`, registered as `drone`, `drone_3d`, and `drone_navigation`), combining second-order translation kinematics, aerodynamic drag damping, procedural 3D spherical obstacle fields, and multi-directional 3D spherical LiDAR rangefinders.
 
 * **3D Kinematic Physics Model:**
   * Translational state: position $\mathbf{p} = [x, y, z]^T \in [0, X_{\max}] \times [0, Y_{\max}] \times [0, Z_{\max}]$, velocity $\mathbf{v} = [v_x, v_y, v_z]^T$, and acceleration $\mathbf{a} = [a_x, a_y, a_z]^T$.
@@ -499,7 +487,7 @@ env.close()
 
 ## 13. Drone Disturbances and Constraints
 
-Phase 10 extends 3D quadrotor flight navigation with realistic atmospheric disturbances, electro-mechanical energy constraints, and moving obstacle hazards.
+The disturbed drone environment extends 3D quadrotor flight navigation with realistic atmospheric disturbances, electro-mechanical energy constraints, and moving obstacle hazards.
 
 ### Environmental Features:
 1. **3D Atmospheric Wind Field**:
@@ -535,7 +523,7 @@ adaptive-rl train --config configs/drone_disturbed_ppo.yaml
 
 ## 14. Generalization to Unseen Environments Benchmark
 
-Phase 11 introduces rigorous empirical evaluation protocols to test whether trained reinforcement learning policies generalize to novel, unseen environment topologies or merely overfit to training layouts.
+AdaptiveRL includes rigorous empirical evaluation protocols to test whether trained reinforcement learning policies generalize to novel, unseen environment topologies or merely overfit to training layouts.
 
 ### Key Capabilities:
 1. **Strict Train/Test Partitioning**:

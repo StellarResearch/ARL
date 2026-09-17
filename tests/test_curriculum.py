@@ -261,7 +261,7 @@ def test_curriculum_trainer_end_to_end(tmp_path: Path) -> None:
 
 
 def test_cli_curriculum_commands() -> None:
-    """Verify CLI curriculum commands (list, inspect) and updated version/info."""
+    """Verify CLI curriculum commands (list, inspect) and platform info."""
     # version
     v_res = runner.invoke(app, ["version"])
     assert v_res.exit_code == 0
@@ -270,8 +270,7 @@ def test_cli_curriculum_commands() -> None:
     # info
     i_res = runner.invoke(app, ["info"])
     assert i_res.exit_code == 0
-    assert "Phase 7" in i_res.output
-    assert "Phase 8" in i_res.output
+    assert "Curriculum" in i_res.output
 
     # curriculum list
     list_res = runner.invoke(app, ["curriculum", "list"])

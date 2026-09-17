@@ -1,4 +1,4 @@
-"""Tests for Phase 15 — Benchmarking and Ablation Framework."""
+"""Tests for benchmarking and ablation reporting."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Tests for Phase 13 — Algorithm Registry."""
+"""Tests for the algorithm registry."""
 
 from __future__ import annotations
 

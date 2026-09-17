@@ -1,7 +1,7 @@
 # AdaptiveRL — Experiment Lifecycle and Reproducibility
 
-This document describes the experiment management system introduced in Phase 14,
-including the output schema, seed management, manifest format, and comparison workflows.
+This document describes the experiment management system, including the output
+schema, seed management, manifest format, and comparison workflows.
 
 ---
 
@@ -163,7 +163,7 @@ The evaluation framework explicitly separates **Environment Randomness** from **
 
 ### 5.2 Generalization Train/Test Split
 
-The existing generalization framework (Phase 11) maintains strictly disjoint
+The generalization framework maintains strictly disjoint
 seed distributions:
 - Training seeds: `[1000, 1015)` (15 seeds)
 - Test seeds: `[2000, 2015)` (15 seeds)
@@ -244,7 +244,7 @@ Only actual runs are listed here — no fabricated results.
 
 | Experiment | Phase | Environment | Algorithm | Timesteps | Status |
 |:-----------|:------|:------------|:----------|:----------|:-------|
-| Smoke tests | Phase 14 | GridWorld | A* | N/A (planner) | Infrastructure validated |
+| Smoke tests | Current experiment workflow | GridWorld | A* | N/A (planner) | Infrastructure validated |
 
 Full benchmark results require running `adaptive-rl benchmark` and will depend
 on available compute. Sample configurations are provided in `configs/`.

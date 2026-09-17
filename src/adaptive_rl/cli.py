@@ -66,106 +66,31 @@ console = Console()
 
 @app.command()
 def version() -> None:
-    """Show the installed AdaptiveRL version and phase status."""
+    """Show the installed AdaptiveRL version."""
     console.print(
         f"[bold green]AdaptiveRL[/bold green] version [bold cyan]{adaptive_rl.__version__}[/bold cyan] "
-        f"([yellow]Phases 1–17: Complete Platform with Classical Baselines & Dashboard[/yellow])"
     )
 
 
 @app.command()
 def info() -> None:
-    """Display platform architecture status and implementation roadmap."""
-    table = Table(title="AdaptiveRL — Implementation Roadmap Status")
-    table.add_column("Phase", style="cyan", no_wrap=True)
-    table.add_column("Milestone Name", style="magenta")
-    table.add_column("Status", style="green")
+    """Display the current AdaptiveRL platform capabilities."""
+    table = Table(title="AdaptiveRL — Platform Capabilities")
+    table.add_column("Capability", style="cyan", no_wrap=True)
+    table.add_column("Current support", style="green")
 
-    table.add_row(
-        "Phase 1",
-        "Repository Foundation and Architecture Skeleton",
-        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
-    )
-    table.add_row(
-        "Phase 2",
-        "Environment Abstraction and Registry",
-        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
-    )
-    table.add_row(
-        "Phase 3",
-        "Procedurally Generated GridWorld",
-        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
-    )
-    table.add_row(
-        "Phase 4",
-        "PPO Training Engine (SB3 Wrapper)",
-        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
-    )
-    table.add_row(
-        "Phase 5",
-        "Evaluation Engine and Standard Metrics",
-        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
-    )
-    table.add_row(
-        "Phase 6",
-        "Continuous 2D Navigation",
-        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
-    )
-    table.add_row(
-        "Phase 7",
-        "Curriculum Learning",
-        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
-    )
-    table.add_row(
-        "Phase 8",
-        "Traffic Signal Optimization",
-        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
-    )
-    table.add_row(
-        "Phase 9",
-        "Autonomous 3D Drone Navigation",
-        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
-    )
-    table.add_row(
-        "Phase 10",
-        "Drone Disturbances and Constraints",
-        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
-    )
-    table.add_row(
-        "Phase 11",
-        "Generalization to Unseen Environments",
-        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
-    )
-    table.add_row(
-        "Phase 12",
-        "Classical Navigation Baselines (A* & RRT*)",
-        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
-    )
-    table.add_row(
-        "Phase 13",
-        "Algorithm Registry & SAC Hardening",
-        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
-    )
-    table.add_row(
-        "Phase 14",
-        "Reproducible Experiment Manager",
-        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
-    )
-    table.add_row(
-        "Phase 15",
-        "Benchmarking and Ablation Framework",
-        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
-    )
-    table.add_row(
-        "Phase 16",
-        "Standardized Metrics and Result Schemas",
-        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
-    )
-    table.add_row(
-        "Phase 17",
-        "Experiment Dashboard (Rich Terminal TUI)",
-        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
-    )
+    capabilities = [
+        ("Environments", "GridWorld, Navigation2D, Traffic, Drone3D, and disturbed Drone3D"),
+        ("Learning", "PPO and SAC through Stable-Baselines3 adapters"),
+        ("Planning", "A* and RRT* classical baselines"),
+        ("Training", "Configurable training, checkpoints, and curriculum learning"),
+        ("Curriculum", "Reusable staged difficulty schedules and progression callbacks"),
+        ("Evaluation", "Metrics, scenario evaluation, benchmarks, and reports"),
+        ("Generalization", "Disjoint train/test seed distributions and gap metrics"),
+        ("Experiments", "Provenance manifests, artifacts, and multi-seed comparisons"),
+    ]
+    for capability, support in capabilities:
+        table.add_row(capability, support)
 
     console.print(table)
 

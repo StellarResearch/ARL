@@ -12,7 +12,7 @@ class BaseAlgorithm(ABC):
 
     Concrete implementations wrap algorithms such as Stable-Baselines3 PPO and SAC
     to provide a unified training, prediction, and serialization contract.
-    Full algorithm wrappers will be implemented in Phase 4.
+    Concrete algorithm wrappers provide the train, predict, and persistence operations.
     """
 
     @abstractmethod

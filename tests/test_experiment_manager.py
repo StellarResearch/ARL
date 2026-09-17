@@ -1,4 +1,4 @@
-"""Tests for Phase 14 — Experiment Manager."""
+"""Tests for the experiment manager."""
 
 from __future__ import annotations
 

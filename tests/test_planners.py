@@ -1,4 +1,4 @@
-"""Tests for Phase 12 — A* planner and planner evaluation adapter."""
+"""Tests for A* planning and planner evaluation adapters."""
 
 from __future__ import annotations
 

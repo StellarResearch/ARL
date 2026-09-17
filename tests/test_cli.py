@@ -24,29 +24,20 @@ def test_cli_help() -> None:
 
 
 def test_cli_version() -> None:
-    """Verify adaptive-rl version displays package version and phase."""
+    """Verify adaptive-rl version displays the package version."""
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     assert "AdaptiveRL" in result.output
-    assert "Phase" in result.output
+    assert "0.1.0" in result.output
 
 
 def test_cli_info() -> None:
-    """Verify adaptive-rl info displays the roadmap table with completed phases."""
+    """Verify adaptive-rl info displays current platform capabilities."""
     result = runner.invoke(app, ["info"])
     assert result.exit_code == 0
-    assert "Roadmap" in result.output
-    assert "Phase 1" in result.output
-    assert "Phase 2" in result.output
-    assert "Phase 3" in result.output
-    assert "Phase 4" in result.output
-    assert "Phase 5" in result.output
-    assert "Phase 6" in result.output
-    assert "Phase 7" in result.output
-    assert "Phase 8" in result.output
-    assert "Phase 9" in result.output
-    assert "Phase 10" in result.output
-    assert "Phase 11" in result.output
+    assert "Platform Capabilities" in result.output
+    assert "Environments" in result.output
+    assert "Generalization" in result.output
 
 
 def test_cli_config_validate_success() -> None:

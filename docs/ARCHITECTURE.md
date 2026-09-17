@@ -115,7 +115,7 @@ The relationship between environments and the training engine follows a strict u
 
 ---
 
-## 3. Phase 12–17: Classical Baselines, Registries, and Experiment Management
+## 3. Baselines, Registries, and Experiment Management
 
 ### 3.1 Planner Layer (`adaptive_rl.planners`)
 
@@ -208,41 +208,41 @@ src/adaptive_rl/
 │   ├── base.py               — BaseAlgorithm abstract interface
 │   ├── ppo.py                — SB3 PPO wrapper
 │   ├── sac.py                — SB3 SAC wrapper
-│   └── registry.py           — AlgorithmRegistry (Phase 13)
+│   └── registry.py           — AlgorithmRegistry
 ├── planners/
-│   ├── base.py               — BasePlanner + PlannerResult (Phase 12)
-│   ├── astar.py              — A* planner implementation (Phase 12)
-│   └── adapter.py            — PlannerAdapter for GridWorldEnv (Phase 12)
+│   ├── base.py               — BasePlanner + PlannerResult
+│   ├── astar.py              — A* planner implementation
+│   └── adapter.py            — PlannerAdapter for GridWorldEnv
 ├── environments/
 │   ├── base.py               — AdaptiveRLEnv abstract base
 │   ├── registry.py           — EnvironmentRegistry
 │   ├── metadata.py           — EnvironmentMetadata
 │   ├── seeded_wrapper.py     — TrainingDistributionWrapper
 │   ├── testing.py            — DummyTestEnv
-│   ├── gridworld/            — GridWorld environment (Phase 3)
-│   ├── navigation/           — ContinuousNavigation2D (Phase 6)
-│   ├── traffic/              — TrafficSignalEnv (Phase 8)
-│   └── drone/                — DroneNavigation3D + DroneDisturbance3D (Phase 9-10)
+│   ├── gridworld/            — GridWorld environment
+│   ├── navigation/           — ContinuousNavigation2D
+│   ├── traffic/              — TrafficSignalEnv
+│   └── drone/                — DroneNavigation3D + DroneDisturbance3D
 ├── training/
 │   ├── trainer.py            — PPOTrainer, SACTrainer, get_trainer
 │   ├── callbacks.py          — MetricLoggerCallback, CheckpointCallback
 │   └── checkpointing.py      — CheckpointManager
 ├── evaluation/
 │   ├── evaluator.py          — Evaluator, BaseEvaluator
-│   ├── metrics.py            — EvaluationMetrics (Phase 16)
+│   ├── metrics.py            — EvaluationMetrics
 │   ├── generalization.py     — GeneralizationReport, GeneralizationDistribution
 │   └── scenarios.py          — EvaluationScenario
 ├── experiments/
 │   ├── runner.py             — BaseExperimentRunner
-│   ├── generalization_runner.py — GeneralizationExperimentRunner (Phase 11)
-│   └── manager.py            — ExperimentManager (Phase 14)
+│   ├── generalization_runner.py — GeneralizationExperimentRunner
+│   └── manager.py            — ExperimentManager
 ├── benchmarking/
-│   └── __init__.py           — BenchmarkRunner, AggregateStats (Phase 15)
-├── curriculum/               — Curriculum learning (Phase 7)
+│   └── __init__.py           — BenchmarkRunner, AggregateStats
+├── curriculum/               — Curriculum learning
 ├── rewards/                  — Reward function interfaces
 ├── models/                   — Model artifact management
 └── visualization/
     ├── plots.py              — PlotManager (text summaries)
     ├── renderer.py           — BaseRenderer
-    └── dashboard.py          — Rich terminal dashboard (Phase 17)
+    └── dashboard.py          — Rich terminal dashboard
 ```
