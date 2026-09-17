@@ -108,3 +108,99 @@ def test_config_serialization_roundtrip(tmp_path: Path) -> None:
     assert original_cfg.algorithm.name == reloaded_cfg.algorithm.name
     assert original_cfg.algorithm.learning_rate == reloaded_cfg.algorithm.learning_rate
     assert original_cfg.training.total_timesteps == reloaded_cfg.training.total_timesteps
+
+
+def test_planner_configs_valid() -> None:
+    """Verify clean A* and RRT* planner configs validate without RL hyperparameters or training blocks."""
+    config_dir = Path(__file__).resolve().parent.parent / "configs"
+    for filename in ("gridworld_astar.yaml", "navigation_rrt_star.yaml"):
+        cfg = load_config(config_dir / filename)
+        assert cfg.algorithm.is_planner
+        assert cfg.algorithm.learning_rate is None
+        assert cfg.algorithm.gamma is None
+        assert cfg.algorithm.batch_size is None
+        assert cfg.training is None
+
+
+def test_planner_rejects_rl_hyperparameters(tmp_path: Path) -> None:
+    """Verify that specifying learning_rate or gamma for a planner fails validation clearly."""
+    bad_planner_yaml = tmp_path / "bad_astar.yaml"
+    bad_planner_yaml.write_text(
+        """
+name: "bad_astar"
+seed: 42
+algorithm:
+  name: "astar"
+  learning_rate: 0.001
+environment:
+  name: "gridworld"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="does not accept RL hyperparameter"):
+        load_config(bad_planner_yaml)
+
+
+def test_planner_rejects_training_block(tmp_path: Path) -> None:
+    """Verify that including a training block for a classical planner fails validation."""
+    bad_planner_yaml = tmp_path / "bad_astar_training.yaml"
+    bad_planner_yaml.write_text(
+        """
+name: "bad_astar"
+seed: 42
+algorithm:
+  name: "astar"
+environment:
+  name: "gridworld"
+training:
+  total_timesteps: 1000
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="does not support a 'training' configuration block"):
+        load_config(bad_planner_yaml)
+
+
+def test_rl_algorithm_requires_training_block(tmp_path: Path) -> None:
+    """Verify that RL algorithms require a training configuration block."""
+    bad_rl_yaml = tmp_path / "bad_ppo.yaml"
+    bad_rl_yaml.write_text(
+        """
+name: "bad_ppo"
+seed: 42
+algorithm:
+  name: "ppo"
+environment:
+  name: "gridworld"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="Training configuration \\('training'\\) is required"):
+        load_config(bad_rl_yaml)
+
+
+def test_experiment_wrapper_block_unpacking(tmp_path: Path) -> None:
+    """Verify that YAML configs using the experiment: namespace unpack name and seed."""
+    exp_yaml = tmp_path / "namespaced_exp.yaml"
+    exp_yaml.write_text(
+        """
+experiment:
+  name: "namespaced_astar"
+  seed: 99
+algorithm:
+  name: "astar"
+  params:
+    heuristic: "manhattan"
+environment:
+  name: "gridworld"
+evaluation:
+  episodes: 5
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(exp_yaml)
+    assert cfg.name == "namespaced_astar"
+    assert cfg.seed == 99
+    assert cfg.algorithm.name == "astar"
+    assert cfg.algorithm.parameters == {"heuristic": "manhattan"}
+    assert cfg.evaluation.eval_episodes == 5

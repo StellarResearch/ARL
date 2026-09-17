@@ -87,7 +87,9 @@ class GeneralizationExperimentRunner(BaseExperimentRunner):
 
         # 5. Evaluate on train distribution and unseen test distribution
         metadata: Dict[str, Any] = {
-            "total_training_timesteps": config.training.total_timesteps,
+            "total_training_timesteps": config.training.total_timesteps
+            if config.training is not None
+            else 0,
             "algorithm": config.algorithm.name,
             "seed": config.seed,
             "unique_training_seeds_sampled": len(set(train_env.sampled_seeds_history)),

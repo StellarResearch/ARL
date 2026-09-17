@@ -122,12 +122,18 @@ class CurriculumTrainer(BaseTrainer):
             env_wrapper=self.env_wrapper,
             verbose=1,
         )
+        if self.config.training is None:
+            raise ValueError(
+                "Training configuration ('training') is required for curriculum training."
+            )
+        training_cfg = self.config.training
+
         self._callbacks: List[BaseCallback] = [self.metric_logger, self.curriculum_callback]
 
-        if self.config.training.checkpoint_freq > 0:
+        if training_cfg.checkpoint_freq > 0:
             checkpoint_cb = CheckpointCallback(
                 checkpoint_manager=self.checkpoint_manager,
-                save_freq=self.config.training.checkpoint_freq,
+                save_freq=training_cfg.checkpoint_freq,
             )
             self._callbacks.append(checkpoint_cb)
 
@@ -137,23 +143,32 @@ class CurriculumTrainer(BaseTrainer):
         # 5. Algorithm initialization
         algo_name = self.config.algorithm.name.lower()
         algo_params = dict(self.config.algorithm.parameters)
+        lr = (
+            self.config.algorithm.learning_rate
+            if self.config.algorithm.learning_rate is not None
+            else 3e-4
+        )
+        gamma = self.config.algorithm.gamma if self.config.algorithm.gamma is not None else 0.99
+        batch_size = (
+            self.config.algorithm.batch_size if self.config.algorithm.batch_size is not None else 64
+        )
 
         self.algorithm: BaseAlgorithm
         if algo_name == "ppo":
             self.algorithm = PPOAlgorithm(
                 env=self.env,
-                learning_rate=self.config.algorithm.learning_rate,
-                gamma=self.config.algorithm.gamma,
-                batch_size=self.config.algorithm.batch_size,
+                learning_rate=lr,
+                gamma=gamma,
+                batch_size=batch_size,
                 seed=self.config.seed,
                 **algo_params,
             )
         elif algo_name == "sac":
             self.algorithm = SACAlgorithm(
                 env=self.env,
-                learning_rate=self.config.algorithm.learning_rate,
-                gamma=self.config.algorithm.gamma,
-                batch_size=self.config.algorithm.batch_size,
+                learning_rate=lr,
+                gamma=gamma,
+                batch_size=batch_size,
                 seed=self.config.seed,
                 **algo_params,
             )
@@ -182,6 +197,7 @@ class CurriculumTrainer(BaseTrainer):
             algorithm=self.algorithm,
         )
 
+        assert self.config.training is not None
         # Train algorithm with automated stage progression
         self.algorithm.train(
             total_timesteps=self.config.training.total_timesteps,
