@@ -1,7 +1,7 @@
 # AdaptiveRL — Multi-Environment Reinforcement Learning Platform
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](pyproject.toml)
+[![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](pyproject.toml)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 **AdaptiveRL** is a modular, multi-environment reinforcement learning framework designed to train, evaluate, and benchmark adaptive agents across diverse problem domains—eventually scaling to autonomous 3D drone navigation in complex, dynamic obstacle fields.
@@ -87,7 +87,7 @@ For in-depth architectural principles, see [docs/ARCHITECTURE.md](docs/ARCHITECT
 ## 4. Installation & Setup
 
 ### Prerequisites
-* Python 3.10+ (tested through Python 3.14)
+* Python 3.10, 3.11, or 3.12 (tested and validated in CI)
 * `git`
 
 ### Quick Start
@@ -200,7 +200,7 @@ print(f"Saved {len(result.checkpoints)} periodic checkpoints.")
 AdaptiveRL provides a standardized evaluation benchmark engine to measure policy performance across fixed episode sets and configurable scenarios, with automatic export to JSON reports.
 
 * **Standard Metrics Tracked:** Mean episodic return ± standard deviation, min/max returns, success rate, collision rate, and mean episode length ± standard deviation.
-* **Deterministic Seeding:** Guarantees bitwise-reproducible evaluation trajectories across experiment runs.
+* **Deterministic Seeding:** Enforces deterministic seeding across evaluation episodes and environments.
 * **Scenario Testing:** Benchmarks agents across curated challenge scenarios (e.g. varying obstacle densities).
 
 ### Evaluation via CLI

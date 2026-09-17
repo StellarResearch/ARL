@@ -233,7 +233,9 @@ class TestExperimentCLI:
                 ],
             )
             # Should exit 0 and print informative message (not crash)
-            assert "not found" in result.output.lower() or result.exit_code in (0, 1)
+            assert result.exit_code == 0
+            assert "not found" in result.output.lower()
+            assert "unknown_exp_id" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------

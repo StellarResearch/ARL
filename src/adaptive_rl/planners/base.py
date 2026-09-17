@@ -24,7 +24,8 @@ class PlannerResult:
         success: Whether a valid path was found.
         path: Sequence of coordinates from start to goal (inclusive).
               Empty list if no path was found.
-        path_length: Total number of steps or arc length (0 if failed).
+        path_length: Total number of steps or arc length (None if failed;
+                     0.0 for a measured zero-length path when start == goal).
         planning_time_seconds: Wall-clock seconds spent planning.
         nodes_explored: Number of search nodes expanded (algorithm-dependent).
         failure_reason: Human-readable reason for failure if success is False.
@@ -32,7 +33,7 @@ class PlannerResult:
 
     success: bool
     path: Sequence[Coordinate] = field(default_factory=list)
-    path_length: float = 0.0
+    path_length: Optional[float] = None
     planning_time_seconds: float = 0.0
     nodes_explored: int = 0
     failure_reason: Optional[str] = None
@@ -65,7 +66,7 @@ class PlannerResult:
         Returns:
             True if path is non-empty, starts at start, ends at goal, and is obstacle-free.
         """
-        if not self.success or not self.path:
+        if not self.success or not self.path or self.path_length is None:
             return False
         if self.path[0] != start or self.path[-1] != goal:
             return False
@@ -138,6 +139,7 @@ class BaseContinuousPlanner(BasePlanner):
         obstacles: List[Tuple[float, float, float]],
         agent_radius: float = 0.0,
         goal_radius: float = 0.5,
+        seed_override: Optional[int] = None,
     ) -> PlannerResult:
         """Compute a collision-free path from start to goal in continuous space.
 
@@ -149,6 +151,7 @@ class BaseContinuousPlanner(BasePlanner):
             obstacles: List of circular obstacles as (x, y, radius) tuples.
             agent_radius: Radius of the traversing agent for margin checking.
             goal_radius: Distance tolerance to consider the goal reached.
+            seed_override: Optional integer seed to override planner-internal randomness.
 
         Returns:
             PlannerResult containing path, length, planning time, and status.

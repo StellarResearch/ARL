@@ -852,3 +852,93 @@ class TestRRTStarPlanner:
         assert res.episodes == 2
         assert res.success_rate == 1.0
         assert res.all_path_lengths == [12.5, 12.5]
+
+    def test_canonical_failure_and_zero_semantics(self) -> None:
+        """Verify strict canonical failure (success=False, path_length=None) vs zero (success=True, path_length=0.0)."""
+        astar = AStarPlanner()
+
+        # 1. Blocked / impossible path -> failure with path_length=None
+        blocked_res = astar.plan(
+            start=(0, 0),
+            goal=(2, 0),
+            obstacles={(1, 0)},
+            width=3,
+            height=1,
+        )
+        assert blocked_res.success is False
+        assert blocked_res.path_length is None
+        assert blocked_res.path == []
+
+        # 2. Trivial start == goal -> success with measured zero path_length=0.0
+        trivial_res = astar.plan(
+            start=(1, 1),
+            goal=(1, 1),
+            obstacles=set(),
+            width=3,
+            height=3,
+        )
+        assert trivial_res.success is True
+        assert trivial_res.path_length == 0.0
+        assert trivial_res.path == [(1, 1)]
+        assert trivial_res.is_valid(start=(1, 1), goal=(1, 1), obstacles=set()) is True
+
+    def test_rrt_star_targeted_parent_selection_and_rewiring(self) -> None:
+        """Targeted test: parent selection chooses min cost and rewiring propagates subtree costs."""
+        from adaptive_rl.planners.rrt_star import RRTNode, RRTStarPlanner
+
+        planner = RRTStarPlanner(search_radius=3.0, step_size=1.0, seed=42)
+
+        # Build controlled tree: root at (0, 0), child A at (1, 0) with cost 1.0
+        root = RRTNode(x=0.0, y=0.0, cost=0.0)
+        node_a = RRTNode(x=1.0, y=0.0, cost=1.0, parent=root)
+        root.children.append(node_a)
+        # Node B at (1, 1) parented to root with cost hypot(1, 1) ~ 1.414
+        node_b = RRTNode(x=1.0, y=1.0, cost=1.4142, parent=root)
+        root.children.append(node_b)
+
+        # Child of B at (1, 2) with cost 2.4142
+        node_c = RRTNode(x=1.0, y=2.0, cost=2.4142, parent=node_b)
+        node_b.children.append(node_c)
+
+        # Subtree cost propagation test
+        planner._update_subtree_costs(node_b, new_cost=1.0)
+        assert node_b.cost == 1.0
+        # node_c cost must have dropped by 0.4142 -> 2.0
+        assert abs(node_c.cost - 2.0) < 1e-4
+
+    def test_rrt_star_collision_rejection(self) -> None:
+        """Targeted test: segments crossing circular obstacles or boundaries are rejected."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        planner = RRTStarPlanner()
+
+        # Segment from (0.0, 5.0) to (10.0, 5.0) crossing obstacle at (5.0, 5.0, radius=2.0)
+        obstacles = [(5.0, 5.0, 2.0)]
+        assert not planner.is_segment_valid(
+            (0.0, 5.0),
+            (10.0, 5.0),
+            arena_width=20.0,
+            arena_height=20.0,
+            obstacles=obstacles,
+            agent_radius=0.0,
+        )
+
+        # Segment crossing out of bounds
+        assert not planner.is_segment_valid(
+            (1.0, 1.0),
+            (-2.0, 1.0),
+            arena_width=20.0,
+            arena_height=20.0,
+            obstacles=[],
+            agent_radius=0.0,
+        )
+
+        # Clear segment
+        assert planner.is_segment_valid(
+            (0.0, 0.0),
+            (2.0, 0.0),
+            arena_width=20.0,
+            arena_height=20.0,
+            obstacles=obstacles,
+            agent_radius=0.0,
+        )

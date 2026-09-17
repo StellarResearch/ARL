@@ -98,8 +98,10 @@ class Evaluator(BaseEvaluator):
         successes = 0
         collisions = 0
 
+        from adaptive_rl.evaluation.seeding import derive_evaluation_seed
+
         for ep in range(num_episodes):
-            seed = base_seed + ep if base_seed is not None else None
+            seed = derive_evaluation_seed(base_seed, ep) if base_seed is not None else None
             obs, info = self.env.reset(seed=seed)
             ep_reward = 0.0
             ep_length = 0

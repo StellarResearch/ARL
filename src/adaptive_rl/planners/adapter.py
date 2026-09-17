@@ -199,8 +199,10 @@ class PlannerAdapter:
         planning_times: List[float] = []
         successful_path_lengths: List[float] = []
 
+        from adaptive_rl.evaluation.seeding import derive_evaluation_seed
+
         for ep in range(num_episodes):
-            seed = base_seed + ep if base_seed is not None else None
+            seed = derive_evaluation_seed(base_seed, ep) if base_seed is not None else None
             _obs, info = env.reset(seed=seed)
 
             start: GridCoordinate = info.get("agent_pos", env._agent_pos)
@@ -230,10 +232,11 @@ class PlannerAdapter:
                 )
             )
 
-            if valid:
+            if valid and result.path_length is not None:
                 successes += 1
-                path_lengths.append(float(result.path_length))
-                successful_path_lengths.append(float(result.path_length))
+                length = float(result.path_length)
+                path_lengths.append(length)
+                successful_path_lengths.append(length)
             else:
                 path_lengths.append(None)
 
@@ -256,18 +259,27 @@ class PlannerAdapter:
         env: Any = self.env
         planner: Any = self.planner
 
+        from adaptive_rl.evaluation.seeding import derive_evaluation_seed, derive_planner_seed
+
         successes = 0
         path_lengths: List[Optional[float]] = []
         planning_times: List[float] = []
         successful_path_lengths: List[float] = []
 
         for ep in range(num_episodes):
-            seed = base_seed + ep if base_seed is not None else None
-            _obs, info = env.reset(seed=seed)
+            env_seed = derive_evaluation_seed(base_seed, ep) if base_seed is not None else None
+            _obs, info = env.reset(seed=env_seed)
 
             start = (float(info["agent_pos"][0]), float(info["agent_pos"][1]))
             goal = (float(info["goal_pos"][0]), float(info["goal_pos"][1]))
             obstacles = list(info.get("obstacles", env._obstacles))
+
+            # Decouple planner internal sampling randomness from the shared environment seed
+            planner_seed = (
+                derive_planner_seed(base_seed, ep, getattr(planner, "seed", None))
+                if base_seed is not None
+                else None
+            )
 
             try:
                 result = planner.plan(
@@ -278,7 +290,7 @@ class PlannerAdapter:
                     obstacles=obstacles,
                     agent_radius=env.agent_radius,
                     goal_radius=env.goal_radius,
-                    seed_override=seed,
+                    seed_override=planner_seed,
                 )
             except ValueError as exc:
                 result = PlannerResult(success=False, failure_reason=str(exc))
@@ -306,10 +318,11 @@ class PlannerAdapter:
                 )
             )
 
-            if valid:
+            if valid and result.path_length is not None:
                 successes += 1
-                path_lengths.append(float(result.path_length))
-                successful_path_lengths.append(float(result.path_length))
+                length = float(result.path_length)
+                path_lengths.append(length)
+                successful_path_lengths.append(length)
             else:
                 path_lengths.append(None)
 

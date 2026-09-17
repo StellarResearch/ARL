@@ -52,13 +52,31 @@ class RRTStarPlanner(BaseContinuousPlanner):
     Navigates a 2D rectangular arena with circular obstacles and perimeter walls,
     matching the collision geometry of :class:`ContinuousNavigation2DEnv`.
 
-    Implementation Note:
-        This planner implements an RRT*-style bounded-neighborhood rewiring heuristic
-        with a fixed search radius. It optimizes trajectory length during exploration
-        but does not implement the dynamic shrinking connection radius
-        gamma * (log(n)/n)^(1/d) required for theoretical asymptotic optimality
-        (Karaman & Frazzoli, 2011). Near-neighbor queries perform a linear scan
-        over search nodes, suitable for standard benchmark iteration budgets (<= 2000 steps).
+    Algorithmic Specification:
+    - **Neighborhood Rule**: Euclidean ball of radius `search_radius` centered at new sample `x_new`.
+      Nodes within this ball form the near-neighbor candidate pool for parent selection and rewiring.
+    - **Connection Radius Behavior**: Fixed search radius (`search_radius = const`).
+      This bounded-neighborhood heuristic provides practical path shortening without the dynamic
+      shrinking radius formula gamma * (log(n)/n)^(1/d) required for theoretical asymptotic optimality.
+    - **Nearest & Near-Node Selection**:
+      * Nearest: Node in tree minimizing Euclidean distance to `x_rand`.
+      * Near: All tree nodes within Euclidean distance `search_radius` of `x_new`.
+      * Best Parent: Selected from near nodes to minimize cumulative path cost `c(near) + dist(near, x_new)`.
+    - **Rewiring Behavior**:
+      For each node in `near_nodes`, if `c(x_new) + dist(x_new, near) < c(near)` and the segment is
+      collision-free (and does not introduce an ancestor cycle), the near node is re-parented to `x_new`
+      and subtree costs are propagated recursively down to all its descendants.
+    - **Collision Checking Assumptions**:
+      Line segment interpolation with step size `collision_resolution`. Checks all circular obstacles
+      with agent radius margin (`dist < obs_radius + agent_radius`) and arena bounding perimeter walls.
+      Kinodynamic / non-holonomic constraints are not modeled (kinodynamic-free 2D holonomic).
+    - **Stopping Criteria**:
+      Executes up to `max_iterations` sample extensions. If multiple paths reach the goal region
+      (`dist <= goal_radius`), the lowest-cost path is retained. Fails if no path reaches goal within budget.
+    - **Known Theoretical Limitations**:
+      Fixed radius does not guarantee asymptotic optimality as n -> inf (Karaman & Frazzoli, 2011).
+      Linear scan over tree nodes scales as O(n^2) over iterations, suitable for benchmark iteration
+      budgets (<= 2000 steps) rather than large-scale planning.
 
     Features:
     - Configurable step size, goal bias, and maximum iterations
@@ -479,7 +497,7 @@ class RRTStarPlanner(BaseContinuousPlanner):
             return PlannerResult(
                 success=False,
                 path=[],
-                path_length=0.0,
+                path_length=None,
                 planning_time_seconds=elapsed,
                 nodes_explored=len(tree),
                 failure_reason=f"No path found within {self.max_iterations} iterations.",

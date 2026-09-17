@@ -70,6 +70,7 @@ class ExperimentManifest:
     base_experiment_id: str = ""
     run_id: str = ""
     config_sha256: str = ""
+    evaluation_seeds: List[int] = field(default_factory=list)
     error_type: Optional[str] = None
     error_traceback: Optional[str] = None
 
@@ -432,11 +433,16 @@ class ExperimentManager:
                 if hasattr(algo, "load"):
                     algo.load(model_path)
 
+            from adaptive_rl.evaluation.seeding import generate_evaluation_seeds
+
+            eval_seeds = generate_evaluation_seeds(config.seed, config.evaluation.eval_episodes)
+            manifest.evaluation_seeds = eval_seeds
+
             evaluator = Evaluator(algorithm=algo, env=eval_env)
             eval_metrics = evaluator.evaluate(
                 num_episodes=config.evaluation.eval_episodes,
                 deterministic=config.evaluation.deterministic,
-                base_seed=config.seed + 10000,  # Separate evaluation seeds
+                base_seed=config.seed,  # Unified evaluation seeding protocol
             )
 
             from adaptive_rl.evaluation.metrics import StandardizedExperimentMetrics
@@ -540,10 +546,15 @@ class ExperimentManager:
 
             planner = make_planner(config.algorithm.name, **params)
 
+            from adaptive_rl.evaluation.seeding import generate_evaluation_seeds
+
+            eval_seeds = generate_evaluation_seeds(config.seed, config.evaluation.eval_episodes)
+            manifest.evaluation_seeds = eval_seeds
+
             adapter = PlannerAdapter(planner=planner, env=env)  # type: ignore[arg-type]
             planner_metrics = adapter.evaluate(
                 num_episodes=config.evaluation.eval_episodes,
-                base_seed=config.seed,
+                base_seed=config.seed,  # Unified evaluation seeding protocol
             )
 
             from adaptive_rl.evaluation.metrics import StandardizedExperimentMetrics

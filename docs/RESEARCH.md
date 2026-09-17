@@ -42,11 +42,19 @@ the Manhattan distance heuristic, which is admissible and consistent for 4-conne
 discrete grids. Euclidean and Chebyshev heuristics are also supported.
 
 RRT* (Rapidly-exploring Random Tree Star) is implemented for continuous 2D motion planning
-against `Navigation2DEnv`. It employs near-neighbor rewiring within a bounded search radius
-heuristic to progressively shorten sampled paths and navigate around circular obstacles.
-Note: Full theoretical asymptotic optimality (Karaman & Frazzoli, 2011) requires a sample-dependent
-shrinking connection radius; this baseline uses a fixed search radius as a practical bounded-neighborhood
-rewiring approximation.
+against `ContinuousNavigation2DEnv`.
+
+#### Algorithmic Specification:
+1. **Neighborhood Rule**: Euclidean ball of fixed radius `search_radius` centered at new sample $x_{\text{new}}$.
+2. **Connection Radius Behavior**: Fixed connection radius ($r = \text{const}$). Bounded-neighborhood approximation; does not implement the shrinking radius $\gamma (\log(n)/n)^{1/d}$ required for theoretical asymptotic optimality (Karaman & Frazzoli, 2011).
+3. **Nearest & Near-Node Selection**:
+   - Nearest node: $x_{\text{nearest}} = \arg\min_{v \in V} \|v - x_{\text{rand}}\|_2$.
+   - Near nodes: $V_{\text{near}} = \{v \in V \mid \|v - x_{\text{new}}\|_2 \le r\}$.
+   - Best parent: $x_{\text{parent}} = \arg\min_{v \in V_{\text{near}}} \{c(v) + \|v - x_{\text{new}}\|_2 \mid \text{collision\_free}(v, x_{\text{new}})\}$.
+4. **Rewiring Behavior**: For all $v \in V_{\text{near}}$, if $c(x_{\text{new}}) + \|x_{\text{new}} - v\|_2 < c(v)$ and segment is collision-free (without ancestor cycle), re-parents $v$ to $x_{\text{new}}$ and recursively propagates cost deltas down the subtree.
+5. **Collision Checking Assumptions**: Linear interpolation at step resolution `collision_resolution`. Collision occurs if any sample falls within $r_{\text{obstacle}} + r_{\text{agent}}$ of a circular obstacle or outside arena perimeter walls. Kinodynamic/differential constraints are omitted (holonomic 2D).
+6. **Stopping Criteria**: Terminates at `max_iterations`. Retains the lowest-cost path reaching within `goal_radius` of target coordinate, or reports explicit failure if unreachable.
+7. **Theoretical Limitations**: Fixed connection radius does not provide formal asymptotic optimality as $n \to \infty$. Linear scan over tree nodes scales as $O(n^2)$ over iterations, suitable for benchmark iteration budgets ($\le 2000$ steps) rather than large-scale planning.
 
 > [!IMPORTANT]
 > Classical planners (A*, RRT*) are not RL algorithms. They have direct access to the geometry
@@ -63,7 +71,7 @@ rewiring approximation.
 | Metric | PPO | SAC | A* | RRT* |
 |:-------|:----|:----|:---|:-----|
 | Success Rate | ✓ | ✓ | ✓ | ✓ |
-| Collision Rate | ✓ | ✓ | ✓ (0 for valid paths) | ✓ (0 for valid paths) |
+| Collision Rate | ✓ | ✓ | ✗ (null: offline search) | ✗ (null: offline search) |
 | Episode Reward | ✓ | ✓ | ✗ (not applicable) | ✗ (not applicable) |
 | Episode Length | ✓ | ✓ | ✗ (planner doesn't step) | ✗ (planner doesn't step) |
 | Path Length | ✗ | ✗ | ✓ | ✓ |

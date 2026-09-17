@@ -222,7 +222,7 @@ class AStarPlanner(BaseGridPlanner):
             return PlannerResult(
                 success=True,
                 path=[start],
-                path_length=0,
+                path_length=0.0,
                 planning_time_seconds=elapsed,
                 nodes_explored=1,
             )
@@ -235,6 +235,7 @@ class AStarPlanner(BaseGridPlanner):
 
         came_from: Dict[GridCoordinate, Optional[GridCoordinate]] = {start: None}
         g_score: Dict[GridCoordinate, float] = {start: 0.0}
+
         nodes_explored = 0
 
         while open_heap:
@@ -242,20 +243,18 @@ class AStarPlanner(BaseGridPlanner):
             nodes_explored += 1
 
             if current == goal:
-                # Reconstruct path
-                path = self._reconstruct_path(came_from, goal)
                 elapsed = time.perf_counter() - t_start
+                path = self._reconstruct_path(came_from, goal)
                 return PlannerResult(
                     success=True,
                     path=path,
-                    path_length=len(path) - 1,  # edges, not nodes
+                    path_length=float(len(path) - 1),
                     planning_time_seconds=elapsed,
                     nodes_explored=nodes_explored,
                 )
 
             for dx, dy in _NEIGHBORS:
                 neighbor = (current[0] + dx, current[1] + dy)
-
                 # Bounds check
                 if not (0 <= neighbor[0] < width and 0 <= neighbor[1] < height):
                     continue
@@ -277,7 +276,7 @@ class AStarPlanner(BaseGridPlanner):
         return PlannerResult(
             success=False,
             path=[],
-            path_length=0,
+            path_length=None,
             planning_time_seconds=elapsed,
             nodes_explored=nodes_explored,
             failure_reason=(

@@ -79,15 +79,16 @@ Every completed experiment writes `manifest.json` with the following fields:
   "config_path": "configs/gridworld_ppo.yaml",
   "training_timesteps": 5000,
   "git_commit": "abc1234",
-  "python_version": "3.14.7 (main, ...)",
+  "python_version": "3.12.3 (main, ...)",
   "platform_info": "Linux 5.15.0 x86_64",
   "package_versions": {
     "adaptive-rl": "0.1.0",
-    "gymnasium": "1.3.0",
-    "stable-baselines3": "2.9.0",
-    "torch": "2.14.0",
-    "pydantic": "2.13.5"
+    "gymnasium": "1.0.0",
+    "stable-baselines3": "2.3.0",
+    "torch": "2.2.0",
+    "pydantic": "2.10.0"
   },
+  "evaluation_seeds": [42, 43, 44],
   "artifact_paths": {
     "config": "experiments/results/.../config.yaml",
     "model": "experiments/results/.../model/..._final.zip",
@@ -126,13 +127,13 @@ For planner experiments (A*), `training_timesteps` is `null`.
 |:------|:-----|:------------|
 | `episodes` | int | Total evaluation episodes |
 | `success_rate` | float | Fraction where a valid path was found |
-| `mean_path_length` | float | Mean path length (steps) over successes |
-| `std_path_length` | float | Path length standard deviation |
-| `min_path_length` | float | Minimum path length |
-| `max_path_length` | float | Maximum path length |
+| `mean_path_length` | Optional[float] | Mean path length (steps/distance) over successes (null if no successes) |
+| `std_path_length` | Optional[float] | Path length standard deviation |
+| `min_path_length` | Optional[float] | Minimum path length |
+| `max_path_length` | Optional[float] | Maximum path length |
 | `mean_planning_time` | float | Mean wall-clock planning time (seconds) |
 | `std_planning_time` | float | Planning time standard deviation |
-| `collision_rate` | float | Always 0.0 for validated planners |
+| `collision_rate` | Optional[float] | Always null for offline planners (no dynamic environment step execution) |
 
 > [!IMPORTANT]
 > Planner metrics are distinct from RL metrics. Path length and planning time
@@ -143,16 +144,14 @@ For planner experiments (A*), `training_timesteps` is `null`.
 
 ## 5. Seed Management
 
-### 5.1 Seed Strategy
+### 5.1 Unified Evaluation Seed Protocol
 
-Every experiment uses a single declared `seed` value that controls:
-- Environment procedural generation (grid layouts, obstacle positions).
-- RL algorithm initialization (neural network weights, random sampling).
-- Evaluation episode seeds (`seed + ep` for each episode).
-
-Training and evaluation use different seed ranges by design:
-- Training seed: `config.seed`
-- Evaluation seeds: `config.seed + 10000 + episode_index`
+Every experiment uses a declared `seed` value and a centralized evaluation seeding protocol (`adaptive_rl.evaluation.seeding`):
+- **Environment Procedural Generation**: Evaluation episodes for both RL agents and classical planners derive identical environment reset seeds:
+  $$\text{seed}_{\text{env}}(i) = \text{derive\_evaluation\_seed}(\text{experiment\_seed}, i) = \text{experiment\_seed} + i$$
+  This ensures benchmark fairness: an RL policy and a classical planner (A*, RRT*) are evaluated on the exact same procedural world layouts, start positions, and goal positions for episode $i$.
+- **Planner-Internal Randomness**: Sampling-based planners (RRT*) decouple internal tree sampling randomness from environment generation via `derive_planner_seed`. Modifying planner parameters or sampling seeds does not alter the underlying test environment.
+- **Manifest Provenance**: The complete list of evaluation seeds executed during the run is permanently recorded in `manifest.json` under `evaluation_seeds`.
 
 ### 5.2 Generalization Train/Test Split
 
