@@ -6,7 +6,7 @@ from adaptive_rl.evaluation.generalization import (
     GeneralizationEvaluator,
     GeneralizationReport,
 )
-from adaptive_rl.evaluation.metrics import EvaluationMetrics
+from adaptive_rl.evaluation.metrics import EvaluationMetrics, StandardizedExperimentMetrics
 from adaptive_rl.evaluation.scenarios import EvaluationScenario
 
 __all__ = [
@@ -17,4 +17,5 @@ __all__ = [
     "GeneralizationDistribution",
     "GeneralizationEvaluator",
     "GeneralizationReport",
+    "StandardizedExperimentMetrics",
 ]

@@ -236,7 +236,7 @@ class ExperimentManager:
                 error_message=f"Config loading failed: {exc}",
             )
 
-        if timesteps_override is not None:
+        if timesteps_override is not None and config.training is not None:
             config.training.total_timesteps = timesteps_override
         if seed_override is not None:
             config.seed = seed_override
@@ -357,7 +357,15 @@ class ExperimentManager:
                 base_seed=config.seed + 10000,  # Separate evaluation seeds
             )
 
+            from adaptive_rl.evaluation.metrics import StandardizedExperimentMetrics
+
+            std_metrics = StandardizedExperimentMetrics.from_rl_metrics(eval_metrics)
             metrics = eval_metrics.model_dump()
+            metrics["standardized"] = std_metrics.model_dump()
+            for k, v in std_metrics.model_dump().items():
+                if k != "additional_metrics" and k not in metrics:
+                    metrics[k] = v
+
             manifest.evaluation_status = "completed"
 
             # Save metrics
@@ -443,7 +451,15 @@ class ExperimentManager:
                 base_seed=config.seed,
             )
 
+            from adaptive_rl.evaluation.metrics import StandardizedExperimentMetrics
+
+            std_metrics = StandardizedExperimentMetrics.from_planner_metrics(planner_metrics)
             metrics = planner_metrics.to_dict()
+            metrics["standardized"] = std_metrics.model_dump()
+            for k, v in std_metrics.model_dump().items():
+                if k != "additional_metrics" and k not in metrics:
+                    metrics[k] = v
+
             manifest.evaluation_status = "completed"
             manifest.training_timesteps = None
 
@@ -487,14 +503,21 @@ class ExperimentManager:
         config_path: str,
     ) -> ExperimentManifest:
         """Build an experiment manifest from current runtime information."""
+        try:
+            rel_config_path = str(Path(config_path).resolve().relative_to(Path.cwd().resolve()))
+        except Exception:
+            rel_config_path = str(config_path)
+
         return ExperimentManifest(
             experiment_id=experiment_id,
             created_at=datetime.now(timezone.utc).isoformat(),
             algorithm=config.algorithm.name if config else "unknown",
             environment=config.environment.name if config else "unknown",
             seed=config.seed if config else -1,
-            config_path=config_path,
-            training_timesteps=config.training.total_timesteps if config else None,
+            config_path=rel_config_path,
+            training_timesteps=(
+                config.training.total_timesteps if config and config.training is not None else None
+            ),
             git_commit=_get_git_commit(),
             python_version=sys.version,
             platform_info=f"{platform.system()} {platform.release()} {platform.machine()}",
@@ -529,14 +552,21 @@ class ExperimentManager:
         """
         import csv
 
-        scalar_metrics = {
-            k: v
-            for k, v in metrics.items()
-            if isinstance(v, (int, float, str, bool)) and not isinstance(v, bool)
-        }
-        # Include booleans as 0/1
-        bool_metrics = {k: int(v) for k, v in metrics.items() if isinstance(v, bool)}
-        scalar_metrics.update(bool_metrics)
+        scalar_metrics: Dict[str, Any] = {}
+        for k, v in metrics.items():
+            if k in (
+                "standardized",
+                "all_path_lengths",
+                "all_planning_times",
+                "additional_metrics",
+            ):
+                continue
+            if isinstance(v, bool):
+                scalar_metrics[k] = int(v)
+            elif isinstance(v, (int, float, str)):
+                scalar_metrics[k] = v
+            elif v is None:
+                scalar_metrics[k] = ""
 
         if not scalar_metrics:
             return

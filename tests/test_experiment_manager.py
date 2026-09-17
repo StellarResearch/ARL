@@ -32,12 +32,22 @@ def _make_minimal_config(
         TrainingConfig,
     )
 
+    is_planner = algo in ("astar", "rrt_star", "rrt")
+    algo_cfg = (
+        AlgorithmConfig(name=algo)
+        if is_planner
+        else AlgorithmConfig(name=algo, learning_rate=3e-4, gamma=0.99, batch_size=64)
+    )
+    training_cfg = (
+        None if is_planner else TrainingConfig(total_timesteps=1, checkpoint_freq=0, log_interval=1)
+    )
+
     return ExperimentConfig(
         name=f"{env}_{algo}_test",
         seed=seed,
-        algorithm=AlgorithmConfig(name=algo, learning_rate=3e-4, gamma=0.99, batch_size=64),
+        algorithm=algo_cfg,
         environment=EnvironmentConfig(name=env, max_steps=50),
-        training=TrainingConfig(total_timesteps=1, checkpoint_freq=0, log_interval=1),
+        training=training_cfg,
         evaluation=EvaluationConfig(eval_episodes=3, deterministic=True),
     )
 
