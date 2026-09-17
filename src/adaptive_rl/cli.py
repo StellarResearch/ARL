@@ -85,47 +85,87 @@ def info() -> None:
     table.add_row(
         "Phase 1",
         "Repository Foundation and Architecture Skeleton",
-        "[bold green]COMPLETED[/bold green]",
+        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
     )
     table.add_row(
-        "Phase 2", "Environment Abstraction and Registry", "[bold green]COMPLETED[/bold green]"
+        "Phase 2",
+        "Environment Abstraction and Registry",
+        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
     )
     table.add_row(
-        "Phase 3", "Procedurally Generated GridWorld", "[bold green]COMPLETED[/bold green]"
+        "Phase 3",
+        "Procedurally Generated GridWorld",
+        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
     )
     table.add_row(
-        "Phase 4", "PPO Training Engine (SB3 Wrapper)", "[bold green]COMPLETED[/bold green]"
+        "Phase 4",
+        "PPO Training Engine (SB3 Wrapper)",
+        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
     )
     table.add_row(
-        "Phase 5", "Evaluation Engine and Standard Metrics", "[bold green]COMPLETED[/bold green]"
-    )
-    table.add_row("Phase 6", "Continuous 2D Navigation", "[bold green]COMPLETED[/bold green]")
-    table.add_row("Phase 7", "Curriculum Learning", "[bold green]COMPLETED[/bold green]")
-    table.add_row("Phase 8", "Traffic Signal Optimization", "[bold green]COMPLETED[/bold green]")
-    table.add_row("Phase 9", "Autonomous 3D Drone Navigation", "[bold green]COMPLETED[/bold green]")
-    table.add_row(
-        "Phase 10", "Drone Disturbances and Constraints", "[bold green]COMPLETED[/bold green]"
+        "Phase 5",
+        "Evaluation Engine and Standard Metrics",
+        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
     )
     table.add_row(
-        "Phase 11", "Generalization to Unseen Environments", "[bold green]COMPLETED[/bold green]"
+        "Phase 6",
+        "Continuous 2D Navigation",
+        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
     )
     table.add_row(
-        "Phase 12", "Classical Navigation Baselines (A*)", "[bold green]COMPLETED[/bold green]"
+        "Phase 7",
+        "Curriculum Learning",
+        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
     )
     table.add_row(
-        "Phase 13", "Algorithm Registry & SAC Hardening", "[bold green]COMPLETED[/bold green]"
+        "Phase 8",
+        "Traffic Signal Optimization",
+        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
     )
     table.add_row(
-        "Phase 14", "Reproducible Experiment Manager", "[bold green]COMPLETED[/bold green]"
+        "Phase 9",
+        "Autonomous 3D Drone Navigation",
+        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
     )
     table.add_row(
-        "Phase 15", "Benchmarking and Ablation Framework", "[bold green]COMPLETED[/bold green]"
+        "Phase 10",
+        "Drone Disturbances and Constraints",
+        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
     )
     table.add_row(
-        "Phase 16", "Standardized Metrics and Result Schemas", "[bold green]COMPLETED[/bold green]"
+        "Phase 11",
+        "Generalization to Unseen Environments",
+        "[bold green]EXPERIMENTALLY VALIDATED[/bold green]",
     )
     table.add_row(
-        "Phase 17", "Experiment Dashboard (Rich Terminal TUI)", "[bold green]COMPLETED[/bold green]"
+        "Phase 12",
+        "Classical Navigation Baselines (A* & RRT*)",
+        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
+    )
+    table.add_row(
+        "Phase 13",
+        "Algorithm Registry & SAC Hardening",
+        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
+    )
+    table.add_row(
+        "Phase 14",
+        "Reproducible Experiment Manager",
+        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
+    )
+    table.add_row(
+        "Phase 15",
+        "Benchmarking and Ablation Framework",
+        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
+    )
+    table.add_row(
+        "Phase 16",
+        "Standardized Metrics and Result Schemas",
+        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
+    )
+    table.add_row(
+        "Phase 17",
+        "Experiment Dashboard (Rich Terminal TUI)",
+        "[bold cyan]IMPLEMENTED & TESTED[/bold cyan]",
     )
 
     console.print(table)
@@ -145,14 +185,24 @@ def validate_config(
             curr_preset = cfg.curriculum.preset or f"{len(cfg.curriculum.stages)} custom stages"
             curr_info = f"\n• [bold]Curriculum:[/bold] Enabled ({curr_preset}, Window: {cfg.curriculum.eval_window})"
 
+        if cfg.algorithm.learning_rate is not None:
+            algo_info = f"• [bold]Algorithm:[/bold] {cfg.algorithm.name} (LR: {cfg.algorithm.learning_rate}, Gamma: {cfg.algorithm.gamma})\n"
+        else:
+            algo_info = f"• [bold]Algorithm:[/bold] {cfg.algorithm.name} (Planner, Parameters: {cfg.algorithm.parameters})\n"
+
+        if cfg.training is not None:
+            train_info = f"• [bold]Training:[/bold] {cfg.training.total_timesteps:,} steps (Checkpoint freq: {cfg.training.checkpoint_freq})\n"
+        else:
+            train_info = "• [bold]Training:[/bold] N/A (Classical Planner - Direct Search)\n"
+
         console.print(
             Panel.fit(
                 f"[bold green]✓ Configuration is valid![/bold green]\n\n"
                 f"• [bold]Experiment:[/bold] {cfg.name}\n"
                 f"• [bold]Seed:[/bold] {cfg.seed}\n"
-                f"• [bold]Algorithm:[/bold] {cfg.algorithm.name} (LR: {cfg.algorithm.learning_rate}, Gamma: {cfg.algorithm.gamma})\n"
+                f"{algo_info}"
                 f"• [bold]Environment:[/bold] {cfg.environment.name} (Max steps: {cfg.environment.max_steps})\n"
-                f"• [bold]Training:[/bold] {cfg.training.total_timesteps:,} steps (Checkpoint freq: {cfg.training.checkpoint_freq})\n"
+                f"{train_info}"
                 f"• [bold]Evaluation:[/bold] {cfg.evaluation.eval_episodes} episodes"
                 f"{curr_info}",
                 title=f"Valid: {path}",
@@ -399,6 +449,13 @@ def train(
         exp_config = load_config(config)
     except ConfigError as err:
         console.print(f"[bold red]Configuration error:[/bold red] {err}")
+        raise typer.Exit(code=1)
+
+    if exp_config.training is None:
+        console.print(
+            f"[bold red]Cannot train '{exp_config.algorithm.name}':[/bold red] "
+            "Classical planners do not have a training phase. Use 'adaptive-rl experiment run' instead."
+        )
         raise typer.Exit(code=1)
 
     if timesteps is not None:
@@ -753,6 +810,42 @@ def inspect_algorithm(
             content,
             title=f"Algorithm: {meta.name.upper()}",
             border_style="cyan",
+        )
+    )
+
+
+@algorithm_app.command(name="resolve")
+def resolve_algorithm_cmd(
+    name: str = typer.Argument(
+        ..., help="Algorithm name to resolve (e.g. ppo, sac, astar, rrt_star)"
+    ),
+) -> None:
+    """Resolve and display the factory callable and metadata for a registered algorithm."""
+    from adaptive_rl.algorithms.registry import (
+        AlgorithmRegistryError,
+        get_algorithm_factory,
+        get_algorithm_metadata,
+    )
+
+    try:
+        factory = get_algorithm_factory(name)
+        meta = get_algorithm_metadata(name)
+    except AlgorithmRegistryError as err:
+        console.print(f"[bold red]Algorithm resolution failed:[/bold red] {err}")
+        raise typer.Exit(code=1)
+
+    factory_name = getattr(factory, "__qualname__", getattr(factory, "__name__", str(factory)))
+    module_name = getattr(factory, "__module__", "unknown")
+
+    console.print(
+        Panel.fit(
+            f"[bold]Canonical Name:[/bold] {meta.name}\n"
+            f"[bold]Kind:[/bold] {meta.kind.value}\n"
+            f"[bold]Resolved Factory:[/bold] {module_name}.{factory_name}\n"
+            f"[bold]Action Space:[/bold] {meta.action_space}\n"
+            f"[bold]Trainable:[/bold] {'Yes' if meta.trainable else 'No (classical planner)'}",
+            title=f"Resolved: {meta.name}",
+            border_style="green",
         )
     )
 

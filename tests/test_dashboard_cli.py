@@ -288,17 +288,18 @@ class TestInfoAndVersion:
         assert result.exit_code == 0
 
     def test_info_shows_phase_12(self) -> None:
-        """info command shows Phase 12 as COMPLETED."""
+        """info command shows Phase 12 roadmap entry."""
         result = runner.invoke(app, ["info"])
         assert result.exit_code == 0
         assert "Phase 12" in result.output
-        assert "COMPLETED" in result.output
+        assert "IMPLEMENTED & TESTED" in result.output
 
     def test_info_shows_phase_17(self) -> None:
-        """info command shows Phase 17 as COMPLETED."""
+        """info command shows Phase 17 roadmap entry."""
         result = runner.invoke(app, ["info"])
         assert result.exit_code == 0
         assert "Phase 17" in result.output
+        assert "IMPLEMENTED & TESTED" in result.output
 
     def test_algorithm_help(self) -> None:
         """algorithm --help returns exit code 0."""
