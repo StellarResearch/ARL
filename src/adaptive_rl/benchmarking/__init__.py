@@ -85,8 +85,15 @@ class BenchmarkResult:
         environment: Environment name.
         seeds: Seeds used.
         seed_results: Per-seed evaluation results.
-        aggregate: Aggregated statistics per metric.
+        aggregate: Aggregated statistics per metric over successful seeds.
         successful_seeds: Number of seeds that completed without error.
+        total_seeds: Alias for requested_seeds (backward compatibility).
+        requested_seeds: Total number of seeds requested for this benchmark.
+        failed_seeds: Number of seeds that failed.
+        successful_seed_ids: List of seed values that succeeded.
+        failed_seed_ids: List of seed values that failed.
+        failure_reasons: Mapping from failed seed to error message.
+        complete: True if all requested seeds succeeded without failure.
     """
 
     name: str
@@ -96,6 +103,42 @@ class BenchmarkResult:
     seed_results: List[SeedResult] = field(default_factory=list)
     aggregate: Dict[str, AggregateStats] = field(default_factory=dict)
     successful_seeds: int = 0
+    total_seeds: int = 0
+    requested_seeds: int = 0
+    failed_seeds: int = 0
+    successful_seed_ids: List[int] = field(default_factory=list)
+    failed_seed_ids: List[int] = field(default_factory=list)
+    failure_reasons: Dict[int, str] = field(default_factory=dict)
+    complete: bool = True
+
+    def __post_init__(self) -> None:
+        """Ensure seed counts, status flags, and seed ID lists are initialized."""
+        if self.requested_seeds == 0 and self.seeds:
+            self.requested_seeds = len(self.seeds)
+        if self.total_seeds == 0:
+            self.total_seeds = self.requested_seeds
+
+        if self.seed_results:
+            if not self.successful_seed_ids:
+                self.successful_seed_ids = [sr.seed for sr in self.seed_results if sr.success]
+            if not self.failed_seed_ids:
+                self.failed_seed_ids = [sr.seed for sr in self.seed_results if not sr.success]
+            if not self.failure_reasons:
+                self.failure_reasons = {
+                    sr.seed: sr.error_message
+                    for sr in self.seed_results
+                    if not sr.success and sr.error_message
+                }
+            self.successful_seeds = len(self.successful_seed_ids)
+            self.failed_seeds = len(self.failed_seed_ids)
+            self.complete = (
+                self.failed_seeds == 0 and self.successful_seeds == self.requested_seeds
+            )
+        else:
+            self.failed_seeds = self.requested_seeds - self.successful_seeds
+            self.complete = (
+                self.failed_seeds == 0 and self.successful_seeds == self.requested_seeds
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to plain dictionary (JSON-serializable)."""
@@ -104,8 +147,14 @@ class BenchmarkResult:
             "algorithm": self.algorithm,
             "environment": self.environment,
             "seeds": self.seeds,
+            "requested_seeds": self.requested_seeds,
+            "total_seeds": self.total_seeds,
             "successful_seeds": self.successful_seeds,
-            "total_seeds": len(self.seeds),
+            "failed_seeds": self.failed_seeds,
+            "successful_seed_ids": self.successful_seed_ids,
+            "failed_seed_ids": self.failed_seed_ids,
+            "failure_reasons": self.failure_reasons,
+            "complete": self.complete,
             "seed_results": [
                 {
                     "seed": sr.seed,
@@ -164,6 +213,8 @@ def compute_aggregate_stats(
 ) -> AggregateStats:
     """Compute aggregate statistics for a metric across seeds.
 
+    Filters out NaN or non-finite values safely without crashing.
+
     Args:
         metric_name: Name of the metric.
         values: List of per-seed scalar values.
@@ -181,14 +232,31 @@ def compute_aggregate_stats(
             n_seeds=0,
             values=[],
         )
-    arr = np.array(values, dtype=float)
+
+    valid = [
+        float(v)
+        for v in values
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and not np.isnan(v)
+    ]
+    if not valid:
+        return AggregateStats(
+            metric_name=metric_name,
+            mean=float("nan"),
+            std=float("nan"),
+            min=float("nan"),
+            max=float("nan"),
+            n_seeds=0,
+            values=list(values),
+        )
+
+    arr = np.array(valid, dtype=float)
     return AggregateStats(
         metric_name=metric_name,
         mean=float(np.mean(arr)),
         std=float(np.std(arr)),
         min=float(np.min(arr)),
         max=float(np.max(arr)),
-        n_seeds=len(values),
+        n_seeds=len(valid),
         values=list(values),
     )
 
@@ -286,6 +354,7 @@ class BenchmarkRunner:
 
         # Aggregate
         successful = [sr for sr in seed_results if sr.success]
+        failed = [sr for sr in seed_results if not sr.success]
         aggregate = self._aggregate(successful)
 
         return BenchmarkResult(
@@ -296,6 +365,13 @@ class BenchmarkRunner:
             seed_results=seed_results,
             aggregate=aggregate,
             successful_seeds=len(successful),
+            total_seeds=len(self.seeds),
+            requested_seeds=len(self.seeds),
+            failed_seeds=len(failed),
+            successful_seed_ids=[sr.seed for sr in successful],
+            failed_seed_ids=[sr.seed for sr in failed],
+            failure_reasons={sr.seed: sr.error_message for sr in failed if sr.error_message},
+            complete=(len(failed) == 0 and len(successful) == len(self.seeds)),
         )
 
     def compare(
@@ -344,7 +420,7 @@ class BenchmarkRunner:
                 entry["arm_b_std"] = None
 
             if a_stats is not None and b_stats is not None:
-                if not (a_stats.mean != a_stats.mean or b_stats.mean != b_stats.mean):  # nan check
+                if not (np.isnan(a_stats.mean) or np.isnan(b_stats.mean)):
                     entry["delta"] = b_stats.mean - a_stats.mean
                     entry["pct_change"] = (
                         (b_stats.mean - a_stats.mean) / abs(a_stats.mean) * 100

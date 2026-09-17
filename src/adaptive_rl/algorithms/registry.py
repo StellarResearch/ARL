@@ -7,6 +7,7 @@ between algorithm types via capability metadata.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
@@ -82,6 +83,25 @@ class AlgorithmRegistry:
     def __init__(self) -> None:
         self._factories: Dict[str, Callable[..., Any]] = {}
         self._metadata: Dict[str, AlgorithmMetadata] = {}
+        self._aliases: Dict[str, str] = {}
+
+    def _normalize_name(self, name: str) -> str:
+        """Normalize algorithm name, resolving registered aliases."""
+        clean = name.strip().lower()
+        return self._aliases.get(clean, clean)
+
+    def register_alias(self, alias: str, target: str) -> None:
+        """Register an alternative name alias for a target algorithm.
+
+        Args:
+            alias: Case-insensitive alias name (e.g. 'rrt').
+            target: Case-insensitive target canonical name (e.g. 'rrt_star').
+        """
+        if not alias or not isinstance(alias, str):
+            raise AlgorithmRegistryError("Alias must be a non-empty string.")
+        if not target or not isinstance(target, str):
+            raise AlgorithmRegistryError("Target must be a non-empty string.")
+        self._aliases[alias.strip().lower()] = target.strip().lower()
 
     def register(
         self,
@@ -114,7 +134,9 @@ class AlgorithmRegistry:
 
         self._factories[clean] = factory
         if metadata is not None:
-            self._metadata[clean] = metadata
+            meta_copy = copy.deepcopy(metadata)
+            meta_copy.name = clean
+            self._metadata[clean] = meta_copy
         else:
             self._metadata[clean] = AlgorithmMetadata(
                 name=clean,
@@ -134,7 +156,7 @@ class AlgorithmRegistry:
         Raises:
             AlgorithmRegistryError: If name is not registered.
         """
-        clean = name.strip().lower()
+        clean = self._normalize_name(name)
         if clean not in self._factories:
             available = ", ".join(sorted(self._factories.keys())) or "none"
             raise AlgorithmRegistryError(
@@ -168,13 +190,13 @@ class AlgorithmRegistry:
         Raises:
             AlgorithmRegistryError: If name is not registered.
         """
-        clean = name.strip().lower()
+        clean = self._normalize_name(name)
         if clean not in self._metadata:
             available = ", ".join(sorted(self._metadata.keys())) or "none"
             raise AlgorithmRegistryError(
                 f"Unknown algorithm '{clean}'. Available registered algorithms: {available}"
             )
-        return self._metadata[clean]
+        return copy.deepcopy(self._metadata[clean])
 
     def list_algorithms(self) -> List[str]:
         """Return sorted list of registered algorithm names."""
@@ -193,7 +215,7 @@ class AlgorithmRegistry:
 
     def list_all_metadata(self) -> Dict[str, AlgorithmMetadata]:
         """Return mapping of all registered algorithm names to metadata."""
-        return {k: self._metadata[k] for k in sorted(self._metadata.keys())}
+        return {k: copy.deepcopy(self._metadata[k]) for k in sorted(self._metadata.keys())}
 
     def is_trainable(self, name: str) -> bool:
         """Return True if the named algorithm is a trainable RL policy.
@@ -210,6 +232,12 @@ class AlgorithmRegistry:
         """Clear all registered algorithms (primarily for test isolation)."""
         self._factories.clear()
         self._metadata.clear()
+        self._aliases.clear()
+
+    def restore_defaults(self) -> None:
+        """Reset the registry to the built-in default algorithms and aliases."""
+        self.clear()
+        _register_defaults(self)
 
 
 # ---------------------------------------------------------------------------
@@ -218,14 +246,15 @@ class AlgorithmRegistry:
 algorithm_registry = AlgorithmRegistry()
 
 
-def _register_defaults() -> None:
-    """Register the built-in algorithms into the global registry."""
+def _register_defaults(registry: Optional[AlgorithmRegistry] = None) -> None:
+    """Register the built-in algorithms into the global or specified registry."""
+    reg = registry if registry is not None else algorithm_registry
     from adaptive_rl.algorithms.ppo import PPOAlgorithm
     from adaptive_rl.algorithms.sac import SACAlgorithm
     from adaptive_rl.planners.astar import AStarPlanner
 
-    if "ppo" not in algorithm_registry.list_algorithms():
-        algorithm_registry.register(
+    if "ppo" not in reg.list_algorithms():
+        reg.register(
             "ppo",
             PPOAlgorithm,
             AlgorithmMetadata(
@@ -254,8 +283,8 @@ def _register_defaults() -> None:
             ),
         )
 
-    if "sac" not in algorithm_registry.list_algorithms():
-        algorithm_registry.register(
+    if "sac" not in reg.list_algorithms():
+        reg.register(
             "sac",
             SACAlgorithm,
             AlgorithmMetadata(
@@ -283,8 +312,8 @@ def _register_defaults() -> None:
             ),
         )
 
-    if "astar" not in algorithm_registry.list_algorithms():
-        algorithm_registry.register(
+    if "astar" not in reg.list_algorithms():
+        reg.register(
             "astar",
             AStarPlanner,
             AlgorithmMetadata(
@@ -302,10 +331,10 @@ def _register_defaults() -> None:
             ),
         )
 
-    if "rrt_star" not in algorithm_registry.list_algorithms():
+    if "rrt_star" not in reg.list_algorithms():
         from adaptive_rl.planners.rrt_star import RRTStarPlanner
 
-        algorithm_registry.register(
+        reg.register(
             "rrt_star",
             RRTStarPlanner,
             AlgorithmMetadata(
@@ -329,14 +358,20 @@ def _register_defaults() -> None:
             ),
         )
 
+    # Register default convenience aliases
+    reg.register_alias("rrt", "rrt_star")
+    reg.register_alias("rrt*", "rrt_star")
+
 
 _register_defaults()
 
 # Public convenience API (mirrors environment registry pattern)
 register_algorithm = algorithm_registry.register
+register_algorithm_alias = algorithm_registry.register_alias
 get_algorithm_factory = algorithm_registry.get_factory
 resolve_algorithm = algorithm_registry.resolve
 get_algorithm_metadata = algorithm_registry.get_metadata
 list_algorithms = algorithm_registry.list_algorithms
 list_algorithms_by_kind = algorithm_registry.list_by_kind
 list_all_algorithm_metadata = algorithm_registry.list_all_metadata
+restore_defaults = algorithm_registry.restore_defaults

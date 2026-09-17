@@ -270,3 +270,41 @@ class TestGlobalAlgorithmRegistry:
 
         with pytest.raises(AlgorithmRegistryError, match="Unknown algorithm 'nonexistent'"):
             resolve_algorithm("nonexistent")
+
+    def test_algorithm_aliases(self) -> None:
+        """Registered aliases resolve to target algorithm."""
+        from adaptive_rl.algorithms.registry import algorithm_registry
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        assert algorithm_registry.resolve("rrt") is RRTStarPlanner
+        assert algorithm_registry.resolve("rrt*") is RRTStarPlanner
+        assert algorithm_registry.resolve("RRT*") is RRTStarPlanner
+
+        meta_rrt = algorithm_registry.get_metadata("rrt")
+        meta_star = algorithm_registry.get_metadata("rrt*")
+        assert meta_rrt.name == "rrt_star"
+        assert meta_star.name == "rrt_star"
+
+    def test_metadata_defensive_copy(self) -> None:
+        """Modifying retrieved metadata does not mutate registry state."""
+        from adaptive_rl.algorithms.registry import algorithm_registry
+
+        meta = algorithm_registry.get_metadata("astar")
+        meta.tags.append("mutated_tag")
+        meta.hyperparameters["fake_param"] = "fake_val"
+
+        fresh_meta = algorithm_registry.get_metadata("astar")
+        assert "mutated_tag" not in fresh_meta.tags
+        assert "fake_param" not in fresh_meta.hyperparameters
+
+    def test_registry_restore_defaults(self) -> None:
+        """restore_defaults cleanly repopulates canonical algorithms and aliases."""
+        from adaptive_rl.algorithms.registry import algorithm_registry
+
+        algorithm_registry.register("custom_temp", lambda **kw: object())
+        assert "custom_temp" in algorithm_registry.list_algorithms()
+
+        algorithm_registry.restore_defaults()
+        assert "custom_temp" not in algorithm_registry.list_algorithms()
+        assert "astar" in algorithm_registry.list_algorithms()
+        assert "rrt_star" in algorithm_registry.list_algorithms()

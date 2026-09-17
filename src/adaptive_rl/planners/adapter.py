@@ -7,15 +7,21 @@ comparison of planners and RL agents across discrete (GridWorld) and continuous 
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Union, cast
 
 import numpy as np
 
 from adaptive_rl.environments.gridworld.grid import GridWorldEnv
 from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
 from adaptive_rl.planners.astar import AStarPlanner
-from adaptive_rl.planners.base import BasePlanner, GridCoordinate, PlannerResult
+from adaptive_rl.planners.base import (
+    BasePlanner,
+    ContinuousCoordinate,
+    GridCoordinate,
+    PlannerResult,
+)
 from adaptive_rl.planners.rrt_star import RRTStarPlanner
 
 
@@ -43,13 +49,13 @@ class PlannerEvaluationMetrics:
 
     episodes: int
     success_rate: float = 0.0
-    mean_path_length: float = 0.0
-    std_path_length: float = 0.0
-    min_path_length: float = 0.0
-    max_path_length: float = 0.0
+    mean_path_length: Optional[float] = None
+    std_path_length: Optional[float] = None
+    min_path_length: Optional[float] = None
+    max_path_length: Optional[float] = None
     mean_planning_time: float = 0.0
     std_planning_time: float = 0.0
-    collision_rate: float = 0.0  # Always 0.0 for validated planners
+    collision_rate: float = 0.0  # 0.0 for validated planners (no colliding paths are executed)
     all_path_lengths: List[float] = field(default_factory=list)
     all_planning_times: List[float] = field(default_factory=list)
     additional_metrics: Dict[str, Any] = field(default_factory=dict)
@@ -171,17 +177,30 @@ class PlannerAdapter:
             goal: GridCoordinate = info.get("goal_pos", env._goal_pos)
             obstacles: Set[GridCoordinate] = set(env._obstacles)
 
-            result: PlannerResult = planner.plan(
-                start=start,
-                goal=goal,
-                obstacles=obstacles,
-                width=env.width,
-                height=env.height,
-            )
+            try:
+                result: PlannerResult = planner.plan(
+                    start=start,
+                    goal=goal,
+                    obstacles=obstacles,
+                    width=env.width,
+                    height=env.height,
+                )
+            except ValueError as exc:
+                result = PlannerResult(success=False, failure_reason=str(exc))
 
             planning_times.append(result.planning_time_seconds)
 
-            if result.success and result.is_valid(start, goal, obstacles):
+            valid = (
+                result.success
+                and len(result.path) >= 1
+                and result.path[0] == start
+                and result.path[-1] == goal
+                and AStarPlanner.validate_path(
+                    cast(List[GridCoordinate], result.path), obstacles, env.width, env.height
+                )
+            )
+
+            if valid:
                 successes += 1
                 path_lengths.append(float(result.path_length))
                 successful_path_lengths.append(float(result.path_length))
@@ -220,40 +239,47 @@ class PlannerAdapter:
             goal = (float(info["goal_pos"][0]), float(info["goal_pos"][1]))
             obstacles = list(info.get("obstacles", env._obstacles))
 
-            result = planner.plan(
-                start=start,
-                goal=goal,
-                arena_width=env.arena_width,
-                arena_height=env.arena_height,
-                obstacles=obstacles,
-                agent_radius=env.agent_radius,
-                goal_radius=env.goal_radius,
-                seed_override=seed,
-            )
+            try:
+                result = planner.plan(
+                    start=start,
+                    goal=goal,
+                    arena_width=env.arena_width,
+                    arena_height=env.arena_height,
+                    obstacles=obstacles,
+                    agent_radius=env.agent_radius,
+                    goal_radius=env.goal_radius,
+                    seed_override=seed,
+                )
+            except ValueError as exc:
+                result = PlannerResult(success=False, failure_reason=str(exc))
 
             planning_times.append(result.planning_time_seconds)
 
-            if result.success and len(result.path) >= 2:
-                # Validate that path is collision-free
-                valid = True
-                for i in range(len(result.path) - 1):
-                    if not planner.is_segment_valid(
-                        result.path[i],
-                        result.path[i + 1],
-                        env.arena_width,
-                        env.arena_height,
-                        obstacles,
-                        env.agent_radius,
-                    ):
-                        valid = False
-                        break
+            goal_reached = False
+            if result.success and len(result.path) >= 1:
+                dist_to_goal = math.hypot(
+                    result.path[-1][0] - goal[0], result.path[-1][1] - goal[1]
+                )
+                goal_reached = (result.path[-1] == goal) or (dist_to_goal <= env.goal_radius)
 
-                if valid:
-                    successes += 1
-                    path_lengths.append(float(result.path_length))
-                    successful_path_lengths.append(float(result.path_length))
-                else:
-                    path_lengths.append(0.0)
+            valid = (
+                result.success
+                and len(result.path) >= 1
+                and result.path[0] == start
+                and goal_reached
+                and planner.validate_path(
+                    cast(List[ContinuousCoordinate], result.path),
+                    env.arena_width,
+                    env.arena_height,
+                    obstacles,
+                    env.agent_radius,
+                )
+            )
+
+            if valid:
+                successes += 1
+                path_lengths.append(float(result.path_length))
+                successful_path_lengths.append(float(result.path_length))
             else:
                 path_lengths.append(0.0)
 
@@ -279,12 +305,12 @@ class PlannerAdapter:
     ) -> PlannerEvaluationMetrics:
         """Construct PlannerEvaluationMetrics dataclass."""
         success_rate = successes / num_episodes
-        mean_path = float(np.mean(successful_path_lengths)) if successful_path_lengths else 0.0
-        std_path = float(np.std(successful_path_lengths)) if successful_path_lengths else 0.0
-        min_path = float(np.min(successful_path_lengths)) if successful_path_lengths else 0.0
-        max_path = float(np.max(successful_path_lengths)) if successful_path_lengths else 0.0
-        mean_pt = float(np.mean(planning_times))
-        std_pt = float(np.std(planning_times))
+        mean_path = float(np.mean(successful_path_lengths)) if successful_path_lengths else None
+        std_path = float(np.std(successful_path_lengths)) if successful_path_lengths else None
+        min_path = float(np.min(successful_path_lengths)) if successful_path_lengths else None
+        max_path = float(np.max(successful_path_lengths)) if successful_path_lengths else None
+        mean_pt = float(np.mean(planning_times)) if planning_times else 0.0
+        std_pt = float(np.std(planning_times)) if planning_times else 0.0
 
         return PlannerEvaluationMetrics(
             episodes=num_episodes,
@@ -302,5 +328,7 @@ class PlannerAdapter:
                 "planner": self.planner.name,
                 "environment": env_name,
                 "base_seed": base_seed,
+                "successful_episodes": successes,
+                "collision_semantics": "0.0 represents that no invalid or colliding paths were executed (offline path validation).",
             },
         )

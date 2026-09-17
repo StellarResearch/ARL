@@ -93,6 +93,8 @@ class RRTStarPlanner:
             raise ValueError(f"goal_bias must be in [0.0, 1.0], got {goal_bias}")
         if search_radius <= 0:
             raise ValueError(f"search_radius must be positive, got {search_radius}")
+        if collision_resolution <= 0:
+            raise ValueError(f"collision_resolution must be positive, got {collision_resolution}")
 
         self.step_size = step_size
         self.max_iterations = max_iterations
@@ -177,15 +179,28 @@ class RRTStarPlanner:
         Returns:
             True if path is valid, False otherwise.
         """
-        if not path or len(path) < 2:
+        if not path:
             return False
         obstacles = obstacles or []
+        if len(path) == 1:
+            return self.is_point_valid(path[0], arena_width, arena_height, obstacles, agent_radius)
+
         for i in range(len(path) - 1):
             if not self.is_segment_valid(
                 path[i], path[i + 1], arena_width, arena_height, obstacles, agent_radius
             ):
                 return False
         return True
+
+    @staticmethod
+    def _is_ancestor(potential_ancestor: RRTNode, node: RRTNode) -> bool:
+        """Check if potential_ancestor is an ancestor of node to prevent cycles during rewiring."""
+        curr: Optional[RRTNode] = node.parent
+        while curr is not None:
+            if curr is potential_ancestor:
+                return True
+            curr = curr.parent
+        return False
 
     def plan(
         self,
@@ -212,14 +227,37 @@ class RRTStarPlanner:
 
         Returns:
             PlannerResult with success flag, coordinate path, length, and runtime.
+
+        Raises:
+            ValueError: If arena dimensions, agent_radius, goal_radius, coordinate types,
+                or obstacle definitions are invalid.
         """
         obstacles = obstacles or []
         t_start = time.perf_counter()
 
+        if arena_width <= 0 or arena_height <= 0:
+            raise ValueError(
+                f"Arena dimensions must be positive, got width={arena_width}, height={arena_height}."
+            )
+        if agent_radius < 0:
+            raise ValueError(f"agent_radius must be non-negative, got {agent_radius}.")
+        if goal_radius <= 0:
+            raise ValueError(f"goal_radius must be positive, got {goal_radius}.")
         if arena_width <= 2 * agent_radius or arena_height <= 2 * agent_radius:
             raise ValueError(
                 f"Arena dimensions ({arena_width}x{arena_height}) too small for agent_radius {agent_radius}."
             )
+
+        if not (isinstance(start, (tuple, list)) and len(start) == 2 and isinstance(start[0], (int, float)) and isinstance(start[1], (int, float))):
+            raise ValueError(f"Start coordinate {start} must be a 2-tuple of numbers.")
+        if not (isinstance(goal, (tuple, list)) and len(goal) == 2 and isinstance(goal[0], (int, float)) and isinstance(goal[1], (int, float))):
+            raise ValueError(f"Goal coordinate {goal} must be a 2-tuple of numbers.")
+
+        for obs in obstacles:
+            if not (isinstance(obs, (tuple, list)) and len(obs) == 3):
+                raise ValueError(f"Invalid circular obstacle {obs}: expected (x, y, radius) 3-tuple.")
+            if obs[2] < 0:
+                raise ValueError(f"Obstacle radius cannot be negative, got {obs[2]}.")
 
         # Seed handling
         rng_seed = seed_override if seed_override is not None else self.seed
@@ -241,14 +279,24 @@ class RRTStarPlanner:
 
         # Trivial check: start already in goal
         if _euclidean_dist(start, goal) <= goal_radius:
-            elapsed = time.perf_counter() - t_start
-            return PlannerResult(
-                success=True,
-                path=[start, goal],
-                path_length=_euclidean_dist(start, goal),
-                planning_time_seconds=elapsed,
-                nodes_explored=1,
-            )
+            if start == goal:
+                elapsed = time.perf_counter() - t_start
+                return PlannerResult(
+                    success=True,
+                    path=[start],
+                    path_length=0.0,
+                    planning_time_seconds=elapsed,
+                    nodes_explored=1,
+                )
+            elif self.is_segment_valid(start, goal, arena_width, arena_height, obstacles, agent_radius):
+                elapsed = time.perf_counter() - t_start
+                return PlannerResult(
+                    success=True,
+                    path=[start, goal],
+                    path_length=_euclidean_dist(start, goal),
+                    planning_time_seconds=elapsed,
+                    nodes_explored=1,
+                )
 
         root = RRTNode(x=start[0], y=start[1], cost=0.0)
         tree: List[RRTNode] = [root]
@@ -309,6 +357,8 @@ class RRTStarPlanner:
             for near in near_nodes:
                 if near is min_node:
                     continue
+                if self._is_ancestor(near, new_node):
+                    continue
                 d = _euclidean_dist(new_node.pos, near.pos)
                 if new_node.cost + d < near.cost:
                     if self.is_segment_valid(
@@ -320,6 +370,8 @@ class RRTStarPlanner:
                         near.parent = new_node
                         new_node.children.append(near)
                         self._update_subtree_costs(near, new_node.cost + d)
+                        if best_goal_node is not None:
+                            best_goal_cost = best_goal_node.cost + _euclidean_dist(best_goal_node.pos, goal)
 
             # Check goal reaching
             dist_to_goal = _euclidean_dist(new_node.pos, goal)
@@ -345,7 +397,7 @@ class RRTStarPlanner:
             )
 
         # Reconstruct path
-        path: List[ContinuousCoordinate] = [goal]
+        path: List[ContinuousCoordinate] = [goal] if best_goal_node.pos != goal else []
         curr: Optional[RRTNode] = best_goal_node
         while curr is not None:
             path.append(curr.pos)

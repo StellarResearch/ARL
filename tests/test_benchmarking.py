@@ -52,6 +52,23 @@ class TestAggregateStats:
         assert math.isnan(stats.std)
         assert stats.n_seeds == 0
 
+    def test_all_nans_produces_nan(self) -> None:
+        """List with all NaNs produces NaN stats without crashing and n_seeds=0."""
+        import math
+
+        stats = compute_aggregate_stats("nans", [float("nan"), float("nan")])
+        assert math.isnan(stats.mean)
+        assert math.isnan(stats.std)
+        assert stats.n_seeds == 0
+
+    def test_mixed_nan_and_valid_values(self) -> None:
+        """NaN values are safely filtered out while valid values are computed."""
+        import math
+
+        stats = compute_aggregate_stats("mixed", [1.0, float("nan"), 3.0])
+        assert math.isclose(stats.mean, 2.0)
+        assert stats.n_seeds == 2
+
     def test_to_dict_structure(self) -> None:
         """AggregateStats.to_dict() returns expected keys."""
         stats = compute_aggregate_stats("metric", [0.0, 1.0])
@@ -266,3 +283,93 @@ class TestBenchmarkRunner:
         if "success_rate" in aggregate:
             # Only 1 seed contributed
             assert aggregate["success_rate"].n_seeds == 1
+
+    def test_benchmark_result_total_seeds(self) -> None:
+        """BenchmarkResult initializes total_seeds properly and serializes it."""
+        res = BenchmarkResult(
+            name="test",
+            algorithm="astar",
+            environment="gridworld",
+            seeds=[10, 20, 30],
+        )
+        assert res.total_seeds == 3
+        d = res.to_dict()
+        assert d["total_seeds"] == 3
+
+    def test_compare_edge_cases_nan_and_asymmetric(self) -> None:
+        """compare handles NaN metrics and asymmetric metrics gracefully."""
+        from unittest.mock import MagicMock
+
+        runner = BenchmarkRunner(seeds=[42])
+        res_a = BenchmarkResult(
+            name="arm_a",
+            algorithm="algo_a",
+            environment="env",
+            seeds=[42],
+            aggregate={
+                "metric_common": compute_aggregate_stats("metric_common", [0.0]),
+                "metric_only_a": compute_aggregate_stats("metric_only_a", [10.0]),
+                "metric_nan": compute_aggregate_stats("metric_nan", [float("nan")]),
+            },
+        )
+        res_b = BenchmarkResult(
+            name="arm_b",
+            algorithm="algo_b",
+            environment="env",
+            seeds=[42],
+            aggregate={
+                "metric_common": compute_aggregate_stats("metric_common", [1.0]),
+                "metric_only_b": compute_aggregate_stats("metric_only_b", [20.0]),
+                "metric_nan": compute_aggregate_stats("metric_nan", [float("nan")]),
+            },
+        )
+
+        runner.run = MagicMock(side_effect=[res_a, res_b])  # type: ignore
+        report = runner.compare(Path("fake_a.yaml"), Path("fake_b.yaml"))
+
+        comp = report.comparison
+        # Common with arm_a=0.0 -> delta=1.0, pct_change is None (no zero division crash)
+        assert comp["metric_common"]["delta"] == 1.0
+        assert comp["metric_common"]["pct_change"] is None
+
+        # Asymmetric only in a
+        assert comp["metric_only_a"]["arm_a_mean"] == 10.0
+        assert comp["metric_only_a"]["arm_b_mean"] is None
+        assert comp["metric_only_a"]["delta"] is None
+
+        # Asymmetric only in b
+        assert comp["metric_only_b"]["arm_a_mean"] is None
+        assert comp["metric_only_b"]["arm_b_mean"] == 20.0
+        assert comp["metric_only_b"]["delta"] is None
+
+        # NaNs
+        assert comp["metric_nan"]["delta"] is None
+
+    def test_benchmark_result_partial_failure_accounting(self) -> None:
+        """BenchmarkResult accurately tracks partial failures and completion status."""
+        seed_results = [
+            SeedResult(seed=42, success=True, metrics={"success_rate": 1.0}),
+            SeedResult(seed=43, success=False, metrics={}, error_message="Environment timeout"),
+        ]
+        res = BenchmarkResult(
+            name="partial_bench",
+            algorithm="astar",
+            environment="gridworld",
+            seeds=[42, 43],
+            seed_results=seed_results,
+        )
+
+        assert res.requested_seeds == 2
+        assert res.successful_seeds == 1
+        assert res.failed_seeds == 1
+        assert res.successful_seed_ids == [42]
+        assert res.failed_seed_ids == [43]
+        assert res.failure_reasons == {43: "Environment timeout"}
+        assert res.complete is False
+
+        # Verify in serialized dict
+        d = res.to_dict()
+        assert d["complete"] is False
+        assert d["failed_seeds"] == 1
+        assert d["failed_seed_ids"] == [43]
+        assert d["failure_reasons"][43] == "Environment timeout"

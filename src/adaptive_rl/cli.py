@@ -1017,6 +1017,9 @@ def benchmark(
     output_dir: Optional[Path] = typer.Option(
         None, "--output-dir", help="Base directory for experiment artifacts"
     ),
+    strict: bool = typer.Option(
+        False, "--strict", help="Fail with exit code 1 if any seed fails"
+    ),
 ) -> None:
     """Run multi-seed benchmark evaluation for an algorithm configuration.
 
@@ -1090,7 +1093,7 @@ def benchmark(
         result = runner.run(config_path=config)
 
         table = Table(
-            title=f"Benchmark Results: {result.name} ({result.successful_seeds}/{len(result.seeds)} seeds)"
+            title=f"Benchmark Results: {result.name} ({result.successful_seeds}/{result.requested_seeds} seeds)"
         )
         table.add_column("Metric", style="cyan")
         table.add_column("Mean", style="green", justify="right")
@@ -1108,6 +1111,36 @@ def benchmark(
             )
 
         console.print(table)
+
+        if result.failed_seeds > 0:
+            fail_details = "\n".join(
+                f"• Seed {seed_id}: {reason or 'Execution failed'}"
+                for seed_id, reason in result.failure_reasons.items()
+            ) or f"• Failed seed IDs: {result.failed_seed_ids}"
+            console.print(
+                Panel.fit(
+                    f"[bold yellow]Benchmark Partial Completion: {result.successful_seeds}/{result.requested_seeds} seeds succeeded.[/bold yellow]\n\n"
+                    f"[bold red]Failures ({result.failed_seeds} seeds):[/bold red]\n{fail_details}",
+                    title="Benchmark Warnings",
+                    border_style="yellow",
+                )
+            )
+
+        if result.successful_seeds == 0:
+            console.print(
+                Panel.fit(
+                    f"[bold red]Fatal Benchmark Failure: All {result.requested_seeds} seeds failed.[/bold red]",
+                    title="Benchmark Failed",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(code=1)
+
+        if strict and result.failed_seeds > 0:
+            console.print(
+                "[bold red]Strict mode enabled: Exiting with code 1 due to failed benchmark seeds.[/bold red]"
+            )
+            raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------

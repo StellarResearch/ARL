@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Dict, List, Optional, cast
 
 import yaml
 
@@ -47,6 +48,8 @@ class ExperimentManifest:
         artifact_paths: Dictionary mapping artifact names to their paths.
         evaluation_status: 'completed', 'failed', or 'skipped'.
         notes: Optional free-text notes.
+        experiment_name: Configured experiment name (stable identity).
+        base_experiment_id: Canonical base identifier before run counter disambiguation.
     """
 
     experiment_id: str
@@ -63,6 +66,8 @@ class ExperimentManifest:
     artifact_paths: Dict[str, str] = field(default_factory=dict)
     evaluation_status: str = "pending"
     notes: str = ""
+    experiment_name: str = ""
+    base_experiment_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize manifest to a plain dictionary."""
@@ -133,21 +138,36 @@ def _get_package_version(package: str) -> str:
         return "not_installed"
 
 
-def _make_experiment_id(config: ExperimentConfig) -> str:
-    """Generate a deterministic, filesystem-safe experiment identifier.
+def _sanitize_slug(text: str) -> str:
+    """Convert arbitrary text into a filesystem-safe identifier slug."""
+    cleaned = re.sub(r"[^\w\-]", "_", text.strip())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_").lower()
+    return cleaned
 
-    Format: ``YYYY-MM-DD_<env>_<algo>_seed<seed>``
+
+def _make_experiment_id(config: ExperimentConfig) -> str:
+    """Generate a deterministic, filesystem-safe base experiment identifier.
+
+    Format: ``YYYY-MM-DD_<name>_<env>_<algo>_seed<seed>`` or
+    ``YYYY-MM-DD_<name>_seed<seed>`` if name already includes env and algo.
 
     Args:
         config: Experiment configuration.
 
     Returns:
-        Experiment identifier string safe for use as a directory name.
+        Filesystem-safe experiment identifier string.
     """
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    env = config.environment.name.lower().replace(" ", "_")
-    algo = config.algorithm.name.lower().replace(" ", "_")
+    env = _sanitize_slug(config.environment.name)
+    algo = _sanitize_slug(config.algorithm.name)
     seed = config.seed
+
+    name_slug = _sanitize_slug(config.name) if getattr(config, "name", None) else ""
+    if name_slug:
+        if env in name_slug and algo in name_slug:
+            return f"{date_str}_{name_slug}_seed{seed}"
+        return f"{date_str}_{name_slug}_{env}_{algo}_seed{seed}"
+
     return f"{date_str}_{env}_{algo}_seed{seed}"
 
 
@@ -243,6 +263,30 @@ class ExperimentManager:
 
         return self.run(config=config, config_path=config_path)
 
+    def _resolve_unique_run(self, base_id: str) -> tuple[str, Path]:
+        """Resolve a unique, non-colliding experiment ID and artifact directory.
+
+        Guarantees that repeated runs with identical configurations create independent
+        artifact directories without overwriting previous runs.
+
+        Args:
+            base_id: Deterministic base experiment identifier.
+
+        Returns:
+            Tuple of (unique_experiment_id, unique_output_dir).
+        """
+        target_dir = self.base_output_dir / base_id
+        if not target_dir.exists():
+            return base_id, target_dir
+
+        counter = 2
+        while True:
+            candidate_id = f"{base_id}_run{counter:02d}"
+            candidate_dir = self.base_output_dir / candidate_id
+            if not candidate_dir.exists():
+                return candidate_id, candidate_dir
+            counter += 1
+
     def run(
         self,
         config: ExperimentConfig,
@@ -257,16 +301,22 @@ class ExperimentManager:
         Returns:
             ExperimentResult containing all metadata, metrics, and artifacts.
         """
-        experiment_id = _make_experiment_id(config)
-        output_dir = self.base_output_dir / experiment_id
+        from adaptive_rl.algorithms.registry import AlgorithmKind, algorithm_registry
+
+        base_id = _make_experiment_id(config)
+        experiment_id, output_dir = self._resolve_unique_run(base_id)
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Set config output paths to reflect the actual run output directory
+        config.output_dir = output_dir
+        config.log_dir = output_dir / "logs"
 
         # Create subdirectories
         (output_dir / "model").mkdir(exist_ok=True)
         (output_dir / "logs").mkdir(exist_ok=True)
         (output_dir / "plots").mkdir(exist_ok=True)
 
-        # Save config copy
+        # Save config copy reflecting actual executed paths
         config_copy_path = output_dir / "config.yaml"
         self._save_config_copy(config, config_copy_path)
 
@@ -275,11 +325,16 @@ class ExperimentManager:
             experiment_id=experiment_id,
             config=config,
             config_path=str(config_path or config_copy_path),
+            base_experiment_id=base_id,
         )
         manifest.artifact_paths["config"] = str(config_copy_path)
 
         algo_name = config.algorithm.name.lower()
-        is_planner = algo_name in ("astar", "rrt_star", "rrt")
+        try:
+            meta = algorithm_registry.get_metadata(algo_name)
+            is_planner = meta.kind == AlgorithmKind.PLANNER
+        except Exception:
+            is_planner = config.algorithm.is_planner
 
         if is_planner:
             result = self._run_planner_experiment(config, output_dir, manifest)
@@ -289,6 +344,7 @@ class ExperimentManager:
         # Save manifest
         manifest_path = output_dir / "manifest.json"
         manifest.save(manifest_path)
+        manifest.artifact_paths["manifest"] = str(manifest_path)
         result.manifest = manifest
 
         return result
@@ -323,6 +379,8 @@ class ExperimentManager:
         metrics: Dict[str, Any] = {}
         error_msg = ""
         success = True
+        trainer = None
+        eval_env = None
 
         try:
             trainer = get_trainer(config=config)
@@ -333,24 +391,22 @@ class ExperimentManager:
             manifest.training_timesteps = training_result.total_timesteps
 
             # Evaluate
-            from adaptive_rl.algorithms.base import BaseAlgorithm
-            from adaptive_rl.algorithms.ppo import PPOAlgorithm
-            from adaptive_rl.algorithms.sac import SACAlgorithm
+            from adaptive_rl.algorithms.registry import algorithm_registry
             from adaptive_rl.environments.registry import make_env
             from adaptive_rl.evaluation.evaluator import Evaluator
 
-            env = make_env(config.environment.name, **config.environment.parameters)
+            eval_env = make_env(config.environment.name, **config.environment.parameters)
 
             algo_name = config.algorithm.name.lower()
-            algo: BaseAlgorithm
-            if algo_name == "ppo":
-                algo = PPOAlgorithm.from_pretrained(model_path, env=env)
-            elif algo_name == "sac":
-                algo = SACAlgorithm.from_pretrained(model_path, env=env)
+            algo_factory = algorithm_registry.get_factory(algo_name)
+            if hasattr(algo_factory, "from_pretrained"):
+                algo = algo_factory.from_pretrained(model_path, env=eval_env)
             else:
-                algo = PPOAlgorithm.from_pretrained(model_path, env=env)
+                algo = algo_factory(env=eval_env)
+                if hasattr(algo, "load"):
+                    algo.load(model_path)
 
-            evaluator = Evaluator(algorithm=algo, env=env)
+            evaluator = Evaluator(algorithm=algo, env=eval_env)
             eval_metrics = evaluator.evaluate(
                 num_episodes=config.evaluation.eval_episodes,
                 deterministic=config.evaluation.deterministic,
@@ -384,13 +440,22 @@ class ExperimentManager:
             evaluator.save_report(eval_metrics, eval_path)
             manifest.artifact_paths["evaluation"] = str(eval_path)
 
-            env.close()
-
         except Exception as exc:
             success = False
             error_msg = str(exc)
             manifest.evaluation_status = "failed"
             manifest.notes = f"Error: {exc}"
+        finally:
+            if eval_env is not None:
+                try:
+                    eval_env.close()
+                except Exception:
+                    pass
+            if trainer is not None and hasattr(trainer, "close"):
+                try:
+                    trainer.close()
+                except Exception:
+                    pass
 
         return ExperimentResult(
             experiment_id=manifest.experiment_id,
@@ -422,28 +487,29 @@ class ExperimentManager:
         Returns:
             ExperimentResult with planner evaluation outputs.
         """
+        import inspect
+
+        from adaptive_rl.algorithms.registry import algorithm_registry
         from adaptive_rl.environments.registry import make_env
         from adaptive_rl.planners.adapter import PlannerAdapter
-        from adaptive_rl.planners.astar import AStarPlanner
 
         metrics: Dict[str, Any] = {}
         error_msg = ""
         success = True
+        env = None
 
         try:
             env = make_env(config.environment.name, **config.environment.parameters)
 
-            from adaptive_rl.planners.astar import AStarPlanner
-            from adaptive_rl.planners.rrt_star import RRTStarPlanner
-
-            planner: Union[AStarPlanner, RRTStarPlanner]
             algo_name = config.algorithm.name.lower()
-            if algo_name == "astar":
-                planner = AStarPlanner()
-            elif algo_name in ("rrt_star", "rrt*", "rrt"):
-                planner = RRTStarPlanner(seed=config.seed, **config.algorithm.parameters)
-            else:
-                raise ValueError(f"Unknown planner algorithm: '{algo_name}'")
+            planner_factory = algorithm_registry.get_factory(algo_name)
+
+            params = dict(config.algorithm.parameters)
+            sig = inspect.signature(planner_factory)
+            if "seed" in sig.parameters and "seed" not in params:
+                params["seed"] = config.seed
+
+            planner = planner_factory(**params)
 
             adapter = PlannerAdapter(planner=planner, env=env)  # type: ignore[arg-type]
             planner_metrics = adapter.evaluate(
@@ -474,13 +540,17 @@ class ExperimentManager:
             self._save_metrics_csv(metrics, csv_path)
             manifest.artifact_paths["metrics_csv"] = str(csv_path)
 
-            env.close()
-
         except Exception as exc:
             success = False
             error_msg = str(exc)
             manifest.evaluation_status = "failed"
             manifest.notes = f"Error: {exc}"
+        finally:
+            if env is not None:
+                try:
+                    env.close()
+                except Exception:
+                    pass
 
         return ExperimentResult(
             experiment_id=manifest.experiment_id,
@@ -501,6 +571,7 @@ class ExperimentManager:
         experiment_id: str,
         config: Optional[ExperimentConfig],
         config_path: str,
+        base_experiment_id: str = "",
     ) -> ExperimentManifest:
         """Build an experiment manifest from current runtime information."""
         try:
@@ -528,6 +599,8 @@ class ExperimentManager:
                 "torch": _get_package_version("torch"),
                 "pydantic": _get_package_version("pydantic"),
             },
+            experiment_name=config.name if config else "",
+            base_experiment_id=base_experiment_id or experiment_id,
         )
 
     @staticmethod

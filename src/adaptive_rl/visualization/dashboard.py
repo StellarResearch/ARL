@@ -8,8 +8,9 @@ No additional dependencies are required.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
+import numpy as np
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -24,23 +25,23 @@ console = Console()
 # ---------------------------------------------------------------------------
 
 
-def _fmt_pct(val: Optional[float]) -> str:
+def _fmt_pct(val: Any) -> str:
     """Format a [0, 1] fraction as a percentage string."""
-    if val is None or val != val:  # None or NaN
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool) or np.isnan(val):
         return "N/A"
     return f"{val * 100:.1f}%"
 
 
-def _fmt_float(val: Optional[float], decimals: int = 2) -> str:
+def _fmt_float(val: Any, decimals: int = 2) -> str:
     """Format a float value, or return 'N/A' for missing/NaN values."""
-    if val is None or val != val:
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool) or np.isnan(val):
         return "N/A"
     return f"{val:.{decimals}f}"
 
 
-def _fmt_time(val: Optional[float]) -> str:
+def _fmt_time(val: Any) -> str:
     """Format a time duration in seconds."""
-    if val is None or val != val:
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool) or np.isnan(val):
         return "N/A"
     if val < 0.001:
         return f"{val * 1e6:.1f}µs"
@@ -49,8 +50,10 @@ def _fmt_time(val: Optional[float]) -> str:
     return f"{val:.3f}s"
 
 
-def _status_color(status: str) -> str:
+def _status_color(status: Optional[str]) -> str:
     """Return Rich color markup for an experiment status string."""
+    if not status or not isinstance(status, str):
+        return "[dim]unknown[/dim]"
     colors = {
         "completed": "[bold green]completed[/bold green]",
         "failed": "[bold red]failed[/bold red]",
@@ -100,12 +103,12 @@ def render_overview(manager: ExperimentManager) -> None:
     table.add_column("Created At", style="dim")
 
     for exp in experiments:
-        exp_id = exp.get("experiment_id", "?")
-        env = exp.get("environment", "?")
-        algo = exp.get("algorithm", "?")
-        seed = str(exp.get("seed", "?"))
-        status = exp.get("evaluation_status", "?")
-        created_at = exp.get("created_at", "?")
+        exp_id = str(exp.get("experiment_id") or "?")
+        env = str(exp.get("environment") or "?")
+        algo = str(exp.get("algorithm") or "?")
+        seed = str(exp.get("seed") if exp.get("seed") is not None else "?")
+        status = exp.get("evaluation_status")
+        created_at = exp.get("created_at") or "?"
         # Truncate ISO timestamp to date+time without microseconds
         if isinstance(created_at, str) and "T" in created_at:
             created_at = created_at[:19].replace("T", " ") + " UTC"
@@ -116,7 +119,7 @@ def render_overview(manager: ExperimentManager) -> None:
             algo.upper(),
             seed,
             _status_color(status),
-            created_at,
+            str(created_at),
         )
 
     console.print(table)
@@ -140,13 +143,14 @@ def render_metrics(experiment_id: str, manager: ExperimentManager) -> None:
         return
 
     # Manifest panel
-    algo = manifest.get("algorithm", "?")
-    env = manifest.get("environment", "?")
-    seed = manifest.get("seed", "?")
-    git_commit = manifest.get("git_commit", "?")
-    python_ver = manifest.get("python_version", "?").split()[0]  # short version
-    status = manifest.get("evaluation_status", "?")
-    created_at = manifest.get("created_at", "?")
+    algo = str(manifest.get("algorithm") or "?")
+    env = str(manifest.get("environment") or "?")
+    seed = str(manifest.get("seed") if manifest.get("seed") is not None else "?")
+    git_commit = str(manifest.get("git_commit") or "?")
+    python_raw = str(manifest.get("python_version") or "?")
+    python_ver = python_raw.split()[0] if python_raw else "?"
+    status = manifest.get("evaluation_status")
+    created_at = manifest.get("created_at") or "?"
     if isinstance(created_at, str) and "T" in created_at:
         created_at = created_at[:19].replace("T", " ") + " UTC"
 
@@ -226,12 +230,20 @@ def _render_sparkline(values: List[float], title: str = "Values") -> None:
     if not values:
         return
 
-    min_v = min(values)
-    max_v = max(values)
+    clean_values = [
+        float(v)
+        for v in values
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and not np.isnan(v)
+    ]
+    if not clean_values:
+        return
+
+    min_v = min(clean_values)
+    max_v = max(clean_values)
     rng = max_v - min_v if max_v != min_v else 1.0
 
     sparkline = ""
-    for v in values:
+    for v in clean_values:
         idx = int((v - min_v) / rng * (len(blocks) - 1))
         sparkline += blocks[idx]
 
@@ -239,8 +251,8 @@ def _render_sparkline(values: List[float], title: str = "Values") -> None:
         Panel(
             f"{sparkline}\n\n"
             f"Min: {min_v:.2f}  |  Max: {max_v:.2f}  |  "
-            f"Avg: {sum(values) / len(values):.2f}  |  "
-            f"n={len(values)}",
+            f"Avg: {sum(clean_values) / len(clean_values):.2f}  |  "
+            f"n={len(clean_values)}",
             title=title,
             border_style="green",
         )
@@ -282,10 +294,11 @@ def render_comparison(
     table.add_column("Metric", style="cyan", no_wrap=True)
 
     for exp_id, manifest, _ in experiments_data:
-        algo = manifest.get("algorithm", "?").upper()
-        env = manifest.get("environment", "?")
-        seed = manifest.get("seed", "?")
-        header = f"{algo}\n{env}\nseed={seed}"
+        algo = str(manifest.get("algorithm") or "?").upper()
+        env = str(manifest.get("environment") or "?")
+        seed = manifest.get("seed")
+        seed_str = str(seed) if seed is not None else "?"
+        header = f"{algo}\n{env}\nseed={seed_str}"
         table.add_column(header, style="green", justify="right")
 
     compare_metrics = [

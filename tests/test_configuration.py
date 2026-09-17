@@ -204,3 +204,81 @@ evaluation:
     assert cfg.algorithm.name == "astar"
     assert cfg.algorithm.parameters == {"heuristic": "manhattan"}
     assert cfg.evaluation.eval_episodes == 5
+
+
+def test_astar_invalid_heuristic_rejected(tmp_path: Path) -> None:
+    """Invalid A* heuristic raises ConfigError at load time."""
+    bad_yaml = tmp_path / "bad_astar.yaml"
+    bad_yaml.write_text(
+        """
+name: "bad_astar"
+algorithm:
+  name: "astar"
+  parameters:
+    heuristic: "teleportation"
+environment:
+  name: "gridworld"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="Input should be 'manhattan', 'euclidean' or 'chebyshev'"):
+        load_config(bad_yaml)
+
+
+def test_astar_valid_heuristics_accepted(tmp_path: Path) -> None:
+    """All valid A* heuristics load and validate successfully."""
+    for h in ("manhattan", "euclidean", "chebyshev"):
+        yaml_file = tmp_path / f"astar_{h}.yaml"
+        yaml_file.write_text(
+            f"""
+name: "astar_{h}"
+algorithm:
+  name: "astar"
+  parameters:
+    heuristic: "{h}"
+environment:
+  name: "gridworld"
+""",
+            encoding="utf-8",
+        )
+        cfg = load_config(yaml_file)
+        assert cfg.algorithm.parameters["heuristic"] == h
+
+
+def test_rrt_star_invalid_parameters_rejected(tmp_path: Path) -> None:
+    """Invalid RRT* parameters raise ConfigError at load time."""
+    bad_yaml = tmp_path / "bad_rrt.yaml"
+    bad_yaml.write_text(
+        """
+name: "bad_rrt"
+algorithm:
+  name: "rrt_star"
+  parameters:
+    step_size: -0.5
+environment:
+  name: "navigation"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="step_size"):
+        load_config(bad_yaml)
+
+
+def test_planner_extra_forbidden_parameters_rejected(tmp_path: Path) -> None:
+    """Unknown extra parameters in planner parameters block trigger validation error."""
+    bad_yaml = tmp_path / "extra_param_planner.yaml"
+    bad_yaml.write_text(
+        """
+name: "extra_param"
+algorithm:
+  name: "astar"
+  parameters:
+    heuristic: "manhattan"
+    unsupported_field: 123
+environment:
+  name: "gridworld"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="Extra inputs are not permitted"):
+        load_config(bad_yaml)

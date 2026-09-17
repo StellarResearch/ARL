@@ -35,15 +35,20 @@ are configurable via YAML. No claim is made about optimality of default hyperpar
 | Planner | Type | Environment | Deterministic |
 |:--------|:-----|:------------|:--------------|
 | A* | Shortest-path grid search | GridWorld (discrete) | Yes |
+| RRT* | Asymptotically optimal sampling planner | Navigation2D (continuous) | Probabilistic (seed-controlled) |
 
 A* is implemented directly against the `GridWorldEnv` grid representation. It uses
 the Manhattan distance heuristic, which is admissible and consistent for 4-connected
-discrete grids.
+discrete grids. Euclidean and Chebyshev heuristics are also supported.
+
+RRT* (Rapidly-exploring Random Tree Star) is implemented for continuous 2D motion planning
+against `Navigation2DEnv`. Under uniform sampling completeness, RRT* provides asymptotic
+optimality guarantees by rewiring local parent connections within a neighborhood radius.
 
 > [!IMPORTANT]
-> A* is not an RL algorithm. It has access to the full grid map (start, goal,
-> obstacles) at planning time. RL agents must learn a policy from interaction
-> without direct access to the grid structure. This is a fundamental methodological
+> Classical planners (A*, RRT*) are not RL algorithms. They have direct access to the geometry
+> or obstacles at planning time. RL agents must learn a policy from interaction
+> without direct access to the world map. This is a fundamental methodological
 > difference and must be considered when interpreting comparisons.
 
 ---
@@ -52,14 +57,14 @@ discrete grids.
 
 ### 3.1 What Can Be Compared
 
-| Metric | PPO | SAC | A* |
-|:-------|:----|:----|:---|
-| Success Rate | ✓ | ✓ | ✓ |
-| Collision Rate | ✓ | ✓ | ✓ (always 0 for validated paths) |
-| Episode Reward | ✓ | ✓ | ✗ (not applicable) |
-| Episode Length | ✓ | ✓ | ✗ (planner doesn't step episode) |
-| Path Length | ✗ | ✗ | ✓ |
-| Planning Time | ✗ | ✗ | ✓ |
+| Metric | PPO | SAC | A* | RRT* |
+|:-------|:----|:----|:---|:-----|
+| Success Rate | ✓ | ✓ | ✓ | ✓ |
+| Collision Rate | ✓ | ✓ | ✓ (0 for valid paths) | ✓ (0 for valid paths) |
+| Episode Reward | ✓ | ✓ | ✗ (not applicable) | ✗ (not applicable) |
+| Episode Length | ✓ | ✓ | ✗ (planner doesn't step) | ✗ (planner doesn't step) |
+| Path Length | ✗ | ✗ | ✓ | ✓ |
+| Planning Time | ✗ | ✗ | ✓ | ✓ |
 
 ### 3.2 Comparison Caveats
 
@@ -191,9 +196,9 @@ supporting experimental evidence.
 
 ### 7.1 Algorithmic Limitations
 
-- **A* not applicable to continuous environments**: The current A* implementation
-  works only on discrete GridWorld. Continuous navigation (Navigation2D, Drone3D)
-  does not expose a planning graph.
+- **A* limited to discrete grids**: A* applies to discrete `GridWorldEnv`. For continuous 2D
+  spaces (`Navigation2DEnv`), the platform uses RRT*. Continuous 3D planning (`Drone3DEnv`)
+  currently relies on RL policies.
 
 - **No true closed-loop planning**: A* computes an open-loop path at episode start.
   It does not replan if the environment changes mid-episode (as dynamic obstacles do).
@@ -222,7 +227,7 @@ supporting experimental evidence.
 
 The following are possible research extensions, not current claims:
 
-- Implementing RRT* for continuous 2D navigation comparison.
+- Extending sampling-based planners (e.g. RRT* or BIT*) to continuous 3D drone navigation.
 - Multi-objective reward balancing for drone battery + success trade-offs.
 - Meta-learning for faster adaptation to novel environments.
 - Population-based training for hyperparameter optimization.

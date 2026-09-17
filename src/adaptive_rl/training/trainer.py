@@ -49,6 +49,14 @@ class BaseTrainer(ABC):
         """Execute the training process and return structured results."""
         pass
 
+    def close(self) -> None:
+        """Clean up trainer resources and close environment."""
+        if hasattr(self, "env") and self.env is not None:
+            try:
+                self.env.close()
+            except Exception:
+                pass
+
 
 class PPOTrainer(BaseTrainer):
     """Concrete PPO training engine coordinating environment, algorithm, callbacks, and checkpoints."""

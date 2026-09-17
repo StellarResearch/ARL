@@ -59,6 +59,18 @@ class TestDashboardFormatters:
     def test_fmt_time_none(self) -> None:
         assert _fmt_time(None) == "N/A"
 
+    def test_fmt_non_numeric_safety(self) -> None:
+        assert _fmt_pct("bad") == "N/A"  # type: ignore
+        assert _fmt_float("bad") == "N/A"  # type: ignore
+        assert _fmt_time("bad") == "N/A"  # type: ignore
+
+    def test_status_color_safety(self) -> None:
+        from adaptive_rl.visualization.dashboard import _status_color
+
+        assert "completed" in _status_color("completed")
+        assert "unknown" in _status_color(None)
+        assert "unknown" in _status_color("")
+
 
 # ---------------------------------------------------------------------------
 # CLI: algorithm commands
@@ -234,6 +246,44 @@ class TestDashboardCLI:
             result = runner.invoke(app, ["dashboard", "--output-dir", tmpdir])
             assert result.exit_code == 0
 
+    def test_dashboard_with_corrupt_or_incomplete_manifest(self) -> None:
+        """Dashboard renders cleanly even with missing or None fields in manifest."""
+        import json
+
+        from adaptive_rl.experiments.manager import ExperimentManager
+        from adaptive_rl.visualization.dashboard import render_metrics, render_overview
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            exp_dir = Path(tmpdir) / "corrupt_exp"
+            exp_dir.mkdir()
+            # Incomplete manifest with None fields
+            manifest_path = exp_dir / "manifest.json"
+            with open(manifest_path, "w") as f:
+                json.dump(
+                    {
+                        "experiment_id": "corrupt_exp",
+                        "algorithm": None,
+                        "environment": None,
+                        "seed": None,
+                        "evaluation_status": None,
+                        "python_version": None,
+                    },
+                    f,
+                )
+
+            manager = ExperimentManager(base_output_dir=Path(tmpdir))
+            # Must not crash
+            render_overview(manager)
+            render_metrics("corrupt_exp", manager)
+
+    def test_sparkline_with_nans(self) -> None:
+        """_render_sparkline handles NaNs and non-floats without raising."""
+        from adaptive_rl.visualization.dashboard import _render_sparkline
+
+        # Should not raise exception
+        _render_sparkline([float("nan"), 1.0, 2.0, float("nan")])
+        _render_sparkline([float("nan")])
+
 
 # ---------------------------------------------------------------------------
 # CLI: benchmark command
@@ -272,6 +322,77 @@ class TestBenchmarkCLI:
         )
         # Should fail gracefully
         assert result.exit_code != 0 or "error" in result.output.lower()
+
+    def test_benchmark_fatal_failure_exits_1(self) -> None:
+        """benchmark exits with code 1 when all seeds fail."""
+        from unittest.mock import patch
+
+        from adaptive_rl.benchmarking import BenchmarkResult
+
+        fake_res = BenchmarkResult(
+            name="fatal_bench",
+            algorithm="astar",
+            environment="gridworld",
+            seeds=[42],
+            successful_seeds=0,
+            requested_seeds=1,
+            failed_seeds=1,
+            failed_seed_ids=[42],
+            failure_reasons={42: "Fatal error"},
+            complete=False,
+        )
+
+        config_path = Path("configs/gridworld_astar.yaml")
+        if not config_path.exists():
+            pytest.skip("configs/gridworld_astar.yaml not found")
+
+        with patch("adaptive_rl.benchmarking.BenchmarkRunner.run", return_value=fake_res):
+            result = runner.invoke(
+                app,
+                ["benchmark", "--config", str(config_path), "--seeds", "42"],
+            )
+            assert result.exit_code == 1
+            assert "Fatal Benchmark Failure" in result.output
+
+    def test_benchmark_strict_mode_exits_1_on_partial(self) -> None:
+        """benchmark with --strict exits with code 1 when some seeds fail."""
+        from unittest.mock import patch
+
+        from adaptive_rl.benchmarking import BenchmarkResult
+
+        fake_res = BenchmarkResult(
+            name="partial_bench",
+            algorithm="astar",
+            environment="gridworld",
+            seeds=[42, 43],
+            successful_seeds=1,
+            requested_seeds=2,
+            failed_seeds=1,
+            failed_seed_ids=[43],
+            failure_reasons={43: "Timeout"},
+            complete=False,
+        )
+
+        config_path = Path("configs/gridworld_astar.yaml")
+        if not config_path.exists():
+            pytest.skip("configs/gridworld_astar.yaml not found")
+
+        with patch("adaptive_rl.benchmarking.BenchmarkRunner.run", return_value=fake_res):
+            # Without strict, exits 0
+            res_normal = runner.invoke(
+                app,
+                ["benchmark", "--config", str(config_path), "--seeds", "42,43"],
+            )
+            assert res_normal.exit_code == 0
+            assert "Partial Completion" in res_normal.output
+
+            # With strict, exits 1
+            res_strict = runner.invoke(
+                app,
+                ["benchmark", "--config", str(config_path), "--seeds", "42,43", "--strict"],
+            )
+            assert res_strict.exit_code == 1
+            assert "Strict mode enabled" in res_strict.output
 
 
 # ---------------------------------------------------------------------------

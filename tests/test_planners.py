@@ -446,3 +446,125 @@ class TestRRTStarPlanner:
         assert metrics.episodes == 3
         assert metrics.collision_rate == 0.0
         assert len(metrics.all_planning_times) == 3
+
+    def test_rrt_star_invalid_collision_resolution(self) -> None:
+        """collision_resolution <= 0 raises ValueError."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        with pytest.raises(ValueError, match="collision_resolution must be positive"):
+            RRTStarPlanner(collision_resolution=0)
+
+        with pytest.raises(ValueError, match="collision_resolution must be positive"):
+            RRTStarPlanner(collision_resolution=-0.5)
+
+    def test_rrt_star_invalid_dimensions(self) -> None:
+        """Invalid arena dimensions raise ValueError."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        planner = RRTStarPlanner()
+        with pytest.raises(ValueError, match="Arena dimensions must be positive"):
+            planner.plan(start=(0, 0), goal=(1, 1), arena_width=0, arena_height=10)
+
+    def test_rrt_star_start_in_goal_radius_obstacle_in_between(self) -> None:
+        """When start is within goal radius of goal but blocked by obstacle, do not straight-connect through obstacle."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        planner = RRTStarPlanner(max_iterations=100)
+        # start=(1.0, 1.0), goal=(2.0, 1.0) -> distance is 1.0 (< goal_radius 2.0)
+        # Put an obstacle at (1.5, 1.0) with radius 0.4
+        result = planner.plan(
+            start=(1.0, 1.0),
+            goal=(2.0, 1.0),
+            arena_width=10.0,
+            arena_height=10.0,
+            obstacles=[(1.5, 1.0, 0.4)],
+            agent_radius=0.05,
+            goal_radius=2.0,
+        )
+        if result.success:
+            # If a path was found via exploration around the obstacle, it must be valid
+            assert planner.validate_path(
+                result.path,
+                obstacles=[(1.5, 1.0, 0.4)],
+                agent_radius=0.05,
+                arena_width=10.0,
+                arena_height=10.0,
+            )
+            # Cannot be a direct 2-point straight line
+            assert result.path != [(1.0, 1.0), (2.0, 1.0)]
+
+    def test_rrt_star_trivial_same_start_goal(self) -> None:
+        """When start == goal, return 1-node path with 0 length."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        planner = RRTStarPlanner()
+        result = planner.plan(
+            start=(3.0, 3.0),
+            goal=(3.0, 3.0),
+            arena_width=10.0,
+            arena_height=10.0,
+        )
+        assert result.success
+        assert result.path == [(3.0, 3.0)]
+        assert result.path_length == 0.0
+
+    def test_rrt_star_cycle_prevention(self) -> None:
+        """_is_ancestor correctly detects ancestor relationships to prevent cycles."""
+        from adaptive_rl.planners.rrt_star import RRTNode, RRTStarPlanner
+
+        root = RRTNode(1.0, 1.0, cost=0.0)
+        child1 = RRTNode(2.0, 2.0, parent=root, cost=1.0)
+        child2 = RRTNode(3.0, 3.0, parent=child1, cost=2.0)
+
+        assert RRTStarPlanner._is_ancestor(root, child2)
+        assert RRTStarPlanner._is_ancestor(child1, child2)
+        assert not RRTStarPlanner._is_ancestor(child2, root)
+
+    def test_astar_diagonal_step_invalid(self) -> None:
+        """4-connected A* rejects diagonal steps during validation."""
+        path = [(0, 0), (1, 1)]
+        assert not AStarPlanner.validate_path(path, obstacles=set(), width=5, height=5)
+
+    def test_astar_heuristics(self) -> None:
+        """Different heuristics compute expected distance values."""
+        planner_m = AStarPlanner(heuristic="manhattan")
+        planner_e = AStarPlanner(heuristic="euclidean")
+        planner_c = AStarPlanner(heuristic="chebyshev")
+
+        assert planner_m._heuristic((0, 0), (3, 4)) == 7.0
+        assert planner_e._heuristic((0, 0), (3, 4)) == 5.0
+        assert planner_c._heuristic((0, 0), (3, 4)) == 4.0
+
+    def test_adapter_zero_success_returns_none_for_path_metrics(self) -> None:
+        """When 0 paths succeed, path length metrics are None rather than fabricated 0.0."""
+        from adaptive_rl.environments.gridworld.grid import GridWorldEnv
+        from adaptive_rl.planners.adapter import PlannerAdapter
+
+        # Create a gridworld where goal is completely surrounded by obstacles
+        env = GridWorldEnv(
+            width=3,
+            height=3,
+            start_pos=(0, 0),
+            goal_pos=(2, 2),
+            fixed_obstacles=[(1, 2), (2, 1)],  # blocks access to (2,2)
+            num_obstacles=0,
+        )
+        planner = AStarPlanner()
+        adapter = PlannerAdapter(planner=planner, env=env)
+        metrics = adapter.evaluate(num_episodes=2)
+
+        assert metrics.success_rate == 0.0
+        assert metrics.mean_path_length is None
+        assert metrics.std_path_length is None
+        assert metrics.min_path_length is None
+        assert metrics.max_path_length is None
+        assert metrics.collision_rate == 0.0
+        assert "collision_semantics" in metrics.additional_metrics
+
+    def test_astar_planner_heuristic_propagation(self) -> None:
+        """A* correctly initializes and uses the specified heuristic."""
+        for heur in ("manhattan", "euclidean", "chebyshev"):
+            planner = AStarPlanner(heuristic=heur)
+            assert planner.heuristic_name == heur
+            res = planner.plan(start=(0, 0), goal=(2, 2), obstacles=set(), width=3, height=3)
+            assert res.success

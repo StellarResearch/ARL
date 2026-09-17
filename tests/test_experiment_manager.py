@@ -303,3 +303,59 @@ class TestExperimentManager:
         assert len(version) > 0
         # Should be a valid version or 'not_installed'
         assert version == "not_installed" or "." in version
+
+    def test_directory_collision_avoidance(self) -> None:
+        """Two identical runs create separate directories without overwriting."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ExperimentManager(base_output_dir=Path(tmpdir))
+            config = _make_minimal_config(algo="astar", env="gridworld", seed=42)
+
+            res1 = manager.run(config=config)
+            res2 = manager.run(config=config)
+
+            assert res1.output_dir != res2.output_dir
+            assert res1.experiment_id != res2.experiment_id
+            assert "_run02" in res2.experiment_id
+            assert res1.output_dir.exists()
+            assert res2.output_dir.exists()
+            # Ensure both manifests exist
+            assert (res1.output_dir / "manifest.json").exists()
+            assert (res2.output_dir / "manifest.json").exists()
+
+            # Ensure listing returns both
+            exps = manager.list_experiments()
+            assert len(exps) == 2
+
+    def test_manifest_contains_extended_metadata(self) -> None:
+        """Manifest contains experiment_name and base_experiment_id."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ExperimentManager(base_output_dir=Path(tmpdir))
+            config = _make_minimal_config(algo="astar", env="gridworld", seed=42)
+
+            res = manager.run(config=config)
+            manifest = manager.get_experiment(res.experiment_id)
+            assert manifest is not None
+            assert "experiment_name" in manifest
+            assert manifest["experiment_name"] == config.name
+            assert "base_experiment_id" in manifest
+            assert manifest["base_experiment_id"] == res.experiment_id
+
+    def test_planner_parameter_forwarding(self) -> None:
+        """Planner parameters are forwarded to planner factory."""
+        from adaptive_rl.config import AlgorithmConfig, EnvironmentConfig, EvaluationConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ExperimentManager(base_output_dir=Path(tmpdir))
+            config = ExperimentConfig(
+                name="test_fwd",
+                seed=42,
+                algorithm=AlgorithmConfig(
+                    name="astar",
+                    parameters={"heuristic": "euclidean"},
+                ),
+                environment=EnvironmentConfig(name="gridworld"),
+                evaluation=EvaluationConfig(eval_episodes=2),
+            )
+            res = manager.run(config=config)
+            assert res.success
+            assert res.metrics.get("episodes") == 2

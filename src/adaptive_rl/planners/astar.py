@@ -56,7 +56,12 @@ class AStarPlanner(BasePlanner):
 
         Args:
             heuristic: Heuristic function to use ('manhattan', 'euclidean', 'chebyshev').
-                'manhattan' is the default and is admissible/consistent on 4-connected grids.
+                'manhattan': Admissible and consistent for 4-connected grids with unit step costs.
+                    Guarantees optimal (shortest) paths with minimal node expansions.
+                'euclidean': Admissible on 4-connected grids (h_euclid <= h_manhattan <= h*),
+                    but less informed, expanding more search nodes.
+                'chebyshev': Admissible on 8-connected grids; underestimates Manhattan distance on
+                    4-connected grids and does not reflect 4-connected movement geometry.
 
         Raises:
             ValueError: If an unsupported heuristic name is given.
@@ -110,17 +115,18 @@ class AStarPlanner(BasePlanner):
         """
         if not path:
             return False
+        obs_set = set(obstacles) if obstacles is not None else set()
         for i, coord in enumerate(path):
             if not (0 <= coord[0] < width and 0 <= coord[1] < height):
                 return False
-            if coord in obstacles:
+            if coord in obs_set:
                 return False
             if i > 0:
                 prev = path[i - 1]
                 dx = abs(coord[0] - prev[0])
                 dy = abs(coord[1] - prev[1])
-                # Must be adjacent 4-neighbor or identical (for 0-length path)
-                if (dx + dy) != 1 and (dx != 0 or dy != 0):
+                # Must be adjacent 4-neighbor on unit grid
+                if (dx + dy) != 1:
                     return False
         return True
 
@@ -146,17 +152,37 @@ class AStarPlanner(BasePlanner):
             if the goal is unreachable (blocked by obstacles or out of bounds).
 
         Raises:
-            ValueError: If start or goal are out of grid bounds, or either
-                lies on an obstacle cell.
+            ValueError: If dimensions are non-positive, coordinates/obstacles are invalid,
+                start/goal are out of grid bounds, or either lies on an obstacle cell.
         """
-        # Input validation
+        # Dimension validation
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Grid dimensions must be positive integers, got {width}x{height}.")
+
+        # Coordinate format validation
+        if not (isinstance(start, (tuple, list)) and len(start) == 2 and isinstance(start[0], int) and isinstance(start[1], int)):
+            raise ValueError(f"Start coordinate {start} must be a 2-tuple of integers.")
+        if not (isinstance(goal, (tuple, list)) and len(goal) == 2 and isinstance(goal[0], int) and isinstance(goal[1], int)):
+            raise ValueError(f"Goal coordinate {goal} must be a 2-tuple of integers.")
+
+        # Obstacle validation
+        try:
+            obs_set = set(obstacles) if obstacles is not None else set()
+        except TypeError as exc:
+            raise ValueError(f"Obstacles must be an iterable collection of coordinates: {exc}") from exc
+
+        for obs in obs_set:
+            if not (isinstance(obs, (tuple, list)) and len(obs) == 2 and isinstance(obs[0], int) and isinstance(obs[1], int)):
+                raise ValueError(f"Invalid obstacle coordinate {obs}: expected 2-tuple of integers.")
+
+        # Bounds and collision validation
         if not (0 <= start[0] < width and 0 <= start[1] < height):
             raise ValueError(f"Start position {start} is outside grid bounds {width}x{height}.")
         if not (0 <= goal[0] < width and 0 <= goal[1] < height):
             raise ValueError(f"Goal position {goal} is outside grid bounds {width}x{height}.")
-        if start in obstacles:
+        if start in obs_set:
             raise ValueError(f"Start position {start} is occupied by an obstacle.")
-        if goal in obstacles:
+        if goal in obs_set:
             raise ValueError(f"Goal position {goal} is occupied by an obstacle.")
 
         t_start = time.perf_counter()
@@ -205,7 +231,7 @@ class AStarPlanner(BasePlanner):
                 if not (0 <= neighbor[0] < width and 0 <= neighbor[1] < height):
                     continue
                 # Obstacle check
-                if neighbor in obstacles:
+                if neighbor in obs_set:
                     continue
 
                 tentative_g = g_score[current] + 1  # unit cost grid
@@ -227,7 +253,7 @@ class AStarPlanner(BasePlanner):
             nodes_explored=nodes_explored,
             failure_reason=(
                 f"No path found from {start} to {goal} on {width}x{height} grid "
-                f"with {len(obstacles)} obstacle(s)."
+                f"with {len(obs_set)} obstacle(s)."
             ),
         )
 
