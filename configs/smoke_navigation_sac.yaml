@@ -1,0 +1,33 @@
+name: "navigation_sac_smoke"
+seed: 42
+
+algorithm:
+  name: "sac"
+  learning_rate: 0.0003
+  gamma: 0.99
+  batch_size: 64
+  parameters:
+    buffer_size: 10000
+    learning_starts: 100
+    tau: 0.005
+    train_freq: 1
+    gradient_steps: 1
+
+environment:
+  name: "navigation"
+  max_steps: 200
+  parameters:
+    num_obstacles: 3
+    obstacle_radius: 0.08
+
+training:
+  total_timesteps: 1000
+  checkpoint_freq: 500
+  log_interval: 10
+
+evaluation:
+  eval_episodes: 5
+  deterministic: true
+
+output_dir: "experiments/results"
+log_dir: "experiments/logs"

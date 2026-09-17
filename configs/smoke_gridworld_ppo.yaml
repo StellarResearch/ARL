@@ -1,0 +1,33 @@
+name: "gridworld_ppo_smoke"
+seed: 42
+
+algorithm:
+  name: "ppo"
+  learning_rate: 0.0003
+  gamma: 0.99
+  batch_size: 64
+  parameters:
+    n_steps: 128
+    n_epochs: 4
+    ent_coef: 0.01
+    clip_range: 0.2
+
+environment:
+  name: "gridworld"
+  max_steps: 100
+  parameters:
+    width: 6
+    height: 5
+    num_obstacles: 3
+
+training:
+  total_timesteps: 1000
+  checkpoint_freq: 500
+  log_interval: 10
+
+evaluation:
+  eval_episodes: 5
+  deterministic: true
+
+output_dir: "experiments/results"
+log_dir: "experiments/logs"
