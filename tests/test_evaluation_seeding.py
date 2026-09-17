@@ -165,3 +165,231 @@ class TestEvaluationSeedingProtocol:
             with open(manifest_json_path, encoding="utf-8") as f:
                 data = json.load(f)
             assert data.get("evaluation_seeds") == [77, 78, 79, 80]
+
+    def test_evaluation_environment_state_parity_gridworld(self) -> None:
+        """Verify full environment state parity between RL and Classical evaluation on GridWorld.
+
+        Not only the seeds, but the generated start positions, goal positions,
+        and obstacle configurations must be 100% identical episode-by-episode.
+        """
+        import numpy as np
+
+        from adaptive_rl.environments.gridworld.grid import GridWorldEnv
+        from adaptive_rl.evaluation.evaluator import Evaluator
+        from adaptive_rl.planners.adapter import PlannerAdapter
+        from adaptive_rl.planners.astar import AStarPlanner
+
+        exp_seed = 123
+        num_episodes = 4
+
+        # 1. Classical Planner Evaluation
+        planner_env = GridWorldEnv(width=8, height=8, num_obstacles=5)
+        captured_planner_states = []
+        orig_planner_reset = planner_env.reset
+
+        def captured_planner_reset(seed: int | None = None, **kwargs):  # type: ignore
+            obs, info = orig_planner_reset(seed=seed, **kwargs)
+            captured_planner_states.append(
+                {
+                    "seed": seed,
+                    "agent_pos": info["agent_pos"],
+                    "goal_pos": info["goal_pos"],
+                    "obstacles": set(planner_env._obstacles),
+                    "obs": np.copy(obs),
+                }
+            )
+            return obs, info
+
+        planner_env.reset = captured_planner_reset  # type: ignore
+        adapter = PlannerAdapter(planner=AStarPlanner(), env=planner_env)
+        adapter.evaluate(num_episodes=num_episodes, base_seed=exp_seed)
+
+        # 2. RL Evaluator Evaluation
+        rl_env = GridWorldEnv(width=8, height=8, num_obstacles=5)
+        captured_rl_states = []
+        orig_rl_reset = rl_env.reset
+
+        def captured_rl_reset(seed: int | None = None, **kwargs):  # type: ignore
+            obs, info = orig_rl_reset(seed=seed, **kwargs)
+            captured_rl_states.append(
+                {
+                    "seed": seed,
+                    "agent_pos": info["agent_pos"],
+                    "goal_pos": info["goal_pos"],
+                    "obstacles": set(rl_env._obstacles),
+                    "obs": np.copy(obs),
+                }
+            )
+            return obs, info
+
+        rl_env.reset = captured_rl_reset  # type: ignore
+        dummy_algo = MagicMock()
+        dummy_algo.predict.return_value = (0, {})
+        evaluator = Evaluator(algorithm=dummy_algo, env=rl_env)
+        evaluator.evaluate(num_episodes=num_episodes, deterministic=True, base_seed=exp_seed)
+
+        # 3. Assert full episode-by-episode state parity
+        assert len(captured_planner_states) == num_episodes
+        assert len(captured_rl_states) == num_episodes
+
+        for ep in range(num_episodes):
+            p_state = captured_planner_states[ep]
+            r_state = captured_rl_states[ep]
+
+            assert p_state["seed"] == r_state["seed"] == exp_seed + ep
+            assert p_state["agent_pos"] == r_state["agent_pos"]
+            assert p_state["goal_pos"] == r_state["goal_pos"]
+            assert p_state["obstacles"] == r_state["obstacles"]
+            np.testing.assert_array_equal(p_state["obs"], r_state["obs"])
+
+    def test_evaluation_environment_state_parity_continuous_nav(self) -> None:
+        """Verify full environment state parity between RL and Classical evaluation on ContinuousNav2D.
+
+        Start coordinates, goal coordinates, and obstacle geometries must be identical.
+        """
+        import numpy as np
+
+        from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
+        from adaptive_rl.evaluation.evaluator import Evaluator
+        from adaptive_rl.planners.adapter import PlannerAdapter
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        exp_seed = 321
+        num_episodes = 3
+
+        # 1. Classical Planner Evaluation
+        planner_env = ContinuousNavigation2DEnv(
+            arena_width=10.0, arena_height=10.0, num_obstacles=3
+        )
+        captured_planner_states = []
+        orig_p_reset = planner_env.reset
+
+        def captured_p_reset(seed: int | None = None, **kwargs):  # type: ignore
+            obs, info = orig_p_reset(seed=seed, **kwargs)
+            captured_planner_states.append(
+                {
+                    "seed": seed,
+                    "agent_pos": np.copy(info["agent_pos"]),
+                    "goal_pos": np.copy(info["goal_pos"]),
+                    "obstacles": list(info["obstacles"]),
+                    "obs": np.copy(obs),
+                }
+            )
+            return obs, info
+
+        planner_env.reset = captured_p_reset  # type: ignore
+        adapter = PlannerAdapter(
+            planner=RRTStarPlanner(seed=55, max_iterations=50), env=planner_env
+        )
+        adapter.evaluate(num_episodes=num_episodes, base_seed=exp_seed)
+
+        # 2. RL Evaluator Evaluation
+        rl_env = ContinuousNavigation2DEnv(arena_width=10.0, arena_height=10.0, num_obstacles=3)
+        captured_rl_states = []
+        orig_r_reset = rl_env.reset
+
+        def captured_r_reset(seed: int | None = None, **kwargs):  # type: ignore
+            obs, info = orig_r_reset(seed=seed, **kwargs)
+            captured_rl_states.append(
+                {
+                    "seed": seed,
+                    "agent_pos": np.copy(info["agent_pos"]),
+                    "goal_pos": np.copy(info["goal_pos"]),
+                    "obstacles": list(info["obstacles"]),
+                    "obs": np.copy(obs),
+                }
+            )
+            return obs, info
+
+        rl_env.reset = captured_r_reset  # type: ignore
+        dummy_algo = MagicMock()
+        dummy_algo.predict.return_value = (np.array([0.0, 0.0], dtype=np.float32), {})
+        evaluator = Evaluator(algorithm=dummy_algo, env=rl_env)
+        evaluator.evaluate(num_episodes=num_episodes, deterministic=True, base_seed=exp_seed)
+
+        # 3. Assert full episode-by-episode state parity
+        assert len(captured_planner_states) == num_episodes
+        assert len(captured_rl_states) == num_episodes
+
+        for ep in range(num_episodes):
+            p_state = captured_planner_states[ep]
+            r_state = captured_rl_states[ep]
+
+            assert p_state["seed"] == r_state["seed"] == exp_seed + ep
+            np.testing.assert_allclose(p_state["agent_pos"], r_state["agent_pos"])
+            np.testing.assert_allclose(p_state["goal_pos"], r_state["goal_pos"])
+            assert len(p_state["obstacles"]) == len(r_state["obstacles"])
+            for p_obs, r_obs in zip(p_state["obstacles"], r_state["obstacles"]):
+                np.testing.assert_allclose(p_obs, r_obs)
+            np.testing.assert_allclose(p_state["obs"], r_state["obs"], atol=1e-6)
+
+    def test_planner_randomness_decoupled_from_environment_state(self) -> None:
+        """Verify that altering planner seed does NOT change procedural environment state."""
+        import numpy as np
+
+        from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
+        from adaptive_rl.planners.adapter import PlannerAdapter
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        exp_seed = 99
+        num_episodes = 3
+
+        # Run 1: Planner with seed=111
+        env1 = ContinuousNavigation2DEnv(arena_width=10.0, arena_height=10.0, num_obstacles=3)
+        captured_env_1 = []
+        orig_reset_1 = env1.reset
+
+        def reset_1(seed: int | None = None, **kwargs):  # type: ignore
+            obs, info = orig_reset_1(seed=seed, **kwargs)
+            captured_env_1.append(
+                {
+                    "seed": seed,
+                    "agent_pos": np.copy(info["agent_pos"]),
+                    "goal_pos": np.copy(info["goal_pos"]),
+                    "obstacles": list(info["obstacles"]),
+                }
+            )
+            return obs, info
+
+        env1.reset = reset_1  # type: ignore
+        planner1 = RRTStarPlanner(seed=111, max_iterations=80)
+        adapter1 = PlannerAdapter(planner=planner1, env=env1)
+        res1 = adapter1.evaluate(num_episodes=num_episodes, base_seed=exp_seed)
+
+        # Run 2: Planner with seed=777, identical environment seed
+        env2 = ContinuousNavigation2DEnv(arena_width=10.0, arena_height=10.0, num_obstacles=3)
+        captured_env_2 = []
+        orig_reset_2 = env2.reset
+
+        def reset_2(seed: int | None = None, **kwargs):  # type: ignore
+            obs, info = orig_reset_2(seed=seed, **kwargs)
+            captured_env_2.append(
+                {
+                    "seed": seed,
+                    "agent_pos": np.copy(info["agent_pos"]),
+                    "goal_pos": np.copy(info["goal_pos"]),
+                    "obstacles": list(info["obstacles"]),
+                }
+            )
+            return obs, info
+
+        env2.reset = reset_2  # type: ignore
+        planner2 = RRTStarPlanner(seed=777, max_iterations=80)
+        adapter2 = PlannerAdapter(planner=planner2, env=env2)
+        res2 = adapter2.evaluate(num_episodes=num_episodes, base_seed=exp_seed)
+
+        # Assert environment state is identical between Run 1 and Run 2
+        for ep in range(num_episodes):
+            assert captured_env_1[ep]["seed"] == captured_env_2[ep]["seed"] == exp_seed + ep
+            np.testing.assert_allclose(
+                captured_env_1[ep]["agent_pos"], captured_env_2[ep]["agent_pos"]
+            )
+            np.testing.assert_allclose(
+                captured_env_1[ep]["goal_pos"], captured_env_2[ep]["goal_pos"]
+            )
+            for obs1, obs2 in zip(captured_env_1[ep]["obstacles"], captured_env_2[ep]["obstacles"]):
+                np.testing.assert_allclose(obs1, obs2)
+
+        # Assert planner-internal seeds were decoupled
+        assert res1.additional_metrics["base_seed"] == exp_seed
+        assert res2.additional_metrics["base_seed"] == exp_seed

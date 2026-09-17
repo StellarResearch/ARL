@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -78,3 +81,61 @@ class TestCredentialAndPathSecurity:
         assert "push" not in source
         assert "clone" not in source
         assert "credential" not in source
+
+    def test_subprocess_git_commit_behavioral_safety(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Behaviorally verify _get_git_commit behaves safely under all runtime conditions."""
+        import subprocess
+
+        from adaptive_rl.experiments.manager import _get_git_commit
+
+        # Case 1: Normal execution returns short hash
+        real_commit = _get_git_commit()
+        assert isinstance(real_commit, str)
+        assert len(real_commit) >= 4
+
+        # Case 2: Git returns non-zero returncode -> gracefully returns "unknown"
+        def mock_run_nonzero(*args: Any, **kwargs: Any) -> Any:
+            class MockCompletedProcess:
+                returncode = 128
+                stdout = "fatal: not a git repository"
+                stderr = ""
+
+            return MockCompletedProcess()
+
+        monkeypatch.setattr(subprocess, "run", mock_run_nonzero)
+        assert _get_git_commit() == "unknown"
+
+        # Case 3: Git binary missing (FileNotFoundError) -> returns "unknown"
+        def mock_run_missing(*args: Any, **kwargs: Any) -> Any:
+            raise FileNotFoundError("No such file or directory: 'git'")
+
+        monkeypatch.setattr(subprocess, "run", mock_run_missing)
+        assert _get_git_commit() == "unknown"
+
+        # Case 4: Subprocess timeout -> returns "unknown"
+        def mock_run_timeout(*args: Any, **kwargs: Any) -> Any:
+            raise subprocess.TimeoutExpired(cmd=["git"], timeout=5)
+
+        monkeypatch.setattr(subprocess, "run", mock_run_timeout)
+        assert _get_git_commit() == "unknown"
+
+        # Case 5: Verify execution invariants: shell=False, timeout specified, args fixed list
+        captured_calls = []
+
+        def mock_run_capture(cmd: Any, **kwargs: Any) -> Any:
+            captured_calls.append((cmd, kwargs))
+
+            class MockResult:
+                returncode = 0
+                stdout = "abc1234\n"
+
+            return MockResult()
+
+        monkeypatch.setattr(subprocess, "run", mock_run_capture)
+        commit = _get_git_commit()
+        assert commit == "abc1234"
+        assert len(captured_calls) == 1
+        cmd, kwargs = captured_calls[0]
+        assert cmd == ["git", "rev-parse", "--short", "HEAD"]
+        assert kwargs.get("shell") is not True  # Must never run with shell=True
+        assert kwargs.get("timeout", 0) > 0  # Must specify finite timeout

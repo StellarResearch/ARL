@@ -158,3 +158,79 @@ def test_standardized_metrics_preserves_zero_values() -> None:
     assert std.generalization_gap == 0.0
     assert std.battery_remaining == 0.0
     assert std.battery_used == 0.0
+
+
+def test_planner_failure_vs_zero_path_length_serialization(tmp_path: Path) -> None:
+    """Strictly verify failure (path_length=None) vs measured zero (path_length=0.0) serialization.
+
+    Failure must serialize as null in JSON and "" in CSV.
+    Measured zero must serialize as 0.0 in JSON and "0.0" in CSV.
+    """
+    # 1. Failure case
+    fail_metrics = PlannerEvaluationMetrics(
+        episodes=5,
+        success_rate=0.0,
+        mean_path_length=None,
+        std_path_length=None,
+        min_path_length=None,
+        max_path_length=None,
+        mean_planning_time=0.005,
+        std_planning_time=0.001,
+        collision_rate=None,
+        all_path_lengths=[None, None, None, None, None],
+        all_planning_times=[0.005] * 5,
+    )
+    std_fail = StandardizedExperimentMetrics.from_planner_metrics(fail_metrics)
+    assert std_fail.path_length is None
+
+    # JSON serialization
+    fail_json = json.loads(std_fail.model_dump_json())
+    assert fail_json["path_length"] is None
+
+    # CSV dictionary
+    fail_csv_dict = std_fail.to_csv_dict()
+    assert fail_csv_dict["path_length"] == ""
+
+    # Write and read CSV
+    fail_csv_path = tmp_path / "fail_metrics.csv"
+    ExperimentManager._save_metrics_csv(fail_csv_dict, fail_csv_path)
+    with open(fail_csv_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fail_row = next(reader)
+    assert fail_row["path_length"] == ""
+
+    # 2. Measured zero case (e.g. agent starts already at goal)
+    zero_metrics = PlannerEvaluationMetrics(
+        episodes=5,
+        success_rate=1.0,
+        mean_path_length=0.0,
+        std_path_length=0.0,
+        min_path_length=0.0,
+        max_path_length=0.0,
+        mean_planning_time=0.0001,
+        std_planning_time=0.00001,
+        collision_rate=None,
+        all_path_lengths=[0.0, 0.0, 0.0, 0.0, 0.0],
+        all_planning_times=[0.0001] * 5,
+    )
+    std_zero = StandardizedExperimentMetrics.from_planner_metrics(zero_metrics)
+    assert std_zero.path_length == 0.0
+
+    # JSON serialization
+    zero_json = json.loads(std_zero.model_dump_json())
+    assert zero_json["path_length"] == 0.0
+
+    # CSV dictionary
+    zero_csv_dict = std_zero.to_csv_dict()
+    assert zero_csv_dict["path_length"] == 0.0
+
+    # Write and read CSV
+    zero_csv_path = tmp_path / "zero_metrics.csv"
+    ExperimentManager._save_metrics_csv(zero_csv_dict, zero_csv_path)
+    with open(zero_csv_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        zero_row = next(reader)
+    assert zero_row["path_length"] == "0.0"
+
+    # Explicitly verify the distinction is never conflated
+    assert fail_row["path_length"] != zero_row["path_length"]
