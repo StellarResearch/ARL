@@ -126,20 +126,25 @@ RL algorithms. This separation respects the fundamental difference between:
 - **Classical planners**: Deterministic, model-based, compute solutions per-instance.
 
 ```
-BasePlanner (ABC)
-  └── AStarPlanner
-        └── PlannerAdapter (GridWorldEnv integration)
+make_planner(name, **params) [Authoritative Factory]
+  ├── AStarPlanner (BasePlanner subclass: discrete 2D grid search)
+  └── RRTStarPlanner (sampling-based continuous 2D motion planner)
+
+PlannerAdapter(planner, env) [Composition Adapter]
+  ├── Evaluates AStarPlanner on GridWorldEnv layouts
+  └── Evaluates RRTStarPlanner on ContinuousNavigation2DEnv layouts
 ```
 
-Planners expose the same success/collision metrics as RL agents where applicable,
-but have planner-specific metrics (path length, planning time) that RL agents do not.
-The `PlannerAdapter` runs the planner on the same GridWorldEnv layouts as RL evaluation,
-enabling direct success-rate comparison.
+Planners expose geometric metrics (path length, planning time, path efficiency) and success rate.
+For offline planners operating on static obstacle layouts, dynamic execution metrics (`collision_rate`, `episode_length`, `episode_return`) are strictly set to `None` (not applicable/unmeasured), never defaulted to fake `0.0`.
+The `PlannerAdapter` runs the planner on the same environment layouts as RL evaluation,
+enabling direct cross-paradigm benchmarking.
 
 ### 3.2 Algorithm Registry (`adaptive_rl.algorithms.registry`)
 
 The `AlgorithmRegistry` mirrors the `EnvironmentRegistry` design:
-- Both RL algorithms (PPO, SAC) and planners (A*) are registered.
+- Both RL algorithms (PPO, SAC) and planners (A*, RRT*) are registered.
+- RL algorithms are registered with lazy factory wrappers to preserve clean separation between base installation and the optional `[rl]` dependency stack.
 - Each registration includes typed `AlgorithmMetadata` with capability flags.
 - `AlgorithmKind.RL_POLICY` vs `AlgorithmKind.PLANNER` prevents type confusion.
 - CLI commands (`adaptive-rl algorithm list`, `algorithm inspect <name>`) expose the registry.
@@ -148,26 +153,27 @@ The `AlgorithmRegistry` mirrors the `EnvironmentRegistry` design:
 from adaptive_rl.algorithms.registry import algorithm_registry, AlgorithmKind
 
 rl_algos = algorithm_registry.list_by_kind(AlgorithmKind.RL_POLICY)  # ['ppo', 'sac']
-planners = algorithm_registry.list_by_kind(AlgorithmKind.PLANNER)  # ['astar']
+planners = algorithm_registry.list_by_kind(AlgorithmKind.PLANNER)    # ['astar', 'rrt_star']
 ```
 
 ### 3.3 Experiment Manager (`adaptive_rl.experiments.manager`)
 
-`ExperimentManager` provides reproducible experiment orchestration:
+`ExperimentManager` provides reproducible experiment orchestration with two-tier provenance:
 
 ```
 run(config) → ExperimentResult
-  ├── Generate experiment_id (date + env + algo + seed)
-  ├── Create output directory structure
-  ├── Record provenance (git commit, Python, packages, platform)
-  ├── Save config copy
-  ├── Run training (RL) or planning (planner)
-  ├── Evaluate performance
+  ├── Compute deterministic config_sha256 (canonical config digest)
+  ├── Generate base_experiment_id (date + env + algo + seed)
+  ├── Resolve atomic non-colliding output directory and run_id
+  ├── Record provenance (git commit, Python, packages, platform, config_sha256, run_id)
+  ├── Save config.yaml copy
+  ├── Run training (RL) or planning (make_planner)
+  ├── Evaluate performance (StandardizedExperimentMetrics)
   ├── Save metrics.json + metrics.csv
   └── Save manifest.json
 ```
 
-Every experiment is self-contained and independently reproducible from its `config.yaml` copy.
+Every experiment is self-contained, cryptographically verifiable from `config_sha256`, and independently reproducible from its `config.yaml` copy.
 
 ### 3.4 Benchmarking Framework (`adaptive_rl.benchmarking`)
 

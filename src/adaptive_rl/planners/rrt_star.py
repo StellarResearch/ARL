@@ -110,11 +110,30 @@ class RRTStarPlanner:
             )
         if max_iterations < 1:
             raise ValueError(f"max_iterations must be >= 1, got {max_iterations}")
+        if max_iterations > 100_000:
+            raise ValueError(
+                f"max_iterations ({max_iterations}) exceeds the maximum allowable limit of 100,000."
+            )
 
         if not isinstance(goal_bias, (int, float)) or isinstance(goal_bias, bool):
             raise TypeError(f"goal_bias must be a real number, got {type(goal_bias).__name__}")
         if math.isnan(goal_bias) or math.isinf(goal_bias) or not (0.0 <= goal_bias <= 1.0):
             raise ValueError(f"goal_bias must be a finite number in [0.0, 1.0], got {goal_bias}")
+
+        if collision_resolution > step_size:
+            raise ValueError(
+                f"collision_resolution ({collision_resolution}) cannot be greater than "
+                f"step_size ({step_size}) to prevent tunneling through obstacles."
+            )
+        if collision_resolution < 1e-4:
+            raise ValueError(
+                f"collision_resolution ({collision_resolution}) is too small; must be >= 1e-4."
+            )
+        if search_radius < 0.5 * step_size:
+            raise ValueError(
+                f"search_radius ({search_radius}) must be >= 0.5 * step_size ({0.5 * step_size}) "
+                "to allow effective near-neighbor rewiring."
+            )
 
         if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
             raise TypeError(f"seed must be an integer or None, got {type(seed).__name__}")

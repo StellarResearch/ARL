@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Union, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union, cast
 
 import numpy as np
 
-from adaptive_rl.environments.gridworld.grid import GridWorldEnv
-from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
+if TYPE_CHECKING:
+    from adaptive_rl.environments.gridworld.grid import GridWorldEnv
+    from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
+
 from adaptive_rl.planners.astar import AStarPlanner
 from adaptive_rl.planners.base import (
     BasePlanner,
@@ -55,7 +57,7 @@ class PlannerEvaluationMetrics:
     max_path_length: Optional[float] = None
     mean_planning_time: float = 0.0
     std_planning_time: float = 0.0
-    collision_rate: float = 0.0  # 0.0 for validated planners (no colliding paths are executed)
+    collision_rate: Optional[float] = None  # None if no dynamic environment execution occurred
     all_path_lengths: List[float] = field(default_factory=list)
     all_planning_times: List[float] = field(default_factory=list)
     additional_metrics: Dict[str, Any] = field(default_factory=dict)
@@ -111,6 +113,15 @@ class PlannerAdapter:
         Raises:
             TypeError: If planner/env types are incompatible or unsupported.
         """
+        try:
+            from adaptive_rl.environments.gridworld.grid import GridWorldEnv
+            from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
+        except ImportError as e:
+            raise ImportError(
+                f"PlannerAdapter requires the 'rl' optional dependencies to interact with Gymnasium environments: {e}. "
+                "Install with: pip install 'adaptive-rl[rl]'"
+            ) from e
+
         if isinstance(planner, (BasePlanner, AStarPlanner)):
             if not isinstance(env, GridWorldEnv):
                 raise TypeError(f"AStarPlanner requires a GridWorldEnv, got {type(env).__name__}.")
@@ -321,7 +332,7 @@ class PlannerAdapter:
             max_path_length=max_path,
             mean_planning_time=mean_pt,
             std_planning_time=std_pt,
-            collision_rate=0.0,
+            collision_rate=None,
             all_path_lengths=path_lengths,
             all_planning_times=planning_times,
             additional_metrics={
@@ -329,6 +340,6 @@ class PlannerAdapter:
                 "environment": env_name,
                 "base_seed": base_seed,
                 "successful_episodes": successes,
-                "collision_semantics": "0.0 represents that no invalid or colliding paths were executed (offline path validation).",
+                "collision_semantics": "collision_rate is None because no dynamic environment execution occurred.",
             },
         )

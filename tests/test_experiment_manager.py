@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from typing import Any, Optional
 
 import pytest
 
@@ -402,9 +403,14 @@ class TestExperimentManager:
         constructed_heuristics: list[str] = []
         orig_init = AStarPlanner.__init__
 
-        def spy_init(self: AStarPlanner, heuristic: str = "manhattan") -> None:
+        def spy_init(
+            self: AStarPlanner,
+            heuristic: str = "manhattan",
+            seed: Optional[int] = None,
+            **kwargs: Any,
+        ) -> None:
             constructed_heuristics.append(heuristic)
-            orig_init(self, heuristic=heuristic)
+            orig_init(self, heuristic=heuristic, seed=seed, **kwargs)
 
         monkeypatch.setattr(AStarPlanner, "__init__", spy_init)
 
@@ -440,9 +446,14 @@ evaluation:
         constructed_heuristics: list[str] = []
         orig_init = AStarPlanner.__init__
 
-        def spy_init(self: AStarPlanner, heuristic: str = "manhattan") -> None:
+        def spy_init(
+            self: AStarPlanner,
+            heuristic: str = "manhattan",
+            seed: Optional[int] = None,
+            **kwargs: Any,
+        ) -> None:
             constructed_heuristics.append(heuristic)
-            orig_init(self, heuristic=heuristic)
+            orig_init(self, heuristic=heuristic, seed=seed, **kwargs)
 
         monkeypatch.setattr(AStarPlanner, "__init__", spy_init)
 
@@ -491,3 +502,68 @@ evaluation:
             )
             with pytest.raises(ConfigError):
                 load_config(cfg_file)
+
+    def test_manifest_config_sha256_and_run_id(self) -> None:
+        """ExperimentManifest serializes valid config_sha256 and distinct run_id."""
+        from adaptive_rl.config import compute_config_sha256, load_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            cfg_file = tmppath / "test_exp.yaml"
+            cfg_file.write_text(
+                """
+name: "provenance_test"
+seed: 42
+algorithm:
+  name: "astar"
+environment:
+  name: "gridworld"
+evaluation:
+  eval_episodes: 1
+"""
+            )
+            config = load_config(cfg_file)
+            manager = ExperimentManager(base_output_dir=tmppath / "results")
+            res = manager.run(config=config)
+
+            assert res.success
+            manifest = res.manifest
+            expected_hash = compute_config_sha256(config)
+            assert manifest.config_sha256 == expected_hash
+            assert manifest.run_id.startswith("run_")
+
+            # Check serialized manifest.json on disk
+            manifest_file = res.output_dir / "manifest.json"
+            assert manifest_file.is_file()
+            data = json.loads(manifest_file.read_text(encoding="utf-8"))
+            assert data["config_sha256"] == expected_hash
+            assert data["run_id"] == manifest.run_id
+
+    def test_rrt_star_yaml_parameter_propagation_end_to_end(self) -> None:
+        """RRT* configuration parameters propagate from YAML into planner execution."""
+        from adaptive_rl.config import load_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            cfg_file = tmppath / "rrt_star.yaml"
+            cfg_file.write_text(
+                """
+name: "custom_rrt_star"
+seed: 123
+algorithm:
+  name: "rrt_star"
+  parameters:
+    step_size: 0.6
+    search_radius: 1.8
+environment:
+  name: "navigation"
+evaluation:
+  eval_episodes: 1
+"""
+            )
+            config = load_config(cfg_file)
+            manager = ExperimentManager(base_output_dir=tmppath / "results")
+            res = manager.run(config=config)
+
+            assert res.success
+            assert res.metrics.get("success_rate") is not None

@@ -66,13 +66,15 @@ adaptive-rl/
 │   └── adaptive_rl/           # Core platform package
 │       ├── algorithms/        # Base algorithm interfaces and SB3 adapters (PPO, SAC)
 │       ├── environments/      # Gymnasium contracts, registry, and environments
+│       ├── planners/          # Classical baselines (A*, RRT*, make_planner, PlannerAdapter)
+│       ├── benchmarking/      # Multi-seed benchmarking and ablation runner
 │       ├── curriculum/        # Staged curriculum managers, wrappers, and callbacks
 │       ├── rewards/           # Modular reward function base interfaces
 │       ├── training/          # Trainers, callbacks, and checkpoint managers
 │       ├── evaluation/        # Benchmark evaluators, metrics, and scenarios
 │       ├── models/            # Model artifact storage and metadata management
-│       ├── visualization/     # Renderers and plot generation
-│       ├── experiments/       # Experiment orchestration runners
+│       ├── visualization/     # Renderers, plot generation, and terminal dashboard
+│       ├── experiments/       # Experiment orchestration manager and manifests
 │       ├── config.py          # Pydantic schema validation & YAML parser
 │       └── cli.py             # Typer command-line interface
 └── tests/                     # Automated pytest suite
@@ -98,11 +100,11 @@ cd ARL
 python3 -m venv .venv
 source .venv/bin/activate
 
-# 3. Install AdaptiveRL in editable mode
+# 3. Install AdaptiveRL (minimal: planners, config, CLI)
 pip install -e .
 
-# Or install with development dependencies (pytest, ruff, mypy)
-pip install -e ".[dev]"
+# Or install for full development (RL engines, SB3, PyTorch, dev tools)
+pip install -e ".[all]"
 ```
 
 ---

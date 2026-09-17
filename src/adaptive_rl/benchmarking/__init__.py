@@ -7,6 +7,7 @@ computing aggregate statistics, and producing structured comparison reports.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -232,7 +233,7 @@ def compute_aggregate_stats(
     valid = [
         float(v)
         for v in values
-        if isinstance(v, (int, float)) and not isinstance(v, bool) and not np.isnan(v)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
     ]
     if not valid:
         return AggregateStats(
@@ -242,6 +243,17 @@ def compute_aggregate_stats(
             min=float("nan"),
             max=float("nan"),
             n_seeds=0,
+            values=list(values),
+        )
+
+    if len(valid) == 1:
+        return AggregateStats(
+            metric_name=metric_name,
+            mean=valid[0],
+            std=0.0,
+            min=valid[0],
+            max=valid[0],
+            n_seeds=1,
             values=list(values),
         )
 
@@ -279,7 +291,7 @@ class BenchmarkRunner:
         print(result.aggregate["success_rate"].mean)
     """
 
-    # Metrics to aggregate (present in EvaluationMetrics or PlannerEvaluationMetrics)
+    # Metrics to aggregate (present in EvaluationMetrics, PlannerEvaluationMetrics, or StandardizedExperimentMetrics)
     SCALAR_METRICS = [
         "success_rate",
         "collision_rate",
@@ -289,9 +301,18 @@ class BenchmarkRunner:
         "max_reward",
         "mean_episode_length",
         "std_episode_length",
+        "episode_return",
+        "episode_length",
+        "path_length",
+        "path_efficiency",
+        "planning_time",
         "mean_path_length",
         "std_path_length",
         "mean_planning_time",
+        "generalization_gap",
+        "battery_remaining",
+        "battery_used",
+        "dynamic_collision_count",
     ]
 
     def __init__(
@@ -351,7 +372,7 @@ class BenchmarkRunner:
         # Aggregate
         successful = [sr for sr in seed_results if sr.success]
         failed = [sr for sr in seed_results if not sr.success]
-        aggregate = self._aggregate(successful)
+        aggregate = self._aggregate(successful, all_seed_results=seed_results)
 
         return BenchmarkResult(
             name=arm_name,
@@ -440,16 +461,22 @@ class BenchmarkRunner:
         return report
 
     @classmethod
-    def _aggregate(cls, seed_results: List[SeedResult]) -> Dict[str, AggregateStats]:
-        """Compute aggregate statistics across successful seed results.
+    def _aggregate(
+        cls,
+        seed_results: List[SeedResult],
+        all_seed_results: Optional[List[SeedResult]] = None,
+    ) -> Dict[str, AggregateStats]:
+        """Compute aggregate statistics across successful seed results and track overall completion.
 
         Args:
             seed_results: List of successful seed result records.
+            all_seed_results: Optional list of all requested seed results including failures.
 
         Returns:
             Dictionary mapping metric names to AggregateStats.
         """
-        if not seed_results:
+        all_results = all_seed_results if all_seed_results is not None else seed_results
+        if not all_results and not seed_results:
             return {}
 
         aggregated: Dict[str, List[float]] = {m: [] for m in cls.SCALAR_METRICS}
@@ -458,10 +485,33 @@ class BenchmarkRunner:
             for metric in cls.SCALAR_METRICS:
                 val = sr.metrics.get(metric)
                 if val is not None and isinstance(val, (int, float)) and not isinstance(val, bool):
-                    aggregated[metric].append(float(val))
+                    if math.isfinite(float(val)):
+                        aggregated[metric].append(float(val))
 
-        return {
+        stats = {
             metric: compute_aggregate_stats(metric, values)
             for metric, values in aggregated.items()
             if values  # Only include metrics with at least one value
         }
+
+        # Calculate unbiased overall completion rate factoring in failed runs (survivor bias mitigation)
+        if all_results:
+            overall_success_vals: List[float] = []
+            for sr in all_results:
+                if not sr.success:
+                    overall_success_vals.append(0.0)
+                else:
+                    sr_succ = sr.metrics.get("success_rate")
+                    if (
+                        sr_succ is not None
+                        and isinstance(sr_succ, (int, float))
+                        and math.isfinite(float(sr_succ))
+                    ):
+                        overall_success_vals.append(float(sr_succ))
+                    else:
+                        overall_success_vals.append(1.0)
+            stats["overall_success_rate"] = compute_aggregate_stats(
+                "overall_success_rate", overall_success_vals
+            )
+
+        return stats

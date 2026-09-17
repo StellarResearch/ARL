@@ -92,6 +92,7 @@ def test_standardized_metrics_from_planner() -> None:
     assert std.episode_return is None  # Planners do not produce RL reward return
     assert std.success_rate == 1.0
     assert std.collision_rate == 0.0
+    assert std.episode_length is None  # Episode length is independent and None for planners
     assert std.path_length == 9.2
     assert std.planning_time == 0.0035
     assert std.path_efficiency == 0.92

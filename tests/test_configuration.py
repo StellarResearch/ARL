@@ -284,3 +284,75 @@ environment:
     )
     with pytest.raises(ConfigError, match="Extra inputs are not permitted"):
         load_config(bad_yaml)
+
+
+def test_config_sha256_deterministic(tmp_path: Path) -> None:
+    """compute_config_sha256 is deterministic and independent of runtime paths."""
+    from adaptive_rl.config import compute_config_sha256
+
+    cfg_yaml = tmp_path / "test_exp.yaml"
+    cfg_yaml.write_text(
+        """
+name: "sha256_test"
+seed: 42
+algorithm:
+  name: "astar"
+  parameters:
+    heuristic: "euclidean"
+environment:
+  name: "gridworld"
+""",
+        encoding="utf-8",
+    )
+    cfg1 = load_config(cfg_yaml)
+    hash1 = compute_config_sha256(cfg1)
+    assert len(hash1) == 64
+    assert isinstance(hash1, str)
+
+    # Change runtime output_dir
+    cfg1.output_dir = tmp_path / "somewhere_else"
+    cfg1.log_dir = tmp_path / "somewhere_else" / "logs"
+    hash2 = compute_config_sha256(cfg1)
+    assert hash1 == hash2
+
+    # But changing a hyperparameter changes the hash
+    cfg1.seed = 999
+    assert compute_config_sha256(cfg1) != hash1
+
+
+def test_plain_rrt_rejected_in_config(tmp_path: Path) -> None:
+    """Plain 'rrt' is explicitly rejected in configuration."""
+    rrt_yaml = tmp_path / "rrt.yaml"
+    rrt_yaml.write_text(
+        """
+name: "plain_rrt"
+algorithm:
+  name: "rrt"
+environment:
+  name: "navigation"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="Standard RRT does not perform tree rewiring"):
+        load_config(rrt_yaml)
+
+
+def test_rrt_star_relational_validation_in_config(tmp_path: Path) -> None:
+    """Relational constraint violations in RRT* parameters raise ConfigError."""
+    # collision_resolution > step_size
+    bad_yaml = tmp_path / "bad_tunnel.yaml"
+    bad_yaml.write_text(
+        """
+name: "bad_tunnel"
+algorithm:
+  name: "rrt_star"
+  parameters:
+    step_size: 0.2
+    collision_resolution: 0.5
+environment:
+  name: "navigation"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="cannot be greater than step_size"):
+        load_config(bad_yaml)

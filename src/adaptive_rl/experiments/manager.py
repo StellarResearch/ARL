@@ -68,6 +68,8 @@ class ExperimentManifest:
     notes: str = ""
     experiment_name: str = ""
     base_experiment_id: str = ""
+    run_id: str = ""
+    config_sha256: str = ""
     error_type: Optional[str] = None
     error_traceback: Optional[str] = None
 
@@ -519,11 +521,10 @@ class ExperimentManager:
         Returns:
             ExperimentResult with planner evaluation outputs.
         """
-        import inspect
 
-        from adaptive_rl.algorithms.registry import algorithm_registry
         from adaptive_rl.environments.registry import make_env
         from adaptive_rl.planners.adapter import PlannerAdapter
+        from adaptive_rl.planners.factory import make_planner
 
         metrics: Dict[str, Any] = {}
         error_msg = ""
@@ -533,15 +534,11 @@ class ExperimentManager:
         try:
             env = make_env(config.environment.name, **config.environment.parameters)
 
-            algo_name = config.algorithm.name.lower()
-            planner_factory = algorithm_registry.get_factory(algo_name)
-
             params = dict(config.algorithm.parameters)
-            sig = inspect.signature(planner_factory)
-            if "seed" in sig.parameters and "seed" not in params:
+            if "seed" not in params:
                 params["seed"] = config.seed
 
-            planner = planner_factory(**params)
+            planner = make_planner(config.algorithm.name, **params)
 
             adapter = PlannerAdapter(planner=planner, env=env)  # type: ignore[arg-type]
             planner_metrics = adapter.evaluate(
@@ -614,14 +611,22 @@ class ExperimentManager:
         base_experiment_id: str = "",
     ) -> ExperimentManifest:
         """Build an experiment manifest from current runtime information."""
+        import uuid
+
+        from adaptive_rl.config import compute_config_sha256
+
         try:
             rel_config_path = str(Path(config_path).resolve().relative_to(Path.cwd().resolve()))
         except Exception:
             rel_config_path = str(config_path)
 
+        now_utc = datetime.now(timezone.utc)
+        run_id = f"run_{now_utc.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        config_hash = compute_config_sha256(config) if config is not None else ""
+
         return ExperimentManifest(
             experiment_id=experiment_id,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=now_utc.isoformat(),
             algorithm=config.algorithm.name if config else "unknown",
             environment=config.environment.name if config else "unknown",
             seed=config.seed if config else -1,
@@ -641,6 +646,8 @@ class ExperimentManager:
             },
             experiment_name=config.name if config else "",
             base_experiment_id=base_experiment_id or experiment_id,
+            run_id=run_id,
+            config_sha256=config_hash,
         )
 
     @staticmethod

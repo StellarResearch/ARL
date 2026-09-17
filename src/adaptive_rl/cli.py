@@ -18,7 +18,6 @@ from rich.table import Table
 
 import adaptive_rl
 from adaptive_rl.config import ConfigError, load_config
-from adaptive_rl.environments.registry import RegistryError, list_all_metadata, make_env
 
 app = typer.Typer(
     name="adaptive-rl",
@@ -223,6 +222,14 @@ def validate_config(
 @env_app.command(name="list")
 def list_envs() -> None:
     """List all registered environments and their metadata."""
+    try:
+        from adaptive_rl.environments.registry import list_all_metadata
+    except ImportError as err:
+        console.print(
+            f"[bold red]Environment commands require optional 'rl' dependencies:[/bold red] {err}"
+        )
+        raise typer.Exit(code=1)
+
     meta_map = list_all_metadata()
     if not meta_map:
         console.print(
@@ -255,6 +262,14 @@ def inspect_env(
     name: str = typer.Argument(..., help="Name of registered or Gymnasium environment to inspect"),
 ) -> None:
     """Inspect observation and action spaces of an environment."""
+    try:
+        from adaptive_rl.environments.registry import RegistryError, make_env
+    except ImportError as err:
+        console.print(
+            f"[bold red]Environment commands require optional 'rl' dependencies:[/bold red] {err}"
+        )
+        raise typer.Exit(code=1)
+
     try:
         env = make_env(name)
         obs, info = env.reset()
@@ -300,6 +315,14 @@ def run_env(
     seed: int = typer.Option(42, "--seed", help="Random seed for environment reset"),
 ) -> None:
     """Simulate an environment episode with random actions and textual rendering."""
+    try:
+        from adaptive_rl.environments.registry import RegistryError, make_env
+    except ImportError as err:
+        console.print(
+            f"[bold red]Environment commands require optional 'rl' dependencies:[/bold red] {err}"
+        )
+        raise typer.Exit(code=1)
+
     try:
         env = make_env(name)
         obs, info = env.reset(seed=seed)

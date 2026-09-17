@@ -151,8 +151,8 @@ class StandardizedExperimentMetrics(BaseModel):
             episodes=getattr(planner_metrics, "episodes", 1),
             episode_return=None,  # Classical planners do not accumulate RL reward returns
             success_rate=getattr(planner_metrics, "success_rate", None),
-            collision_rate=getattr(planner_metrics, "collision_rate", 0.0),
-            episode_length=mean_path if getattr(planner_metrics, "is_discrete", False) else None,
+            collision_rate=getattr(planner_metrics, "collision_rate", None),
+            episode_length=None,  # Independent: RL step count is not applicable to geometric paths
             path_length=mean_path,
             path_efficiency=extra.get("path_efficiency"),
             planning_time=mean_time,

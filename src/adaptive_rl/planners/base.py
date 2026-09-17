@@ -79,6 +79,10 @@ class BasePlanner(ABC):
     goal, obstacles, and seed where applicable).
     """
 
+    def __init__(self, seed: Optional[int] = None) -> None:
+        """Initialize base planner with optional random seed."""
+        self.seed = seed
+
     @abstractmethod
     def plan(
         self,

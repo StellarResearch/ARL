@@ -51,7 +51,7 @@ class AStarPlanner(BasePlanner):
             print("Path length:", result.path_length)
     """
 
-    def __init__(self, heuristic: str = "manhattan") -> None:
+    def __init__(self, heuristic: str = "manhattan", seed: Optional[int] = None) -> None:
         """Initialize the A* planner.
 
         Args:
@@ -62,15 +62,21 @@ class AStarPlanner(BasePlanner):
                     but less informed, expanding more search nodes.
                 'chebyshev': Admissible on 8-connected grids; underestimates Manhattan distance on
                     4-connected grids and does not reflect 4-connected movement geometry.
+            seed: Optional random seed (accepted for uniform polymorphic planner interface;
+                A* is mathematically deterministic and does not use stochastic operations).
 
         Raises:
             ValueError: If an unsupported heuristic name is given.
+            TypeError: If seed is not an integer or None.
         """
+        super().__init__(seed=seed)
         valid_heuristics = ("manhattan", "euclidean", "chebyshev")
         if heuristic not in valid_heuristics:
             raise ValueError(
                 f"Unsupported heuristic '{heuristic}'. Valid options: {', '.join(valid_heuristics)}."
             )
+        if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+            raise TypeError(f"seed must be an integer or None, got {type(seed).__name__}")
         self._heuristic_name = heuristic
 
     @property
