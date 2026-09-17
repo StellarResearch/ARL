@@ -1,0 +1,36 @@
+name: "navigation_rrt_star_baseline"
+seed: 42
+
+algorithm:
+  name: "rrt_star"
+  learning_rate: 0.0003  # Not used by RRT* — schema required
+  gamma: 0.99             # Not used by RRT* — schema required
+  batch_size: 64          # Not used by RRT* — schema required
+  parameters:
+    step_size: 0.5
+    max_iterations: 1500
+    goal_bias: 0.1
+    search_radius: 1.5
+
+environment:
+  name: "navigation"
+  max_steps: 200
+  parameters:
+    arena_width: 20.0
+    arena_height: 20.0
+    num_obstacles: 5
+    obstacle_radius: 1.0
+    agent_radius: 0.3
+    goal_radius: 0.8
+
+training:
+  total_timesteps: 1     # Not used by RRT* — schema required
+  checkpoint_freq: 0
+  log_interval: 1
+
+evaluation:
+  eval_episodes: 10
+  deterministic: true
+
+output_dir: "experiments/results"
+log_dir: "experiments/logs"

@@ -1,0 +1,30 @@
+name: "gridworld_astar_baseline"
+seed: 42
+
+algorithm:
+  name: "astar"
+  learning_rate: 0.0003  # Not used by A* — required by schema
+  gamma: 0.99             # Not used by A* — required by schema
+  batch_size: 64          # Not used by A* — required by schema
+  parameters:
+    heuristic: "manhattan"
+
+environment:
+  name: "gridworld"
+  max_steps: 100
+  parameters:
+    width: 6
+    height: 5
+    num_obstacles: 3
+
+training:
+  total_timesteps: 1     # Not used by A* — required by schema
+  checkpoint_freq: 0
+  log_interval: 1
+
+evaluation:
+  eval_episodes: 20
+  deterministic: true
+
+output_dir: "experiments/results"
+log_dir: "experiments/logs"
