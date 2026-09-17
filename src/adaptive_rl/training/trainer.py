@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,11 @@ from adaptive_rl.algorithms.ppo import PPOAlgorithm
 from adaptive_rl.algorithms.sac import SACAlgorithm
 from adaptive_rl.config import ExperimentConfig
 from adaptive_rl.environments.registry import make_env
+from adaptive_rl.experiments.metadata import (
+    EpisodeRecord,
+    ExperimentMetadata,
+    save_episodes_csv,
+)
 from adaptive_rl.training.callbacks import (
     BaseCallback,
     CheckpointCallback,
@@ -39,6 +45,8 @@ class TrainingResult:
     episode_lengths: List[int] = field(default_factory=list)
     success_rate: float = 0.0
     collision_rate: float = 0.0
+    metadata_path: Optional[Path] = None
+    episodes_csv_path: Optional[Path] = None
 
 
 class BaseTrainer(ABC):
@@ -146,6 +154,9 @@ class PPOTrainer(BaseTrainer):
         Returns:
             TrainingResult: Summary of training performance, episode outcomes, and artifact paths.
         """
+        started_at = time.time()
+        import adaptive_rl
+
         adapter = SB3CallbackAdapter(
             callbacks=self._callbacks,
             algorithm=self.algorithm,
@@ -164,6 +175,56 @@ class PPOTrainer(BaseTrainer):
         final_model_path = models_dir / f"{self.config.name}_final.zip"
         self.algorithm.save(final_model_path)
 
+        finished_at = time.time()
+        duration = finished_at - started_at
+
+        # Build per-episode records for CSV export
+        episode_records: List[EpisodeRecord] = []
+        cumulative_ts = 0
+        for i, (rew, length) in enumerate(
+            zip(self.metric_logger.episode_rewards, self.metric_logger.episode_lengths)
+        ):
+            cumulative_ts += length
+            episode_records.append(
+                EpisodeRecord(
+                    episode=i + 1,
+                    reward=float(rew),
+                    length=int(length),
+                    success=False,   # per-episode success not tracked separately at this level
+                    collision=False,
+                    timestep=cumulative_ts,
+                )
+            )
+
+        # Save metadata.json and episodes.csv in metadata subdir
+        metadata_dir = self.config.output_dir / "metadata"
+        metadata = ExperimentMetadata(
+            experiment_name=self.config.name,
+            algorithm=self.config.algorithm.name,
+            environment=self.config.environment.name,
+            seed=self.config.seed,
+            total_timesteps=self.config.training.total_timesteps,
+            actual_timesteps=self.algorithm.num_timesteps,
+            episodes_completed=self.metric_logger.total_episodes,
+            mean_reward=self.metric_logger.mean_reward,
+            success_rate=self.metric_logger.success_rate,
+            collision_rate=self.metric_logger.collision_rate,
+            final_model_path=str(final_model_path),
+            checkpoint_paths=[cp["path"] for cp in self.checkpoint_manager.list_checkpoints()],
+            config_snapshot=self.config.model_dump(mode="python"),
+            adaptive_rl_version=adaptive_rl.__version__,
+            finished_at=__import__("datetime").datetime.fromtimestamp(
+                finished_at, tz=__import__("datetime").timezone.utc
+            ).isoformat(),
+            duration_seconds=round(duration, 3),
+        )
+        metadata_path = metadata.save(metadata_dir, name=self.config.name)
+        episodes_csv_path = save_episodes_csv(
+            records=episode_records,
+            output_dir=metadata_dir,
+            name=self.config.name,
+        )
+
         result = TrainingResult(
             experiment_name=self.config.name,
             total_timesteps=self.config.training.total_timesteps,
@@ -175,6 +236,8 @@ class PPOTrainer(BaseTrainer):
             episode_lengths=list(self.metric_logger.episode_lengths),
             success_rate=self.metric_logger.success_rate,
             collision_rate=self.metric_logger.collision_rate,
+            metadata_path=metadata_path,
+            episodes_csv_path=episodes_csv_path,
         )
         return result
 
@@ -295,6 +358,9 @@ class SACTrainer(BaseTrainer):
         Returns:
             TrainingResult: Summary of training performance, episode outcomes, and artifact paths.
         """
+        started_at = time.time()
+        import adaptive_rl
+
         adapter = SB3CallbackAdapter(
             callbacks=self._callbacks,
             algorithm=self.algorithm,
@@ -313,6 +379,56 @@ class SACTrainer(BaseTrainer):
         final_model_path = models_dir / f"{self.config.name}_final.zip"
         self.algorithm.save(final_model_path)
 
+        finished_at = time.time()
+        duration = finished_at - started_at
+
+        # Build per-episode records for CSV export
+        episode_records: List[EpisodeRecord] = []
+        cumulative_ts = 0
+        for i, (rew, length) in enumerate(
+            zip(self.metric_logger.episode_rewards, self.metric_logger.episode_lengths)
+        ):
+            cumulative_ts += length
+            episode_records.append(
+                EpisodeRecord(
+                    episode=i + 1,
+                    reward=float(rew),
+                    length=int(length),
+                    success=False,
+                    collision=False,
+                    timestep=cumulative_ts,
+                )
+            )
+
+        # Save metadata.json and episodes.csv
+        metadata_dir = self.config.output_dir / "metadata"
+        metadata = ExperimentMetadata(
+            experiment_name=self.config.name,
+            algorithm=self.config.algorithm.name,
+            environment=self.config.environment.name,
+            seed=self.config.seed,
+            total_timesteps=self.config.training.total_timesteps,
+            actual_timesteps=self.algorithm.num_timesteps,
+            episodes_completed=self.metric_logger.total_episodes,
+            mean_reward=self.metric_logger.mean_reward,
+            success_rate=self.metric_logger.success_rate,
+            collision_rate=self.metric_logger.collision_rate,
+            final_model_path=str(final_model_path),
+            checkpoint_paths=[cp["path"] for cp in self.checkpoint_manager.list_checkpoints()],
+            config_snapshot=self.config.model_dump(mode="python"),
+            adaptive_rl_version=adaptive_rl.__version__,
+            finished_at=__import__("datetime").datetime.fromtimestamp(
+                finished_at, tz=__import__("datetime").timezone.utc
+            ).isoformat(),
+            duration_seconds=round(duration, 3),
+        )
+        metadata_path = metadata.save(metadata_dir, name=self.config.name)
+        episodes_csv_path = save_episodes_csv(
+            records=episode_records,
+            output_dir=metadata_dir,
+            name=self.config.name,
+        )
+
         result = TrainingResult(
             experiment_name=self.config.name,
             total_timesteps=self.config.training.total_timesteps,
@@ -324,6 +440,8 @@ class SACTrainer(BaseTrainer):
             episode_lengths=list(self.metric_logger.episode_lengths),
             success_rate=self.metric_logger.success_rate,
             collision_rate=self.metric_logger.collision_rate,
+            metadata_path=metadata_path,
+            episodes_csv_path=episodes_csv_path,
         )
         return result
 

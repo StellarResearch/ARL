@@ -21,6 +21,8 @@ def test_cli_help() -> None:
     assert "curriculum" in result.output
     assert "train" in result.output
     assert "evaluate" in result.output
+    assert "generalization" in result.output
+    assert "benchmark-planners" in result.output
 
 
 def test_cli_version() -> None:
