@@ -373,3 +373,38 @@ class TestBenchmarkRunner:
         assert d["failed_seeds"] == 1
         assert d["failed_seed_ids"] == [43]
         assert d["failure_reasons"][43] == "Environment timeout"
+
+    def test_compute_aggregate_stats_rejects_inf(self) -> None:
+        """compute_aggregate_stats filters out +inf and -inf safely."""
+        import math
+
+        from adaptive_rl.benchmarking import compute_aggregate_stats
+
+        # List with positive and negative infinity
+        values = [1.0, float("inf"), 2.0, float("-inf"), 3.0]
+        stats = compute_aggregate_stats("test_metric", values)
+
+        assert stats.n_seeds == 3
+        assert stats.mean == 2.0
+        assert stats.min == 1.0
+        assert stats.max == 3.0
+        assert math.isfinite(stats.std)
+
+    def test_benchmark_survivor_bias_mitigation(self) -> None:
+        """_aggregate computes overall_success_rate factoring in failed runs."""
+        from adaptive_rl.benchmarking import BenchmarkRunner, SeedResult
+
+        all_results = [
+            SeedResult(seed=1, success=True, metrics={"success_rate": 1.0}),
+            SeedResult(seed=2, success=False, metrics={}, error_message="Crash"),
+            SeedResult(seed=3, success=False, metrics={}, error_message="Timeout"),
+        ]
+        successful = [r for r in all_results if r.success]
+
+        stats = BenchmarkRunner._aggregate(successful, all_seed_results=all_results)
+        # Conditioned on successful: success_rate is 1.0
+        assert stats["success_rate"].mean == 1.0
+        # Overall factoring in failed runs: 1 success / 3 total = 1/3
+        assert "overall_success_rate" in stats
+        assert abs(stats["overall_success_rate"].mean - (1.0 / 3.0)) < 1e-4
+        assert stats["overall_success_rate"].n_seeds == 3

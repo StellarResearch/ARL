@@ -1,7 +1,14 @@
 """RRT* (Rapidly-exploring Random Tree Star) planner for continuous 2D navigation.
 
-Implements optimal kinodynamic-free sampling-based path planning in continuous 2D space
+Implements kinodynamic-free sampling-based path planning in continuous 2D space
 against arena wall boundaries and circular obstacles, matching ContinuousNavigation2DEnv.
+Includes near-neighbor rewiring heuristic to optimize path quality during exploration.
+
+Note on optimality:
+Standard theoretical asymptotic optimality (Karaman & Frazzoli, 2011) requires a
+sample-dependent shrinking neighborhood radius (gamma * (log(n)/n)^(1/d)). This implementation
+employs a fixed search radius as a practical bounded-neighborhood rewiring heuristic,
+substantially reducing trajectory length without the formal asymptotic guarantee of dynamic-radius RRT*.
 
 Reference: Karaman & Frazzoli (2011). "Sampling-based algorithms for optimal motion planning".
 """
@@ -14,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from adaptive_rl.planners.base import PlannerResult
+from adaptive_rl.planners.base import BaseContinuousPlanner, PlannerResult
 
 ContinuousCoordinate = Tuple[float, float]
 CircularObstacle = Tuple[float, float, float]  # (x, y, radius)
@@ -39,15 +46,41 @@ def _euclidean_dist(p1: ContinuousCoordinate, p2: ContinuousCoordinate) -> float
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 
-class RRTStarPlanner:
-    """RRT* path planner for continuous 2D environments.
+class RRTStarPlanner(BaseContinuousPlanner):
+    """RRT* bounded-neighborhood path planner for continuous 2D environments.
 
     Navigates a 2D rectangular arena with circular obstacles and perimeter walls,
     matching the collision geometry of :class:`ContinuousNavigation2DEnv`.
 
+    Algorithmic Specification:
+    - **Neighborhood Rule**: Euclidean ball of radius `search_radius` centered at new sample `x_new`.
+      Nodes within this ball form the near-neighbor candidate pool for parent selection and rewiring.
+    - **Connection Radius Behavior**: Fixed search radius (`search_radius = const`).
+      This bounded-neighborhood heuristic provides practical path shortening without the dynamic
+      shrinking radius formula gamma * (log(n)/n)^(1/d) required for theoretical asymptotic optimality.
+    - **Nearest & Near-Node Selection**:
+      * Nearest: Node in tree minimizing Euclidean distance to `x_rand`.
+      * Near: All tree nodes within Euclidean distance `search_radius` of `x_new`.
+      * Best Parent: Selected from near nodes to minimize cumulative path cost `c(near) + dist(near, x_new)`.
+    - **Rewiring Behavior**:
+      For each node in `near_nodes`, if `c(x_new) + dist(x_new, near) < c(near)` and the segment is
+      collision-free (and does not introduce an ancestor cycle), the near node is re-parented to `x_new`
+      and subtree costs are propagated recursively down to all its descendants.
+    - **Collision Checking Assumptions**:
+      Line segment interpolation with step size `collision_resolution`. Checks all circular obstacles
+      with agent radius margin (`dist < obs_radius + agent_radius`) and arena bounding perimeter walls.
+      Kinodynamic / non-holonomic constraints are not modeled (kinodynamic-free 2D holonomic).
+    - **Stopping Criteria**:
+      Executes up to `max_iterations` sample extensions. If multiple paths reach the goal region
+      (`dist <= goal_radius`), the lowest-cost path is retained. Fails if no path reaches goal within budget.
+    - **Known Theoretical Limitations**:
+      Fixed radius does not guarantee asymptotic optimality as n -> inf (Karaman & Frazzoli, 2011).
+      Linear scan over tree nodes scales as O(n^2) over iterations, suitable for benchmark iteration
+      budgets (<= 2000 steps) rather than large-scale planning.
+
     Features:
     - Configurable step size, goal bias, and maximum iterations
-    - Near-neighbor rewiring for asymptotic optimality
+    - Near-neighbor rewiring heuristic for reduced path cost
     - Interpolated continuous collision checking along path edges
     - Fully deterministic execution when seeded
     - Path extraction, arc-length calculation, and validity verification
@@ -85,23 +118,58 @@ class RRTStarPlanner:
             collision_resolution: Step size for line-segment collision checking.
             seed: Random seed for deterministic reproducibility.
         """
-        if step_size <= 0:
-            raise ValueError(f"step_size must be positive, got {step_size}")
+        for param_name, param_val in [
+            ("step_size", step_size),
+            ("search_radius", search_radius),
+            ("collision_resolution", collision_resolution),
+        ]:
+            if not isinstance(param_val, (int, float)) or isinstance(param_val, bool):
+                raise TypeError(
+                    f"{param_name} must be a real number, got {type(param_val).__name__}"
+                )
+            if math.isnan(param_val) or math.isinf(param_val) or param_val <= 0:
+                raise ValueError(f"{param_name} must be positive, got {param_val}")
+
+        if not isinstance(max_iterations, int) or isinstance(max_iterations, bool):
+            raise TypeError(
+                f"max_iterations must be an integer, got {type(max_iterations).__name__}"
+            )
         if max_iterations < 1:
             raise ValueError(f"max_iterations must be >= 1, got {max_iterations}")
-        if not (0.0 <= goal_bias <= 1.0):
-            raise ValueError(f"goal_bias must be in [0.0, 1.0], got {goal_bias}")
-        if search_radius <= 0:
-            raise ValueError(f"search_radius must be positive, got {search_radius}")
-        if collision_resolution <= 0:
-            raise ValueError(f"collision_resolution must be positive, got {collision_resolution}")
+        if max_iterations > 100_000:
+            raise ValueError(
+                f"max_iterations ({max_iterations}) exceeds the maximum allowable limit of 100,000."
+            )
 
+        if not isinstance(goal_bias, (int, float)) or isinstance(goal_bias, bool):
+            raise TypeError(f"goal_bias must be a real number, got {type(goal_bias).__name__}")
+        if math.isnan(goal_bias) or math.isinf(goal_bias) or not (0.0 <= goal_bias <= 1.0):
+            raise ValueError(f"goal_bias must be a finite number in [0.0, 1.0], got {goal_bias}")
+
+        if collision_resolution > step_size:
+            raise ValueError(
+                f"collision_resolution ({collision_resolution}) cannot be greater than "
+                f"step_size ({step_size}) to prevent tunneling through obstacles."
+            )
+        if collision_resolution < 1e-4:
+            raise ValueError(
+                f"collision_resolution ({collision_resolution}) is too small; must be >= 1e-4."
+            )
+        if search_radius < 0.5 * step_size:
+            raise ValueError(
+                f"search_radius ({search_radius}) must be >= 0.5 * step_size ({0.5 * step_size}) "
+                "to allow effective near-neighbor rewiring."
+            )
+
+        if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+            raise TypeError(f"seed must be an integer or None, got {type(seed).__name__}")
+
+        super().__init__(seed=seed)
         self.step_size = step_size
         self.max_iterations = max_iterations
         self.goal_bias = goal_bias
         self.search_radius = search_radius
         self.collision_resolution = collision_resolution
-        self.seed = seed
 
     @property
     def name(self) -> str:
@@ -235,29 +303,64 @@ class RRTStarPlanner:
         obstacles = obstacles or []
         t_start = time.perf_counter()
 
-        if arena_width <= 0 or arena_height <= 0:
-            raise ValueError(
-                f"Arena dimensions must be positive, got width={arena_width}, height={arena_height}."
-            )
-        if agent_radius < 0:
-            raise ValueError(f"agent_radius must be non-negative, got {agent_radius}.")
-        if goal_radius <= 0:
+        for dim_name, dim_val in [
+            ("arena_width", arena_width),
+            ("arena_height", arena_height),
+        ]:
+            if not isinstance(dim_val, (int, float)) or isinstance(dim_val, bool):
+                raise TypeError(f"{dim_name} must be a real number, got {type(dim_val).__name__}.")
+            if math.isnan(dim_val) or math.isinf(dim_val) or dim_val <= 0:
+                raise ValueError(
+                    f"Arena dimensions must be positive, got width={arena_width}, height={arena_height}."
+                )
+
+        if not isinstance(goal_radius, (int, float)) or isinstance(goal_radius, bool):
+            raise TypeError(f"goal_radius must be a real number, got {type(goal_radius).__name__}.")
+        if math.isnan(goal_radius) or math.isinf(goal_radius) or goal_radius <= 0:
             raise ValueError(f"goal_radius must be positive, got {goal_radius}.")
+
+        if not isinstance(agent_radius, (int, float)) or isinstance(agent_radius, bool):
+            raise TypeError(
+                f"agent_radius must be a real number, got {type(agent_radius).__name__}."
+            )
+        if math.isnan(agent_radius) or math.isinf(agent_radius) or agent_radius < 0:
+            raise ValueError(
+                f"agent_radius must be a finite non-negative number, got {agent_radius}."
+            )
+
         if arena_width <= 2 * agent_radius or arena_height <= 2 * agent_radius:
             raise ValueError(
                 f"Arena dimensions ({arena_width}x{arena_height}) too small for agent_radius {agent_radius}."
             )
 
-        if not (isinstance(start, (tuple, list)) and len(start) == 2 and isinstance(start[0], (int, float)) and isinstance(start[1], (int, float))):
+        if not (
+            isinstance(start, (tuple, list))
+            and len(start) == 2
+            and isinstance(start[0], (int, float))
+            and not isinstance(start[0], bool)
+            and isinstance(start[1], (int, float))
+            and not isinstance(start[1], bool)
+        ):
             raise ValueError(f"Start coordinate {start} must be a 2-tuple of numbers.")
-        if not (isinstance(goal, (tuple, list)) and len(goal) == 2 and isinstance(goal[0], (int, float)) and isinstance(goal[1], (int, float))):
+        if not (
+            isinstance(goal, (tuple, list))
+            and len(goal) == 2
+            and isinstance(goal[0], (int, float))
+            and not isinstance(goal[0], bool)
+            and isinstance(goal[1], (int, float))
+            and not isinstance(goal[1], bool)
+        ):
             raise ValueError(f"Goal coordinate {goal} must be a 2-tuple of numbers.")
 
         for obs in obstacles:
             if not (isinstance(obs, (tuple, list)) and len(obs) == 3):
-                raise ValueError(f"Invalid circular obstacle {obs}: expected (x, y, radius) 3-tuple.")
-            if obs[2] < 0:
-                raise ValueError(f"Obstacle radius cannot be negative, got {obs[2]}.")
+                raise ValueError(
+                    f"Invalid circular obstacle {obs}: expected (x, y, radius) 3-tuple."
+                )
+            if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in obs):
+                raise TypeError(f"Obstacle parameters must be numbers, got {obs}.")
+            if math.isnan(obs[2]) or math.isinf(obs[2]) or obs[2] < 0:
+                raise ValueError(f"Obstacle radius cannot be negative or non-finite, got {obs[2]}.")
 
         # Seed handling
         rng_seed = seed_override if seed_override is not None else self.seed
@@ -288,7 +391,9 @@ class RRTStarPlanner:
                     planning_time_seconds=elapsed,
                     nodes_explored=1,
                 )
-            elif self.is_segment_valid(start, goal, arena_width, arena_height, obstacles, agent_radius):
+            elif self.is_segment_valid(
+                start, goal, arena_width, arena_height, obstacles, agent_radius
+            ):
                 elapsed = time.perf_counter() - t_start
                 return PlannerResult(
                     success=True,
@@ -371,7 +476,9 @@ class RRTStarPlanner:
                         new_node.children.append(near)
                         self._update_subtree_costs(near, new_node.cost + d)
                         if best_goal_node is not None:
-                            best_goal_cost = best_goal_node.cost + _euclidean_dist(best_goal_node.pos, goal)
+                            best_goal_cost = best_goal_node.cost + _euclidean_dist(
+                                best_goal_node.pos, goal
+                            )
 
             # Check goal reaching
             dist_to_goal = _euclidean_dist(new_node.pos, goal)
@@ -390,7 +497,7 @@ class RRTStarPlanner:
             return PlannerResult(
                 success=False,
                 path=[],
-                path_length=0.0,
+                path_length=None,
                 planning_time_seconds=elapsed,
                 nodes_explored=len(tree),
                 failure_reason=f"No path found within {self.max_iterations} iterations.",

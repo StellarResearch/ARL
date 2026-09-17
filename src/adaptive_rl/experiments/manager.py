@@ -68,6 +68,11 @@ class ExperimentManifest:
     notes: str = ""
     experiment_name: str = ""
     base_experiment_id: str = ""
+    run_id: str = ""
+    config_sha256: str = ""
+    evaluation_seeds: List[int] = field(default_factory=list)
+    error_type: Optional[str] = None
+    error_traceback: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize manifest to a plain dictionary."""
@@ -96,6 +101,8 @@ class ExperimentResult:
         training_result: TrainingResult dataclass (None for planners).
         success: Whether the experiment completed without fatal errors.
         error_message: Error description if success is False.
+        error_type: Exception type name if failed.
+        error_traceback: Full exception traceback if failed.
     """
 
     experiment_id: str
@@ -105,6 +112,8 @@ class ExperimentResult:
     training_result: Any = None
     success: bool = True
     error_message: str = ""
+    error_type: Optional[str] = None
+    error_traceback: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -241,19 +250,29 @@ class ExperimentManager:
         try:
             config = load_config(config_path)
         except Exception as exc:
+            import traceback
+
             experiment_id = f"failed_{int(time.time())}"
+            error_type = type(exc).__name__
+            error_msg = f"Config loading failed: {error_type}: {exc}"
+            error_tb = traceback.format_exc()
             manifest = self._make_manifest(
                 experiment_id=experiment_id,
                 config=None,
                 config_path=str(config_path),
             )
             manifest.evaluation_status = "failed"
+            manifest.error_type = error_type
+            manifest.error_traceback = error_tb
+            manifest.notes = error_msg
             return ExperimentResult(
                 experiment_id=experiment_id,
                 output_dir=self.base_output_dir / experiment_id,
                 manifest=manifest,
                 success=False,
-                error_message=f"Config loading failed: {exc}",
+                error_message=error_msg,
+                error_type=error_type,
+                error_traceback=error_tb,
             )
 
         if timesteps_override is not None and config.training is not None:
@@ -264,10 +283,11 @@ class ExperimentManager:
         return self.run(config=config, config_path=config_path)
 
     def _resolve_unique_run(self, base_id: str) -> tuple[str, Path]:
-        """Resolve a unique, non-colliding experiment ID and artifact directory.
+        """Resolve an atomically unique, non-colliding experiment ID and artifact directory.
 
-        Guarantees that repeated runs with identical configurations create independent
-        artifact directories without overwriting previous runs.
+        Uses atomic directory creation (FileExistsError handling) to guarantee that repeated
+        or concurrent runs with identical configurations create independent artifact directories
+        without race conditions.
 
         Args:
             base_id: Deterministic base experiment identifier.
@@ -275,17 +295,24 @@ class ExperimentManager:
         Returns:
             Tuple of (unique_experiment_id, unique_output_dir).
         """
+        self.base_output_dir.mkdir(parents=True, exist_ok=True)
+
         target_dir = self.base_output_dir / base_id
-        if not target_dir.exists():
+        try:
+            target_dir.mkdir(parents=False, exist_ok=False)
             return base_id, target_dir
+        except FileExistsError:
+            pass
 
         counter = 2
         while True:
             candidate_id = f"{base_id}_run{counter:02d}"
             candidate_dir = self.base_output_dir / candidate_id
-            if not candidate_dir.exists():
+            try:
+                candidate_dir.mkdir(parents=False, exist_ok=False)
                 return candidate_id, candidate_dir
-            counter += 1
+            except FileExistsError:
+                counter += 1
 
     def run(
         self,
@@ -341,10 +368,10 @@ class ExperimentManager:
         else:
             result = self._run_rl_experiment(config, output_dir, manifest)
 
-        # Save manifest
+        # Save manifest ensuring its own artifact entry is included in the serialized file
         manifest_path = output_dir / "manifest.json"
-        manifest.save(manifest_path)
         manifest.artifact_paths["manifest"] = str(manifest_path)
+        manifest.save(manifest_path)
         result.manifest = manifest
 
         return result
@@ -406,11 +433,16 @@ class ExperimentManager:
                 if hasattr(algo, "load"):
                     algo.load(model_path)
 
+            from adaptive_rl.evaluation.seeding import generate_evaluation_seeds
+
+            eval_seeds = generate_evaluation_seeds(config.seed, config.evaluation.eval_episodes)
+            manifest.evaluation_seeds = eval_seeds
+
             evaluator = Evaluator(algorithm=algo, env=eval_env)
             eval_metrics = evaluator.evaluate(
                 num_episodes=config.evaluation.eval_episodes,
                 deterministic=config.evaluation.deterministic,
-                base_seed=config.seed + 10000,  # Separate evaluation seeds
+                base_seed=config.seed,  # Unified evaluation seeding protocol
             )
 
             from adaptive_rl.evaluation.metrics import StandardizedExperimentMetrics
@@ -441,10 +473,16 @@ class ExperimentManager:
             manifest.artifact_paths["evaluation"] = str(eval_path)
 
         except Exception as exc:
+            import traceback
+
             success = False
-            error_msg = str(exc)
+            error_type = type(exc).__name__
+            error_msg = f"{error_type}: {exc}"
+            error_tb = traceback.format_exc()
             manifest.evaluation_status = "failed"
-            manifest.notes = f"Error: {exc}"
+            manifest.error_type = error_type
+            manifest.error_traceback = error_tb
+            manifest.notes = f"Error: {error_msg}\n{error_tb}"
         finally:
             if eval_env is not None:
                 try:
@@ -465,6 +503,8 @@ class ExperimentManager:
             training_result=training_result,
             success=success,
             error_message=error_msg,
+            error_type=getattr(manifest, "error_type", None),
+            error_traceback=getattr(manifest, "error_traceback", None),
         )
 
     # ------------------------------------------------------------------
@@ -487,11 +527,10 @@ class ExperimentManager:
         Returns:
             ExperimentResult with planner evaluation outputs.
         """
-        import inspect
 
-        from adaptive_rl.algorithms.registry import algorithm_registry
         from adaptive_rl.environments.registry import make_env
         from adaptive_rl.planners.adapter import PlannerAdapter
+        from adaptive_rl.planners.factory import make_planner
 
         metrics: Dict[str, Any] = {}
         error_msg = ""
@@ -501,20 +540,21 @@ class ExperimentManager:
         try:
             env = make_env(config.environment.name, **config.environment.parameters)
 
-            algo_name = config.algorithm.name.lower()
-            planner_factory = algorithm_registry.get_factory(algo_name)
-
             params = dict(config.algorithm.parameters)
-            sig = inspect.signature(planner_factory)
-            if "seed" in sig.parameters and "seed" not in params:
+            if "seed" not in params:
                 params["seed"] = config.seed
 
-            planner = planner_factory(**params)
+            planner = make_planner(config.algorithm.name, **params)
+
+            from adaptive_rl.evaluation.seeding import generate_evaluation_seeds
+
+            eval_seeds = generate_evaluation_seeds(config.seed, config.evaluation.eval_episodes)
+            manifest.evaluation_seeds = eval_seeds
 
             adapter = PlannerAdapter(planner=planner, env=env)  # type: ignore[arg-type]
             planner_metrics = adapter.evaluate(
                 num_episodes=config.evaluation.eval_episodes,
-                base_seed=config.seed,
+                base_seed=config.seed,  # Unified evaluation seeding protocol
             )
 
             from adaptive_rl.evaluation.metrics import StandardizedExperimentMetrics
@@ -541,10 +581,16 @@ class ExperimentManager:
             manifest.artifact_paths["metrics_csv"] = str(csv_path)
 
         except Exception as exc:
+            import traceback
+
             success = False
-            error_msg = str(exc)
+            error_type = type(exc).__name__
+            error_msg = f"{error_type}: {exc}"
+            error_tb = traceback.format_exc()
             manifest.evaluation_status = "failed"
-            manifest.notes = f"Error: {exc}"
+            manifest.error_type = error_type
+            manifest.error_traceback = error_tb
+            manifest.notes = f"Error: {error_msg}\n{error_tb}"
         finally:
             if env is not None:
                 try:
@@ -560,6 +606,8 @@ class ExperimentManager:
             training_result=None,
             success=success,
             error_message=error_msg,
+            error_type=getattr(manifest, "error_type", None),
+            error_traceback=getattr(manifest, "error_traceback", None),
         )
 
     # ------------------------------------------------------------------
@@ -574,14 +622,22 @@ class ExperimentManager:
         base_experiment_id: str = "",
     ) -> ExperimentManifest:
         """Build an experiment manifest from current runtime information."""
+        import uuid
+
+        from adaptive_rl.config import compute_config_sha256
+
         try:
             rel_config_path = str(Path(config_path).resolve().relative_to(Path.cwd().resolve()))
         except Exception:
             rel_config_path = str(config_path)
 
+        now_utc = datetime.now(timezone.utc)
+        run_id = f"run_{now_utc.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        config_hash = compute_config_sha256(config) if config is not None else ""
+
         return ExperimentManifest(
             experiment_id=experiment_id,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=now_utc.isoformat(),
             algorithm=config.algorithm.name if config else "unknown",
             environment=config.environment.name if config else "unknown",
             seed=config.seed if config else -1,
@@ -601,6 +657,8 @@ class ExperimentManager:
             },
             experiment_name=config.name if config else "",
             base_experiment_id=base_experiment_id or experiment_id,
+            run_id=run_id,
+            config_sha256=config_hash,
         )
 
     @staticmethod

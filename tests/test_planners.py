@@ -243,6 +243,10 @@ class TestPlannerResult:
 class TestPlannerAdapter:
     """Tests for the PlannerAdapter GridWorldEnv integration."""
 
+    @pytest.fixture(autouse=True)
+    def _require_gymnasium(self) -> None:
+        pytest.importorskip("gymnasium")
+
     def test_basic_evaluation(self) -> None:
         """Adapter evaluates A* on GridWorld and returns planner metrics."""
         from adaptive_rl.environments.gridworld.grid import GridWorldEnv
@@ -256,7 +260,7 @@ class TestPlannerAdapter:
 
         assert metrics.episodes == 5
         assert 0.0 <= metrics.success_rate <= 1.0
-        assert metrics.collision_rate == 0.0  # validated paths
+        assert metrics.collision_rate is None  # no dynamic environment step execution occurred
         assert len(metrics.all_path_lengths) == 5
         assert len(metrics.all_planning_times) == 5
 
@@ -427,6 +431,7 @@ class TestRRTStarPlanner:
 
     def test_adapter_evaluation_continuous_navigation(self) -> None:
         """PlannerAdapter successfully evaluates RRT* on ContinuousNavigation2DEnv."""
+        pytest.importorskip("gymnasium")
         from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
         from adaptive_rl.planners.adapter import PlannerAdapter
         from adaptive_rl.planners.rrt_star import RRTStarPlanner
@@ -444,7 +449,7 @@ class TestRRTStarPlanner:
 
         metrics = adapter.evaluate(num_episodes=3, base_seed=42)
         assert metrics.episodes == 3
-        assert metrics.collision_rate == 0.0
+        assert metrics.collision_rate is None  # no dynamic execution
         assert len(metrics.all_planning_times) == 3
 
     def test_rrt_star_invalid_collision_resolution(self) -> None:
@@ -537,6 +542,7 @@ class TestRRTStarPlanner:
 
     def test_adapter_zero_success_returns_none_for_path_metrics(self) -> None:
         """When 0 paths succeed, path length metrics are None rather than fabricated 0.0."""
+        pytest.importorskip("gymnasium")
         from adaptive_rl.environments.gridworld.grid import GridWorldEnv
         from adaptive_rl.planners.adapter import PlannerAdapter
 
@@ -558,7 +564,7 @@ class TestRRTStarPlanner:
         assert metrics.std_path_length is None
         assert metrics.min_path_length is None
         assert metrics.max_path_length is None
-        assert metrics.collision_rate == 0.0
+        assert metrics.collision_rate is None
         assert "collision_semantics" in metrics.additional_metrics
 
     def test_astar_planner_heuristic_propagation(self) -> None:
@@ -568,3 +574,371 @@ class TestRRTStarPlanner:
             assert planner.heuristic_name == heur
             res = planner.plan(start=(0, 0), goal=(2, 2), obstacles=set(), width=3, height=3)
             assert res.success
+
+    def test_rrt_star_multilevel_subtree_rewire_cost_propagation(self) -> None:
+        """Multi-level subtree rewire propagates cost delta through parent -> child -> grandchild."""
+        from adaptive_rl.planners.rrt_star import RRTNode, RRTStarPlanner
+
+        planner = RRTStarPlanner()
+        root = RRTNode(0.0, 0.0, cost=0.0)
+        child = RRTNode(2.0, 0.0, cost=2.0, parent=root)
+        root.children.append(child)
+
+        grandchild = RRTNode(4.0, 0.0, cost=4.0, parent=child)
+        child.children.append(grandchild)
+
+        great_grandchild = RRTNode(6.0, 0.0, cost=6.0, parent=grandchild)
+        grandchild.children.append(great_grandchild)
+
+        # Rewire child to a new shorter parent path reducing cost by 0.5 (from 2.0 to 1.5)
+        planner._update_subtree_costs(child, 1.5)
+
+        assert child.cost == 1.5
+        assert grandchild.cost == 3.5
+        assert great_grandchild.cost == 5.5
+
+        # Rewire with a cost increase of 1.0 (from 1.5 to 2.5)
+        planner._update_subtree_costs(child, 2.5)
+        assert child.cost == 2.5
+        assert grandchild.cost == 4.5
+        assert great_grandchild.cost == 6.5
+
+    def test_rrt_star_constructor_parameter_validation(self) -> None:
+        """RRTStarPlanner validates hyperparameters and rejects invalid values early."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        # Zero and negative values
+        with pytest.raises(ValueError):
+            RRTStarPlanner(step_size=0.0)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(step_size=-0.5)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(search_radius=0.0)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(search_radius=-1.0)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(collision_resolution=0.0)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(collision_resolution=-0.05)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(max_iterations=0)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(max_iterations=-10)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(goal_bias=-0.1)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(goal_bias=1.1)
+
+        # NaN and Inf values
+        with pytest.raises(ValueError):
+            RRTStarPlanner(step_size=float("nan"))
+        with pytest.raises(ValueError):
+            RRTStarPlanner(search_radius=float("inf"))
+        with pytest.raises(ValueError):
+            RRTStarPlanner(goal_bias=float("nan"))
+
+        # Invalid types
+        with pytest.raises(TypeError):
+            RRTStarPlanner(step_size="invalid")  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            RRTStarPlanner(step_size=True)  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            RRTStarPlanner(max_iterations=100.5)  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            RRTStarPlanner(seed="seed_string")  # type: ignore[arg-type]
+
+    def test_rrt_star_plan_geometry_validation(self) -> None:
+        """RRTStarPlanner.plan() rejects invalid dimensions, coordinates, and obstacle geometries."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        planner = RRTStarPlanner(seed=42)
+
+        # Non-positive or too small arena
+        with pytest.raises(ValueError):
+            planner.plan(start=(1.0, 1.0), goal=(5.0, 5.0), arena_width=0.0, arena_height=10.0)
+        with pytest.raises(ValueError):
+            planner.plan(
+                start=(1.0, 1.0),
+                goal=(5.0, 5.0),
+                arena_width=0.5,
+                arena_height=0.5,
+                agent_radius=0.3,
+            )
+
+        # Invalid agent or goal radius
+        with pytest.raises(ValueError):
+            planner.plan(
+                start=(1.0, 1.0),
+                goal=(5.0, 5.0),
+                arena_width=10.0,
+                arena_height=10.0,
+                agent_radius=-0.1,
+            )
+        with pytest.raises(ValueError):
+            planner.plan(
+                start=(1.0, 1.0),
+                goal=(5.0, 5.0),
+                arena_width=10.0,
+                arena_height=10.0,
+                goal_radius=0.0,
+            )
+
+        # Invalid obstacle specs
+        with pytest.raises(ValueError):
+            planner.plan(
+                start=(1.0, 1.0),
+                goal=(5.0, 5.0),
+                arena_width=10.0,
+                arena_height=10.0,
+                obstacles=[(2.0, 2.0, -1.0)],
+            )
+        with pytest.raises(TypeError):
+            planner.plan(
+                start=(1.0, 1.0),
+                goal=(5.0, 5.0),
+                arena_width=10.0,
+                arena_height=10.0,
+                obstacles=[("x", "y", "r")],  # type: ignore[list-item]
+            )
+
+    def test_astar_seed_tolerance(self) -> None:
+        """AStarPlanner accepts seed parameter without error and produces identical paths."""
+        from adaptive_rl.planners.astar import AStarPlanner
+
+        p_no_seed = AStarPlanner(heuristic="manhattan")
+        p_seed = AStarPlanner(heuristic="manhattan", seed=42)
+
+        assert p_seed.seed == 42
+        res1 = p_no_seed.plan(start=(0, 0), goal=(4, 4), obstacles={(1, 1)}, width=5, height=5)
+        res2 = p_seed.plan(start=(0, 0), goal=(4, 4), obstacles={(1, 1)}, width=5, height=5)
+
+        assert res1.success and res2.success
+        assert res1.path == res2.path
+        assert res1.path_length == res2.path_length
+
+    def test_rrt_star_relational_validation(self) -> None:
+        """RRTStarPlanner rejects relational violations (collision_resolution > step_size, etc.)."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        # collision_resolution > step_size
+        with pytest.raises(ValueError, match="cannot be greater than step_size"):
+            RRTStarPlanner(step_size=0.1, collision_resolution=0.5)
+
+        # collision_resolution < 1e-4
+        with pytest.raises(ValueError, match="too small"):
+            RRTStarPlanner(collision_resolution=1e-5)
+
+        # search_radius < 0.5 * step_size
+        with pytest.raises(ValueError, match="search_radius .* must be >= 0.5 \\* step_size"):
+            RRTStarPlanner(step_size=2.0, search_radius=0.5)
+
+        # max_iterations > 100_000
+        with pytest.raises(ValueError, match="exceeds the maximum allowable limit"):
+            RRTStarPlanner(max_iterations=200_000)
+
+    def test_make_planner_factory(self) -> None:
+        """make_planner authoritatively instantiates and validates planners."""
+        from adaptive_rl.planners.astar import AStarPlanner
+        from adaptive_rl.planners.factory import make_planner
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        # A* creation
+        astar = make_planner("astar", heuristic="euclidean", seed=123)
+        assert isinstance(astar, AStarPlanner)
+        assert astar.heuristic_name == "euclidean"
+        assert astar.seed == 123
+
+        # RRT* creation
+        rrt_star = make_planner("rrt_star", step_size=0.4, search_radius=1.2, seed=99)
+        assert isinstance(rrt_star, RRTStarPlanner)
+        assert rrt_star.step_size == 0.4
+        assert rrt_star.search_radius == 1.2
+        assert rrt_star.seed == 99
+
+        # Lenient rrt* alias
+        rrt_star_alias = make_planner("rrt*", step_size=0.5)
+        assert isinstance(rrt_star_alias, RRTStarPlanner)
+
+        # Plain rrt rejected with clear explanation
+        with pytest.raises(ValueError, match="Standard RRT does not perform tree rewiring"):
+            make_planner("rrt")
+
+        # Unknown planner rejected
+        with pytest.raises(ValueError, match="Unknown planner 'dijkstra'"):
+            make_planner("dijkstra")
+
+    def test_failed_episodes_record_none_in_all_path_lengths(self) -> None:
+        """Failed planner episodes must record None in all_path_lengths, never 0.0."""
+        pytest.importorskip("gymnasium")
+        from unittest.mock import MagicMock
+
+        from adaptive_rl.environments.gridworld.grid import GridWorldEnv
+        from adaptive_rl.planners.adapter import PlannerAdapter
+        from adaptive_rl.planners.base import PlannerResult
+
+        env = GridWorldEnv(width=5, height=5, num_obstacles=0)
+        planner = AStarPlanner()
+
+        # Mock plan to return failure
+        planner.plan = MagicMock(
+            return_value=PlannerResult(success=False, failure_reason="blocked")
+        )
+
+        adapter = PlannerAdapter(planner=planner, env=env)
+        metrics = adapter.evaluate(num_episodes=3, base_seed=42)
+
+        assert metrics.success_rate == 0.0
+        assert metrics.all_path_lengths == [None, None, None]
+        assert 0.0 not in metrics.all_path_lengths
+
+        # to_dict must output None (JSON null), not 0.0
+        d = metrics.to_dict()
+        assert d["all_path_lengths"] == [None, None, None]
+
+    def test_planner_polymorphism_and_hierarchy(self) -> None:
+        """A* and RRT* adhere to the unified BasePlanner interface with canonical names."""
+        from adaptive_rl.planners.astar import AStarPlanner
+        from adaptive_rl.planners.base import (
+            BaseContinuousPlanner,
+            BaseGridPlanner,
+            BasePlanner,
+        )
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        astar = AStarPlanner(seed=10)
+        rrt = RRTStarPlanner(seed=20)
+
+        # Both inherit from BasePlanner
+        assert isinstance(astar, BasePlanner)
+        assert isinstance(rrt, BasePlanner)
+
+        # Domain-specific subclasses
+        assert isinstance(astar, BaseGridPlanner)
+        assert isinstance(rrt, BaseContinuousPlanner)
+
+        # Canonical naming contract
+        assert astar.name == "astar"
+        assert rrt.name == "rrt_star"
+        assert astar.seed == 10
+        assert rrt.seed == 20
+
+    def test_planner_adapter_extensible_registration(self) -> None:
+        """PlannerAdapter allows registering custom planner-environment evaluators."""
+        pytest.importorskip("gymnasium")
+        from adaptive_rl.planners.adapter import PlannerAdapter, PlannerEvaluationMetrics
+        from adaptive_rl.planners.base import BasePlanner
+
+        class CustomDummyPlanner(BasePlanner):
+            @property
+            def name(self) -> str:
+                return "custom_dummy"
+
+        class CustomDummyEnv:
+            pass
+
+        def custom_evaluator(adapter: PlannerAdapter, num_episodes: int, base_seed: int | None):
+            return PlannerEvaluationMetrics(
+                episodes=num_episodes,
+                success_rate=1.0,
+                all_path_lengths=[12.5] * num_episodes,
+                all_planning_times=[0.01] * num_episodes,
+            )
+
+        PlannerAdapter.register_evaluator(CustomDummyPlanner, CustomDummyEnv, custom_evaluator)
+
+        adapter = PlannerAdapter(planner=CustomDummyPlanner(), env=CustomDummyEnv())
+        res = adapter.evaluate(num_episodes=2)
+
+        assert res.episodes == 2
+        assert res.success_rate == 1.0
+        assert res.all_path_lengths == [12.5, 12.5]
+
+    def test_canonical_failure_and_zero_semantics(self) -> None:
+        """Verify strict canonical failure (success=False, path_length=None) vs zero (success=True, path_length=0.0)."""
+        astar = AStarPlanner()
+
+        # 1. Blocked / impossible path -> failure with path_length=None
+        blocked_res = astar.plan(
+            start=(0, 0),
+            goal=(2, 0),
+            obstacles={(1, 0)},
+            width=3,
+            height=1,
+        )
+        assert blocked_res.success is False
+        assert blocked_res.path_length is None
+        assert blocked_res.path == []
+
+        # 2. Trivial start == goal -> success with measured zero path_length=0.0
+        trivial_res = astar.plan(
+            start=(1, 1),
+            goal=(1, 1),
+            obstacles=set(),
+            width=3,
+            height=3,
+        )
+        assert trivial_res.success is True
+        assert trivial_res.path_length == 0.0
+        assert trivial_res.path == [(1, 1)]
+        assert trivial_res.is_valid(start=(1, 1), goal=(1, 1), obstacles=set()) is True
+
+    def test_rrt_star_targeted_parent_selection_and_rewiring(self) -> None:
+        """Targeted test: parent selection chooses min cost and rewiring propagates subtree costs."""
+        from adaptive_rl.planners.rrt_star import RRTNode, RRTStarPlanner
+
+        planner = RRTStarPlanner(search_radius=3.0, step_size=1.0, seed=42)
+
+        # Build controlled tree: root at (0, 0), child A at (1, 0) with cost 1.0
+        root = RRTNode(x=0.0, y=0.0, cost=0.0)
+        node_a = RRTNode(x=1.0, y=0.0, cost=1.0, parent=root)
+        root.children.append(node_a)
+        # Node B at (1, 1) parented to root with cost hypot(1, 1) ~ 1.414
+        node_b = RRTNode(x=1.0, y=1.0, cost=1.4142, parent=root)
+        root.children.append(node_b)
+
+        # Child of B at (1, 2) with cost 2.4142
+        node_c = RRTNode(x=1.0, y=2.0, cost=2.4142, parent=node_b)
+        node_b.children.append(node_c)
+
+        # Subtree cost propagation test
+        planner._update_subtree_costs(node_b, new_cost=1.0)
+        assert node_b.cost == 1.0
+        # node_c cost must have dropped by 0.4142 -> 2.0
+        assert abs(node_c.cost - 2.0) < 1e-4
+
+    def test_rrt_star_collision_rejection(self) -> None:
+        """Targeted test: segments crossing circular obstacles or boundaries are rejected."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        planner = RRTStarPlanner()
+
+        # Segment from (0.0, 5.0) to (10.0, 5.0) crossing obstacle at (5.0, 5.0, radius=2.0)
+        obstacles = [(5.0, 5.0, 2.0)]
+        assert not planner.is_segment_valid(
+            (0.0, 5.0),
+            (10.0, 5.0),
+            arena_width=20.0,
+            arena_height=20.0,
+            obstacles=obstacles,
+            agent_radius=0.0,
+        )
+
+        # Segment crossing out of bounds
+        assert not planner.is_segment_valid(
+            (1.0, 1.0),
+            (-2.0, 1.0),
+            arena_width=20.0,
+            arena_height=20.0,
+            obstacles=[],
+            agent_radius=0.0,
+        )
+
+        # Clear segment
+        assert planner.is_segment_valid(
+            (0.0, 0.0),
+            (2.0, 0.0),
+            arena_width=20.0,
+            arena_height=20.0,
+            obstacles=obstacles,
+            agent_radius=0.0,
+        )

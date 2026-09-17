@@ -14,7 +14,11 @@ import heapq
 import time
 from typing import Dict, List, Optional, Tuple
 
-from adaptive_rl.planners.base import BasePlanner, GridCoordinate, PlannerResult
+from adaptive_rl.planners.base import (
+    BaseGridPlanner,
+    GridCoordinate,
+    PlannerResult,
+)
 
 # 4-connected grid: UP, DOWN, LEFT, RIGHT
 _NEIGHBORS: List[Tuple[int, int]] = [(0, -1), (0, 1), (-1, 0), (1, 0)]
@@ -25,7 +29,7 @@ def _manhattan(a: GridCoordinate, b: GridCoordinate) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
-class AStarPlanner(BasePlanner):
+class AStarPlanner(BaseGridPlanner):
     """A* shortest-path planner for discrete 2D grid environments.
 
     Operates on the same grid representation used by :class:`GridWorldEnv`,
@@ -51,7 +55,7 @@ class AStarPlanner(BasePlanner):
             print("Path length:", result.path_length)
     """
 
-    def __init__(self, heuristic: str = "manhattan") -> None:
+    def __init__(self, heuristic: str = "manhattan", seed: Optional[int] = None) -> None:
         """Initialize the A* planner.
 
         Args:
@@ -62,15 +66,21 @@ class AStarPlanner(BasePlanner):
                     but less informed, expanding more search nodes.
                 'chebyshev': Admissible on 8-connected grids; underestimates Manhattan distance on
                     4-connected grids and does not reflect 4-connected movement geometry.
+            seed: Optional random seed (accepted for uniform polymorphic planner interface;
+                A* is mathematically deterministic and does not use stochastic operations).
 
         Raises:
             ValueError: If an unsupported heuristic name is given.
+            TypeError: If seed is not an integer or None.
         """
+        super().__init__(seed=seed)
         valid_heuristics = ("manhattan", "euclidean", "chebyshev")
         if heuristic not in valid_heuristics:
             raise ValueError(
                 f"Unsupported heuristic '{heuristic}'. Valid options: {', '.join(valid_heuristics)}."
             )
+        if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+            raise TypeError(f"seed must be an integer or None, got {type(seed).__name__}")
         self._heuristic_name = heuristic
 
     @property
@@ -160,20 +170,39 @@ class AStarPlanner(BasePlanner):
             raise ValueError(f"Grid dimensions must be positive integers, got {width}x{height}.")
 
         # Coordinate format validation
-        if not (isinstance(start, (tuple, list)) and len(start) == 2 and isinstance(start[0], int) and isinstance(start[1], int)):
+        if not (
+            isinstance(start, (tuple, list))
+            and len(start) == 2
+            and isinstance(start[0], int)
+            and isinstance(start[1], int)
+        ):
             raise ValueError(f"Start coordinate {start} must be a 2-tuple of integers.")
-        if not (isinstance(goal, (tuple, list)) and len(goal) == 2 and isinstance(goal[0], int) and isinstance(goal[1], int)):
+        if not (
+            isinstance(goal, (tuple, list))
+            and len(goal) == 2
+            and isinstance(goal[0], int)
+            and isinstance(goal[1], int)
+        ):
             raise ValueError(f"Goal coordinate {goal} must be a 2-tuple of integers.")
 
         # Obstacle validation
         try:
             obs_set = set(obstacles) if obstacles is not None else set()
         except TypeError as exc:
-            raise ValueError(f"Obstacles must be an iterable collection of coordinates: {exc}") from exc
+            raise ValueError(
+                f"Obstacles must be an iterable collection of coordinates: {exc}"
+            ) from exc
 
         for obs in obs_set:
-            if not (isinstance(obs, (tuple, list)) and len(obs) == 2 and isinstance(obs[0], int) and isinstance(obs[1], int)):
-                raise ValueError(f"Invalid obstacle coordinate {obs}: expected 2-tuple of integers.")
+            if not (
+                isinstance(obs, (tuple, list))
+                and len(obs) == 2
+                and isinstance(obs[0], int)
+                and isinstance(obs[1], int)
+            ):
+                raise ValueError(
+                    f"Invalid obstacle coordinate {obs}: expected 2-tuple of integers."
+                )
 
         # Bounds and collision validation
         if not (0 <= start[0] < width and 0 <= start[1] < height):
@@ -193,7 +222,7 @@ class AStarPlanner(BasePlanner):
             return PlannerResult(
                 success=True,
                 path=[start],
-                path_length=0,
+                path_length=0.0,
                 planning_time_seconds=elapsed,
                 nodes_explored=1,
             )
@@ -206,6 +235,7 @@ class AStarPlanner(BasePlanner):
 
         came_from: Dict[GridCoordinate, Optional[GridCoordinate]] = {start: None}
         g_score: Dict[GridCoordinate, float] = {start: 0.0}
+
         nodes_explored = 0
 
         while open_heap:
@@ -213,20 +243,18 @@ class AStarPlanner(BasePlanner):
             nodes_explored += 1
 
             if current == goal:
-                # Reconstruct path
-                path = self._reconstruct_path(came_from, goal)
                 elapsed = time.perf_counter() - t_start
+                path = self._reconstruct_path(came_from, goal)
                 return PlannerResult(
                     success=True,
                     path=path,
-                    path_length=len(path) - 1,  # edges, not nodes
+                    path_length=float(len(path) - 1),
                     planning_time_seconds=elapsed,
                     nodes_explored=nodes_explored,
                 )
 
             for dx, dy in _NEIGHBORS:
                 neighbor = (current[0] + dx, current[1] + dy)
-
                 # Bounds check
                 if not (0 <= neighbor[0] < width and 0 <= neighbor[1] < height):
                     continue
@@ -248,7 +276,7 @@ class AStarPlanner(BasePlanner):
         return PlannerResult(
             success=False,
             path=[],
-            path_length=0,
+            path_length=None,
             planning_time_seconds=elapsed,
             nodes_explored=nodes_explored,
             failure_reason=(

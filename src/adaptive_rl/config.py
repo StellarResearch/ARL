@@ -14,7 +14,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 # Canonical set of classical planner algorithm names
-PLANNER_ALGORITHMS: Set[str] = {"astar", "rrt_star", "rrt", "rrt*"}
+PLANNER_ALGORITHMS: Set[str] = {"astar", "rrt_star", "rrt*"}
 
 
 class ConfigError(Exception):
@@ -32,6 +32,9 @@ class AStarParametersConfig(BaseModel):
         "manhattan",
         description="Heuristic function to use ('manhattan', 'euclidean', 'chebyshev')",
     )
+    seed: Optional[int] = Field(
+        None, description="Optional random seed (accepted for interface uniformity)"
+    )
 
 
 class RRTStarParametersConfig(BaseModel):
@@ -40,11 +43,31 @@ class RRTStarParametersConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     step_size: float = Field(0.5, gt=0.0, description="Maximum extension distance per tree step")
-    max_iterations: int = Field(1500, ge=1, description="Maximum random samples to expand")
-    goal_bias: float = Field(0.1, ge=0.0, le=1.0, description="Probability of sampling goal directly")
+    max_iterations: int = Field(
+        1500, ge=1, le=100_000, description="Maximum random samples to expand (max 100,000)"
+    )
+    goal_bias: float = Field(
+        0.1, ge=0.0, le=1.0, description="Probability of sampling goal directly"
+    )
     search_radius: float = Field(1.5, gt=0.0, description="Radius for rewiring near neighbors")
-    collision_resolution: float = Field(0.05, gt=0.0, description="Step size for collision checking")
+    collision_resolution: float = Field(
+        0.05, ge=1e-4, description="Step size for collision checking (minimum 1e-4)"
+    )
     seed: Optional[int] = Field(None, description="Optional fixed random seed for planner")
+
+    @model_validator(mode="after")
+    def _validate_relational_constraints(self) -> RRTStarParametersConfig:
+        if self.collision_resolution > self.step_size:
+            raise ValueError(
+                f"collision_resolution ({self.collision_resolution}) cannot be greater than "
+                f"step_size ({self.step_size}) to prevent tunneling through obstacles."
+            )
+        if self.search_radius < 0.5 * self.step_size:
+            raise ValueError(
+                f"search_radius ({self.search_radius}) must be >= 0.5 * step_size ({0.5 * self.step_size}) "
+                "to allow effective near-neighbor rewiring."
+            )
+        return self
 
 
 class RLAlgorithmConfig(BaseModel):
@@ -86,7 +109,12 @@ class PlannerAlgorithmConfig(BaseModel):
             if "params" in data and "parameters" not in data:
                 data["parameters"] = data.pop("params")
             raw_name = str(data.get("name", "")).strip().lower()
-            if raw_name in {"rrt*", "rrt"}:
+            if raw_name == "rrt":
+                raise ValueError(
+                    "Planner name 'rrt' is not supported. Did you mean 'rrt_star'? "
+                    "Standard RRT does not perform tree rewiring and is not implemented."
+                )
+            if raw_name == "rrt*":
                 data["name"] = "rrt_star"
                 raw_name = "rrt_star"
             raw_params = data.get("parameters", {})
@@ -94,7 +122,7 @@ class PlannerAlgorithmConfig(BaseModel):
                 data["parameters"] = AStarParametersConfig.model_validate(raw_params).model_dump(
                     exclude_none=True
                 )
-            elif raw_name in ("rrt_star", "rrt", "rrt*"):
+            elif raw_name in ("rrt_star", "rrt*"):
                 data["parameters"] = RRTStarParametersConfig.model_validate(raw_params).model_dump(
                     exclude_none=True
                 )
@@ -132,7 +160,12 @@ class AlgorithmConfig(BaseModel):
                 data["parameters"] = data.pop("params")
 
             raw_name = str(data.get("name", "")).strip().lower()
-            if raw_name in {"rrt*", "rrt"}:
+            if raw_name == "rrt":
+                raise ValueError(
+                    "Algorithm name 'rrt' is not supported. Did you mean 'rrt_star'? "
+                    "Standard RRT does not perform tree rewiring and is not implemented."
+                )
+            if raw_name == "rrt*":
                 raw_name = "rrt_star"
             data["name"] = raw_name
             is_planner = raw_name in PLANNER_ALGORITHMS
@@ -149,13 +182,13 @@ class AlgorithmConfig(BaseModel):
                     )
                 raw_params = data.get("parameters", {})
                 if raw_name == "astar":
-                    data["parameters"] = AStarParametersConfig.model_validate(raw_params).model_dump(
-                        exclude_none=True
-                    )
-                elif raw_name in ("rrt_star", "rrt", "rrt*"):
-                    data["parameters"] = RRTStarParametersConfig.model_validate(raw_params).model_dump(
-                        exclude_none=True
-                    )
+                    data["parameters"] = AStarParametersConfig.model_validate(
+                        raw_params
+                    ).model_dump(exclude_none=True)
+                elif raw_name in ("rrt_star", "rrt*"):
+                    data["parameters"] = RRTStarParametersConfig.model_validate(
+                        raw_params
+                    ).model_dump(exclude_none=True)
             else:
                 # Supply default RL hyperparameter values if not specified
                 if "learning_rate" not in data:
@@ -378,3 +411,23 @@ def save_config(config: ExperimentConfig, target_path: str | Path) -> None:
 
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
+
+
+def compute_config_sha256(config: ExperimentConfig) -> str:
+    """Compute deterministic SHA-256 hash of the canonical experiment configuration.
+
+    Excludes runtime destination paths ('output_dir', 'log_dir') so that identical
+    hyperparameters always yield the exact same cryptographic hash regardless of execution directory.
+
+    Args:
+        config: Validated ExperimentConfig instance.
+
+    Returns:
+        Hex-encoded SHA-256 digest string.
+    """
+    import hashlib
+    import json
+
+    canonical_dict = config.model_dump(mode="json", exclude={"output_dir", "log_dir"})
+    serialized = json.dumps(canonical_dict, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

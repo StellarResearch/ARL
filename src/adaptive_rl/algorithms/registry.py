@@ -88,6 +88,11 @@ class AlgorithmRegistry:
     def _normalize_name(self, name: str) -> str:
         """Normalize algorithm name, resolving registered aliases."""
         clean = name.strip().lower()
+        if clean == "rrt":
+            raise AlgorithmRegistryError(
+                "Algorithm 'rrt' is not registered. Did you mean 'rrt_star'? "
+                "Plain un-rewired RRT is not implemented."
+            )
         return self._aliases.get(clean, clean)
 
     def register_alias(self, alias: str, target: str) -> None:
@@ -246,17 +251,79 @@ class AlgorithmRegistry:
 algorithm_registry = AlgorithmRegistry()
 
 
+def _make_ppo(*args: Any, **kwargs: Any) -> Any:
+    try:
+        from adaptive_rl.algorithms.ppo import PPOAlgorithm
+    except ImportError as exc:
+        raise ImportError(
+            f"PPOAlgorithm requires optional 'rl' dependencies: {exc}. "
+            "Install with: pip install 'adaptive-rl[rl]'"
+        ) from exc
+    return PPOAlgorithm(*args, **kwargs)
+
+
+def _ppo_from_pretrained(*args: Any, **kwargs: Any) -> Any:
+    try:
+        from adaptive_rl.algorithms.ppo import PPOAlgorithm
+    except ImportError as exc:
+        raise ImportError(
+            f"PPOAlgorithm requires optional 'rl' dependencies: {exc}. "
+            "Install with: pip install 'adaptive-rl[rl]'"
+        ) from exc
+    return PPOAlgorithm.from_pretrained(*args, **kwargs)
+
+
+_make_ppo.from_pretrained = _ppo_from_pretrained  # type: ignore[attr-defined]
+
+
+def _make_sac(*args: Any, **kwargs: Any) -> Any:
+    try:
+        from adaptive_rl.algorithms.sac import SACAlgorithm
+    except ImportError as exc:
+        raise ImportError(
+            f"SACAlgorithm requires optional 'rl' dependencies: {exc}. "
+            "Install with: pip install 'adaptive-rl[rl]'"
+        ) from exc
+    return SACAlgorithm(*args, **kwargs)
+
+
+def _sac_from_pretrained(*args: Any, **kwargs: Any) -> Any:
+    try:
+        from adaptive_rl.algorithms.sac import SACAlgorithm
+    except ImportError as exc:
+        raise ImportError(
+            f"SACAlgorithm requires optional 'rl' dependencies: {exc}. "
+            "Install with: pip install 'adaptive-rl[rl]'"
+        ) from exc
+    return SACAlgorithm.from_pretrained(*args, **kwargs)
+
+
+_make_sac.from_pretrained = _sac_from_pretrained  # type: ignore[attr-defined]
+
+
 def _register_defaults(registry: Optional[AlgorithmRegistry] = None) -> None:
     """Register the built-in algorithms into the global or specified registry."""
     reg = registry if registry is not None else algorithm_registry
-    from adaptive_rl.algorithms.ppo import PPOAlgorithm
-    from adaptive_rl.algorithms.sac import SACAlgorithm
     from adaptive_rl.planners.astar import AStarPlanner
+
+    try:
+        from adaptive_rl.algorithms.ppo import PPOAlgorithm
+
+        ppo_factory: Any = PPOAlgorithm
+    except ImportError:
+        ppo_factory = _make_ppo
+
+    try:
+        from adaptive_rl.algorithms.sac import SACAlgorithm
+
+        sac_factory: Any = SACAlgorithm
+    except ImportError:
+        sac_factory = _make_sac
 
     if "ppo" not in reg.list_algorithms():
         reg.register(
             "ppo",
-            PPOAlgorithm,
+            ppo_factory,
             AlgorithmMetadata(
                 name="ppo",
                 kind=AlgorithmKind.RL_POLICY,
@@ -286,7 +353,7 @@ def _register_defaults(registry: Optional[AlgorithmRegistry] = None) -> None:
     if "sac" not in reg.list_algorithms():
         reg.register(
             "sac",
-            SACAlgorithm,
+            sac_factory,
             AlgorithmMetadata(
                 name="sac",
                 kind=AlgorithmKind.RL_POLICY,
@@ -342,8 +409,8 @@ def _register_defaults(registry: Optional[AlgorithmRegistry] = None) -> None:
                 kind=AlgorithmKind.PLANNER,
                 description=(
                     "RRT* continuous 2D motion planner. Sampling-based kinodynamic-free planner "
-                    "with tree rewiring for optimal paths in continuous spaces. "
-                    "Supports ContinuousNavigation2D environments."
+                    "with heuristic tree rewiring for trajectory cost reduction in continuous spaces "
+                    "(bounded-neighborhood rewiring heuristic). Supports ContinuousNavigation2D environments."
                 ),
                 action_space="continuous",
                 trainable=False,
@@ -359,7 +426,6 @@ def _register_defaults(registry: Optional[AlgorithmRegistry] = None) -> None:
         )
 
     # Register default convenience aliases
-    reg.register_alias("rrt", "rrt_star")
     reg.register_alias("rrt*", "rrt_star")
 
 

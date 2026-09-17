@@ -1,4 +1,4 @@
-"""Abstract base interface for deterministic navigation planners.
+"""Abstract base interface for deterministic and sampling-based navigation planners.
 
 Planners are distinct from RL algorithms: they compute complete paths
 from start to goal using world-model knowledge, not learned policies.
@@ -24,7 +24,8 @@ class PlannerResult:
         success: Whether a valid path was found.
         path: Sequence of coordinates from start to goal (inclusive).
               Empty list if no path was found.
-        path_length: Total number of steps or arc length (0 if failed).
+        path_length: Total number of steps or arc length (None if failed;
+                     0.0 for a measured zero-length path when start == goal).
         planning_time_seconds: Wall-clock seconds spent planning.
         nodes_explored: Number of search nodes expanded (algorithm-dependent).
         failure_reason: Human-readable reason for failure if success is False.
@@ -32,7 +33,7 @@ class PlannerResult:
 
     success: bool
     path: Sequence[Coordinate] = field(default_factory=list)
-    path_length: float = 0.0
+    path_length: Optional[float] = None
     planning_time_seconds: float = 0.0
     nodes_explored: int = 0
     failure_reason: Optional[str] = None
@@ -65,7 +66,7 @@ class PlannerResult:
         Returns:
             True if path is non-empty, starts at start, ends at goal, and is obstacle-free.
         """
-        if not self.success or not self.path:
+        if not self.success or not self.path or self.path_length is None:
             return False
         if self.path[0] != start or self.path[-1] != goal:
             return False
@@ -73,7 +74,25 @@ class PlannerResult:
 
 
 class BasePlanner(ABC):
-    """Abstract interface for deterministic grid navigation planners.
+    """Common abstract base interface for all motion planners in AdaptiveRL.
+
+    Provides shared initialization, random seed management, and algorithm
+    identity metadata across discrete and continuous planning paradigms.
+    """
+
+    def __init__(self, seed: Optional[int] = None) -> None:
+        """Initialize base planner with optional random seed."""
+        self.seed = seed
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Return the planner's canonical identifier string."""
+        pass
+
+
+class BaseGridPlanner(BasePlanner):
+    """Abstract interface for discrete 2D grid navigation planners (e.g. A*).
 
     Implementations must be deterministic given the same inputs (same start,
     goal, obstacles, and seed where applicable).
@@ -88,7 +107,7 @@ class BasePlanner(ABC):
         width: int,
         height: int,
     ) -> PlannerResult:
-        """Compute a path from start to goal on a grid.
+        """Compute a collision-free path from start to goal on a discrete grid.
 
         Args:
             start: Starting (col, row) coordinate.
@@ -102,8 +121,39 @@ class BasePlanner(ABC):
         """
         pass
 
-    @property
+
+class BaseContinuousPlanner(BasePlanner):
+    """Abstract interface for continuous 2D motion planners (e.g. RRT*).
+
+    Implementations compute collision-free trajectories in Euclidean space
+    against geometric obstacles and boundary constraints.
+    """
+
     @abstractmethod
-    def name(self) -> str:
-        """Return the planner's canonical identifier string."""
+    def plan(
+        self,
+        start: ContinuousCoordinate,
+        goal: ContinuousCoordinate,
+        arena_width: float,
+        arena_height: float,
+        obstacles: List[Tuple[float, float, float]],
+        agent_radius: float = 0.0,
+        goal_radius: float = 0.5,
+        seed_override: Optional[int] = None,
+    ) -> PlannerResult:
+        """Compute a collision-free path from start to goal in continuous space.
+
+        Args:
+            start: Starting (x, y) coordinate.
+            goal: Goal (x, y) coordinate.
+            arena_width: Width of the rectangular arena.
+            arena_height: Height of the rectangular arena.
+            obstacles: List of circular obstacles as (x, y, radius) tuples.
+            agent_radius: Radius of the traversing agent for margin checking.
+            goal_radius: Distance tolerance to consider the goal reached.
+            seed_override: Optional integer seed to override planner-internal randomness.
+
+        Returns:
+            PlannerResult containing path, length, planning time, and status.
+        """
         pass
