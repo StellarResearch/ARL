@@ -52,8 +52,11 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.6.0",
 ]
+studio = [
+    "PySide6>=6.7.0",
+]
 all = [
-    "adaptive-rl[rl,dev]"
+    "adaptive-rl[rl,dev,studio]"
 ]
 
 [project.scripts]

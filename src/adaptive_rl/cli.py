@@ -1198,6 +1198,26 @@ def run_benchmark_planners_command(
 
 
 @app.command()
+def studio(
+    output_dir: Optional[Path] = typer.Option(
+        None, "--output-dir", "-o", help="Experiment results directory"
+    ),
+) -> None:
+    """Launch the optional AdaptiveRL Studio desktop application."""
+    try:
+        from adaptive_rl.studio.app import launch_studio
+    except ImportError as err:
+        console.print(
+            "[bold red]AdaptiveRL Studio requires the optional 'studio' dependency.[/bold red]\n"
+            "Install it with: pip install -e '.[studio]'\n"
+            f"Details: {err}"
+        )
+        raise typer.Exit(code=1)
+
+    raise typer.Exit(code=launch_studio(output_dir=output_dir))
+
+
+@app.command()
 def dashboard(
     experiment_id: Optional[str] = typer.Option(
         None, "--experiment", "-e", help="Show detailed metrics for a specific experiment ID"

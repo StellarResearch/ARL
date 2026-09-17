@@ -89,6 +89,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # 3. Install AdaptiveRL (minimal: planners, config, CLI)
+
+# Or install the optional desktop research interface
+pip install -e ".[studio]"
 pip install -e .
 
 # Or install for full development (RL engines, SB3, PyTorch, dev tools)
@@ -108,6 +111,23 @@ adaptive-rl --help
 # Show installed version and current milestone
 adaptive-rl version
 
+
+# Launch AdaptiveRL Studio desktop interface
+adaptive-rl studio
+```
+
+### AdaptiveRL Studio
+
+AdaptiveRL Studio is an optional PySide6 desktop control center for the existing
+framework. It provides an experiment overview, environment episode visualization,
+background training through the existing trainer API, and experiment artifact
+inspection. It does not implement a second RL engine.
+
+Use `--output-dir` to point Studio at another experiment artifact directory:
+
+```bash
+adaptive-rl studio --output-dir experiments/results
+```
 # Inspect development roadmap and completed phases
 adaptive-rl info
 
