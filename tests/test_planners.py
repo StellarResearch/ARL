@@ -769,6 +769,7 @@ class TestRRTStarPlanner:
 
     def test_failed_episodes_record_none_in_all_path_lengths(self) -> None:
         """Failed planner episodes must record None in all_path_lengths, never 0.0."""
+        pytest.importorskip("gymnasium")
         from unittest.mock import MagicMock
 
         from adaptive_rl.environments.gridworld.grid import GridWorldEnv
@@ -823,6 +824,7 @@ class TestRRTStarPlanner:
 
     def test_planner_adapter_extensible_registration(self) -> None:
         """PlannerAdapter allows registering custom planner-environment evaluators."""
+        pytest.importorskip("gymnasium")
         from adaptive_rl.planners.adapter import PlannerAdapter, PlannerEvaluationMetrics
         from adaptive_rl.planners.base import BasePlanner
 
