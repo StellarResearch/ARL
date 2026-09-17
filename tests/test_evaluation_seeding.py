@@ -393,3 +393,33 @@ class TestEvaluationSeedingProtocol:
         # Assert planner-internal seeds were decoupled
         assert res1.additional_metrics["base_seed"] == exp_seed
         assert res2.additional_metrics["base_seed"] == exp_seed
+
+    def test_same_env_and_planner_seed_produces_reproducible_planner_behavior(self) -> None:
+        """Verify that same environment seed + same planner seed produces identical planner behavior."""
+        import numpy as np
+
+        from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
+        from adaptive_rl.planners.adapter import PlannerAdapter
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        exp_seed = 105
+        planner_seed = 42
+        num_episodes = 3
+
+        env1 = ContinuousNavigation2DEnv(arena_width=10.0, arena_height=10.0, num_obstacles=3)
+        planner1 = RRTStarPlanner(seed=planner_seed, max_iterations=100)
+        adapter1 = PlannerAdapter(planner=planner1, env=env1)
+        res1 = adapter1.evaluate(num_episodes=num_episodes, base_seed=exp_seed)
+
+        env2 = ContinuousNavigation2DEnv(arena_width=10.0, arena_height=10.0, num_obstacles=3)
+        planner2 = RRTStarPlanner(seed=planner_seed, max_iterations=100)
+        adapter2 = PlannerAdapter(planner=planner2, env=env2)
+        res2 = adapter2.evaluate(num_episodes=num_episodes, base_seed=exp_seed)
+
+        # Assert identical metrics
+        assert res1.episodes == res2.episodes == num_episodes
+        assert res1.success_rate == res2.success_rate
+        assert res1.all_path_lengths == res2.all_path_lengths
+        if res1.mean_path_length is not None:
+            assert res2.mean_path_length is not None
+            np.testing.assert_allclose(res1.mean_path_length, res2.mean_path_length)

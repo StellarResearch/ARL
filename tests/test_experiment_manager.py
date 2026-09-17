@@ -567,3 +567,48 @@ evaluation:
 
             assert res.success
             assert res.metrics.get("success_rate") is not None
+
+    def test_strict_mode_false_captures_failure_as_result(self) -> None:
+        """When strict=False, execution failures return a failed ExperimentResult with diagnostics."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            manager = ExperimentManager(base_output_dir=tmppath / "results", strict=False)
+
+            # Invalid algorithm parameter that causes execution failure
+            config = _make_minimal_config(algo="astar", env="gridworld", seed=42)
+            config.environment.name = "nonexistent_environment"
+
+            res = manager.run(config=config)
+            assert not res.success
+            assert res.error_type is not None
+            assert res.error_traceback is not None
+            assert res.manifest.evaluation_status == "failed"
+
+    def test_strict_mode_true_raises_and_preserves_manifest(self) -> None:
+        """When strict=True, execution failures raise RuntimeError and preserve manifest on disk."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            manager = ExperimentManager(base_output_dir=tmppath / "results", strict=True)
+
+            config = _make_minimal_config(algo="astar", env="gridworld", seed=42)
+            config.environment.name = "nonexistent_environment"
+
+            with pytest.raises(RuntimeError, match="failed in strict mode"):
+                manager.run(config=config)
+
+            # Assert manifest was preserved on disk before exception was raised
+            experiments = manager.list_experiments()
+            assert len(experiments) == 1
+            assert experiments[0]["evaluation_status"] == "failed"
+            assert "error_traceback" in experiments[0]
+
+    def test_strict_mode_config_loading_failure(self) -> None:
+        """When strict=True, config loading failure raises immediately."""
+        from adaptive_rl.config import ConfigError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            manager = ExperimentManager(base_output_dir=tmppath / "results", strict=True)
+
+            with pytest.raises(ConfigError):
+                manager.run_from_config(tmppath / "nonexistent.yaml")

@@ -131,8 +131,8 @@ For planner experiments (A*), `training_timesteps` is `null`.
 | `std_path_length` | Optional[float] | Path length standard deviation |
 | `min_path_length` | Optional[float] | Minimum path length |
 | `max_path_length` | Optional[float] | Maximum path length |
-| `mean_planning_time` | float | Mean wall-clock planning time (seconds) |
-| `std_planning_time` | float | Planning time standard deviation |
+| `mean_planning_time` | Optional[float] | Mean wall-clock planning time in seconds (null if unmeasured) |
+| `std_planning_time` | Optional[float] | Planning time standard deviation (null if unmeasured) |
 | `collision_rate` | Optional[float] | Always null for offline planners (no dynamic environment step execution) |
 
 > [!IMPORTANT]
@@ -144,14 +144,22 @@ For planner experiments (A*), `training_timesteps` is `null`.
 
 ## 5. Seed Management
 
-### 5.1 Unified Evaluation Seed Protocol
+### 5.1 Environment Randomness vs Algorithm Randomness
 
-Every experiment uses a declared `seed` value and a centralized evaluation seeding protocol (`adaptive_rl.evaluation.seeding`):
-- **Environment Procedural Generation**: Evaluation episodes for both RL agents and classical planners derive identical environment reset seeds:
+The evaluation framework explicitly separates **Environment Randomness** from **Algorithm Randomness**:
+
+- **Environment Randomness**:
+  Determines procedural benchmark world generation (grid dimensions, obstacle placement, start/goal coordinates).
+  Derived deterministically via:
   $$\text{seed}_{\text{env}}(i) = \text{derive\_evaluation\_seed}(\text{experiment\_seed}, i) = \text{experiment\_seed} + i$$
-  This ensures benchmark fairness: an RL policy and a classical planner (A*, RRT*) are evaluated on the exact same procedural world layouts, start positions, and goal positions for episode $i$.
-- **Planner-Internal Randomness**: Sampling-based planners (RRT*) decouple internal tree sampling randomness from environment generation via `derive_planner_seed`. Modifying planner parameters or sampling seeds does not alter the underlying test environment.
-- **Manifest Provenance**: The complete list of evaluation seeds executed during the run is permanently recorded in `manifest.json` under `evaluation_seeds`.
+  Evaluators for both RL agents and classical planners (A*, RRT*) reset the environment using this exact seed, ensuring that episode $i$ presents an identical benchmark problem to every algorithm.
+
+- **Algorithm Randomness**:
+  Governs algorithm-internal stochastic exploration (such as RRT* state-space sampling via `derive_planner_seed`, policy network weight initialization, or stochastic action sampling).
+  Crucially, changing algorithm randomness (e.g. evaluating with different planner seeds) does **not** alter the benchmark environment's layout, ensuring true ceteris paribus comparisons.
+
+- **Manifest Provenance**:
+  The complete sequence of evaluation seeds executed during the run is permanently recorded in `manifest.json` under `evaluation_seeds`.
 
 ### 5.2 Generalization Train/Test Split
 
@@ -162,19 +170,19 @@ seed distributions:
 
 These ranges must never overlap. The framework includes an overlap check.
 
-### 5.3 Determinism Limitations
+### 5.3 Determinism and Reproducibility Scoping
 
 The following components are fully deterministic given the same seed:
 - A* planner path computation.
+- RRT* sampling-based trajectory search given identical planner seed and environment.
 - GridWorld procedural generation.
 - ContinuousNavigation2DEnv obstacle placement.
 
 The following may not be bit-for-bit reproducible across platforms or torch versions:
-- PPO/SAC neural network training (GPU/CPU floating-point differences).
+- PPO/SAC neural network training (GPU/CPU floating-point non-associativity).
 - SB3 parallel environment sampling.
 
-These limitations are documented honestly. We do not claim exact reproducibility
-for neural network training, only seed-controlled statistical reproducibility.
+We do not claim bitwise reproducibility for neural network training across disparate hardware, but multi-seed descriptive benchmarking with recorded configurations and environment parity.
 
 ---
 

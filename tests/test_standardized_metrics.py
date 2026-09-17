@@ -234,3 +234,68 @@ def test_planner_failure_vs_zero_path_length_serialization(tmp_path: Path) -> No
 
     # Explicitly verify the distinction is never conflated
     assert fail_row["path_length"] != zero_row["path_length"]
+
+
+def test_planner_unmeasured_vs_measured_zero_planning_time_serialization(tmp_path: Path) -> None:
+    """Strictly verify unmeasured planning time (None) vs measured zero (0.0) serialization.
+
+    Unmeasured must serialize as null in JSON and "" in CSV.
+    Measured zero must serialize as 0.0 in JSON and "0.0" in CSV.
+    """
+    # 1. Unmeasured timing (e.g. failure before timing start)
+    unmeasured_metrics = PlannerEvaluationMetrics(
+        episodes=3,
+        success_rate=0.0,
+        mean_path_length=None,
+        mean_planning_time=None,
+        std_planning_time=None,
+        all_path_lengths=[None, None, None],
+        all_planning_times=[None, None, None],
+    )
+    std_unmeasured = StandardizedExperimentMetrics.from_planner_metrics(unmeasured_metrics)
+    assert std_unmeasured.planning_time is None
+
+    # JSON serialization
+    unmeasured_json = json.loads(std_unmeasured.model_dump_json())
+    assert unmeasured_json["planning_time"] is None
+
+    # CSV serialization
+    unmeasured_csv_dict = std_unmeasured.to_csv_dict()
+    assert unmeasured_csv_dict["planning_time"] == ""
+
+    unmeasured_csv_path = tmp_path / "unmeasured_timing.csv"
+    ExperimentManager._save_metrics_csv(unmeasured_csv_dict, unmeasured_csv_path)
+    with open(unmeasured_csv_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        unmeasured_row = next(reader)
+    assert unmeasured_row["planning_time"] == ""
+
+    # 2. Measured zero timing
+    measured_zero_metrics = PlannerEvaluationMetrics(
+        episodes=3,
+        success_rate=1.0,
+        mean_path_length=0.0,
+        mean_planning_time=0.0,
+        std_planning_time=0.0,
+        all_path_lengths=[0.0, 0.0, 0.0],
+        all_planning_times=[0.0, 0.0, 0.0],
+    )
+    std_measured_zero = StandardizedExperimentMetrics.from_planner_metrics(measured_zero_metrics)
+    assert std_measured_zero.planning_time == 0.0
+
+    # JSON serialization
+    zero_json = json.loads(std_measured_zero.model_dump_json())
+    assert zero_json["planning_time"] == 0.0
+
+    # CSV serialization
+    zero_csv_dict = std_measured_zero.to_csv_dict()
+    assert zero_csv_dict["planning_time"] == 0.0
+
+    zero_csv_path = tmp_path / "zero_timing.csv"
+    ExperimentManager._save_metrics_csv(zero_csv_dict, zero_csv_path)
+    with open(zero_csv_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        zero_row = next(reader)
+    assert zero_row["planning_time"] == "0.0"
+
+    assert unmeasured_row["planning_time"] != zero_row["planning_time"]
