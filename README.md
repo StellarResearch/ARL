@@ -24,23 +24,23 @@ AdaptiveRL is developed incrementally across verifiable phases.
 
 | Phase | Milestone | Status | Description |
 | :--- | :--- | :--- | :--- |
-| **Phase 1** | **Repository Foundation & Skeleton** | **Completed** | Project structure, packaging, YAML configuration schemas, honest interfaces, and CLI. |
-| **Phase 2** | **Environment Abstraction & Registry** | **Completed** | Gymnasium environment wrapper contract, registry, and factory. |
-| **Phase 3** | **Procedural GridWorld** | **Completed** | Procedurally generated 2D grid navigation with BFS path verification and ASCII rendering. |
-| **Phase 4** | **PPO Training Engine** | **Completed** | Stable-Baselines3 PPO adapter, metric callbacks, checkpointing, and end-to-end trainer. |
-| **Phase 5** | **Evaluation Engine & Standard Metrics** | **Completed** | Multi-episode benchmarking, success/collision tracking, scenario testing, and JSON reports. |
-| **Phase 6** | **Continuous 2D Navigation** | **Completed** | Continuous velocity control, 8-ray LiDAR rangefinders, circular obstacles, and SAC continuous actor-critic. |
-| **Phase 7** | **Curriculum Learning** | **Completed** | Staged obstacle density and disturbance curriculum, automated graduation criteria, and CurriculumTrainer. |
-| **Phase 8** | **Traffic Signal Optimization** | **Completed** | Non-spatial 4-way intersection queue & delay optimization, signal transitions, and multi-objective rewards. |
-| **Phase 9** | **Autonomous 3D Drone Navigation** | **Completed** | 3D quadrotor translation kinematics, aerodynamic drag, 16-ray 3D spherical LiDAR, and SAC/PPO continuous control. |
-| **Phase 10** | **Drone Disturbances & Constraints** | **Completed** | Atmospheric wind fields, Ornstein-Uhlenbeck turbulence, battery depletion, dynamic 3D obstacles. |
-| **Phase 11** | **Generalization to Unseen Environments** | **Completed** | Strictly partitioned train/test seed distributions, zero-overlap validation, generalization gap tracking. |
-| **Phase 12** | **Classical Navigation Baselines (A*)** | **Completed** | A* shortest-path planner for GridWorld, `BasePlanner` abstraction, `PlannerAdapter` evaluation, planner metrics. |
-| **Phase 13** | **Algorithm Registry & SAC Hardening** | **Completed** | `AlgorithmRegistry` with capability metadata, `AlgorithmKind` enum, `adaptive-rl algorithm list/inspect` CLI. |
-| **Phase 14** | **Reproducible Experiment Manager** | **Completed** | `ExperimentManager` with date-based IDs, provenance manifests (git commit, Python, packages), YAML-driven runs. |
-| **Phase 15** | **Benchmarking & Ablation Framework** | **Completed** | `BenchmarkRunner` multi-seed evaluation, `AggregateStats` (mean ± std, min, max), `ComparisonReport` for ablations. |
-| **Phase 16** | **Standardized Metrics Schema** | **Completed** | `EvaluationMetrics` extended with planner-compatible fields, `PlannerEvaluationMetrics`, CSV export. |
-| **Phase 17** | **Experiment Dashboard (Rich TUI)** | **Completed** | Terminal dashboard via `adaptive-rl dashboard` using Rich, showing overview, per-experiment metrics, and comparisons. |
+| **Phase 1** | **Repository Foundation & Skeleton** | **Implemented & Tested** | Project structure, packaging, YAML configuration schemas, honest interfaces, and CLI. |
+| **Phase 2** | **Environment Abstraction & Registry** | **Implemented & Tested** | Gymnasium environment wrapper contract, registry, and factory. |
+| **Phase 3** | **Procedural GridWorld** | **Experimentally Validated** | Procedurally generated 2D grid navigation with BFS path verification and ASCII rendering. |
+| **Phase 4** | **PPO Training Engine** | **Experimentally Validated** | Stable-Baselines3 PPO adapter, metric callbacks, checkpointing, and end-to-end trainer. |
+| **Phase 5** | **Evaluation Engine & Standard Metrics** | **Implemented & Tested** | Multi-episode benchmarking, success/collision tracking, scenario testing, and JSON reports. |
+| **Phase 6** | **Continuous 2D Navigation** | **Experimentally Validated** | Continuous velocity control, 8-ray LiDAR rangefinders, circular obstacles, and SAC continuous actor-critic. |
+| **Phase 7** | **Curriculum Learning** | **Experimentally Validated** | Staged obstacle density and disturbance curriculum, automated graduation criteria, and CurriculumTrainer. |
+| **Phase 8** | **Traffic Signal Optimization** | **Experimentally Validated** | Non-spatial 4-way intersection queue & delay optimization, signal transitions, and multi-objective rewards. |
+| **Phase 9** | **Autonomous 3D Drone Navigation** | **Experimentally Validated** | 3D quadrotor translation kinematics, aerodynamic drag, 16-ray 3D spherical LiDAR, and SAC/PPO continuous control. |
+| **Phase 10** | **Drone Disturbances & Constraints** | **Experimentally Validated** | Atmospheric wind fields, Ornstein-Uhlenbeck turbulence, battery depletion, dynamic 3D obstacles. |
+| **Phase 11** | **Generalization to Unseen Environments** | **Experimentally Validated** | Strictly partitioned train/test seed distributions, zero-overlap validation, generalization gap tracking. |
+| **Phase 12** | **Classical Navigation Baselines (A* & RRT*)** | **Implemented & Tested** | A* discrete shortest-path planner and RRT* continuous 2D motion planner, `BasePlanner`, `PlannerAdapter`. |
+| **Phase 13** | **Algorithm Registry & SAC Hardening** | **Implemented & Tested** | `AlgorithmRegistry` with capability metadata, `AlgorithmKind` enum, `adaptive-rl algorithm list/inspect/resolve`. |
+| **Phase 14** | **Reproducible Experiment Manager** | **Implemented & Tested** | `ExperimentManager` with date-based IDs, provenance manifests (git commit, Python, packages), YAML-driven runs. |
+| **Phase 15** | **Benchmarking & Ablation Framework** | **Implemented & Tested** | `BenchmarkRunner` multi-seed evaluation, `AggregateStats` (mean ± std, min, max), `ComparisonReport` for ablations. |
+| **Phase 16** | **Standardized Metrics Schema** | **Implemented & Tested** | `StandardizedExperimentMetrics` cross-paradigm schema, `EvaluationMetrics` & `PlannerEvaluationMetrics` adapters, CSV export. |
+| **Phase 17** | **Experiment Dashboard (Rich TUI)** | **Implemented & Tested** | Terminal dashboard via `adaptive-rl dashboard` using Rich, showing overview, per-experiment metrics, and comparisons. |
 
 ---
 
@@ -220,7 +220,9 @@ from adaptive_rl.evaluation import Evaluator, EvaluationScenario
 
 # 1. Instantiate environment and loaded agent
 env = make_env("gridworld", width=6, height=5, num_obstacles=3)
-algo = PPOAlgorithm.from_pretrained("experiments/results/models/gridworld_ppo_baseline_final.zip", env=env)
+algo = PPOAlgorithm.from_pretrained(
+    "experiments/results/models/gridworld_ppo_baseline_final.zip", env=env
+)
 
 # 2. Run multi-episode evaluation
 evaluator = Evaluator(algorithm=algo, env=env)
@@ -401,7 +403,9 @@ agent.train(total_timesteps=10000)
 # 3. Step environment with optimized signal controls
 action, _ = agent.predict(obs, deterministic=True)
 obs, reward, terminated, truncated, step_info = env.step(action)
-print(f"Phase: {step_info['phase_name']}, Total Queue: {step_info['total_queue']}, Reward: {reward:.2f}")
+print(
+    f"Phase: {step_info['phase_name']}, Total Queue: {step_info['total_queue']}, Reward: {reward:.2f}"
+)
 env.close()
 ```
 
@@ -483,7 +487,9 @@ agent.train(total_timesteps=100000)
 # 3. Predict continuous 3D acceleration command
 action, _ = agent.predict(obs, deterministic=True)
 obs, reward, terminated, truncated, step_info = env.step(action)
-print(f"Altitude: {step_info['altitude']:.1f}m, Distance: {step_info['distance_to_goal']:.1f}m, Reward: {reward:.2f}")
+print(
+    f"Altitude: {step_info['altitude']:.1f}m, Distance: {step_info['distance_to_goal']:.1f}m, Reward: {reward:.2f}"
+)
 env.close()
 ```
 
