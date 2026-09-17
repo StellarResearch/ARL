@@ -157,6 +157,36 @@ class RRTStarPlanner:
                 return False
         return True
 
+    def validate_path(
+        self,
+        path: List[ContinuousCoordinate],
+        arena_width: float,
+        arena_height: float,
+        obstacles: Optional[List[CircularObstacle]] = None,
+        agent_radius: float = 0.3,
+    ) -> bool:
+        """Verify that an entire path is collision-free and respects arena bounds.
+
+        Args:
+            path: Ordered sequence of continuous 2D coordinates.
+            arena_width: Arena width.
+            arena_height: Arena height.
+            obstacles: Circular obstacles list.
+            agent_radius: Agent collision margin.
+
+        Returns:
+            True if path is valid, False otherwise.
+        """
+        if not path or len(path) < 2:
+            return False
+        obstacles = obstacles or []
+        for i in range(len(path) - 1):
+            if not self.is_segment_valid(
+                path[i], path[i + 1], arena_width, arena_height, obstacles, agent_radius
+            ):
+                return False
+        return True
+
     def plan(
         self,
         start: ContinuousCoordinate,
@@ -185,6 +215,11 @@ class RRTStarPlanner:
         """
         obstacles = obstacles or []
         t_start = time.perf_counter()
+
+        if arena_width <= 2 * agent_radius or arena_height <= 2 * agent_radius:
+            raise ValueError(
+                f"Arena dimensions ({arena_width}x{arena_height}) too small for agent_radius {agent_radius}."
+            )
 
         # Seed handling
         rng_seed = seed_override if seed_override is not None else self.seed

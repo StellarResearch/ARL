@@ -55,14 +55,17 @@ class AStarPlanner(BasePlanner):
         """Initialize the A* planner.
 
         Args:
-            heuristic: Heuristic function to use. Currently only 'manhattan'
-                is supported (admissible and consistent for 4-connected grids).
+            heuristic: Heuristic function to use ('manhattan', 'euclidean', 'chebyshev').
+                'manhattan' is the default and is admissible/consistent on 4-connected grids.
 
         Raises:
             ValueError: If an unsupported heuristic name is given.
         """
-        if heuristic not in ("manhattan",):
-            raise ValueError(f"Unsupported heuristic '{heuristic}'. Valid options: 'manhattan'.")
+        valid_heuristics = ("manhattan", "euclidean", "chebyshev")
+        if heuristic not in valid_heuristics:
+            raise ValueError(
+                f"Unsupported heuristic '{heuristic}'. Valid options: {', '.join(valid_heuristics)}."
+            )
         self._heuristic_name = heuristic
 
     @property
@@ -70,9 +73,56 @@ class AStarPlanner(BasePlanner):
         """Return the planner's canonical identifier."""
         return "astar"
 
-    def _heuristic(self, a: GridCoordinate, b: GridCoordinate) -> int:
+    @property
+    def heuristic_name(self) -> str:
+        """Return the active heuristic function name."""
+        return self._heuristic_name
+
+    def _heuristic(self, a: GridCoordinate, b: GridCoordinate) -> float:
         """Compute the heuristic estimate from a to b."""
-        return _manhattan(a, b)
+        if self._heuristic_name == "manhattan":
+            return float(abs(a[0] - b[0]) + abs(a[1] - b[1]))
+        elif self._heuristic_name == "euclidean":
+            import math
+
+            return math.hypot(a[0] - b[0], a[1] - b[1])
+        elif self._heuristic_name == "chebyshev":
+            return float(max(abs(a[0] - b[0]), abs(a[1] - b[1])))
+        return float(abs(a[0] - b[0]) + abs(a[1] - b[1]))
+
+    @staticmethod
+    def validate_path(
+        path: List[GridCoordinate],
+        obstacles: set,
+        width: int,
+        height: int,
+    ) -> bool:
+        """Verify that a path is continuous, within bounds, and collision-free.
+
+        Args:
+            path: Ordered list of (col, row) coordinates.
+            obstacles: Set of obstacle cells.
+            width: Grid width.
+            height: Grid height.
+
+        Returns:
+            True if path is valid, False otherwise.
+        """
+        if not path:
+            return False
+        for i, coord in enumerate(path):
+            if not (0 <= coord[0] < width and 0 <= coord[1] < height):
+                return False
+            if coord in obstacles:
+                return False
+            if i > 0:
+                prev = path[i - 1]
+                dx = abs(coord[0] - prev[0])
+                dy = abs(coord[1] - prev[1])
+                # Must be adjacent 4-neighbor or identical (for 0-length path)
+                if (dx + dy) != 1 and (dx != 0 or dy != 0):
+                    return False
+        return True
 
     def plan(
         self,
@@ -125,11 +175,11 @@ class AStarPlanner(BasePlanner):
         # A* search
         # Priority queue entries: (f_score, tie_break, node)
         counter = 0  # tie-breaking counter for deterministic ordering
-        open_heap: List[Tuple[int, int, GridCoordinate]] = []
+        open_heap: List[Tuple[float, int, GridCoordinate]] = []
         heapq.heappush(open_heap, (self._heuristic(start, goal), counter, start))
 
         came_from: Dict[GridCoordinate, Optional[GridCoordinate]] = {start: None}
-        g_score: Dict[GridCoordinate, int] = {start: 0}
+        g_score: Dict[GridCoordinate, float] = {start: 0.0}
         nodes_explored = 0
 
         while open_heap:

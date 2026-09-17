@@ -170,7 +170,22 @@ class TestAStarPlanner:
     def test_invalid_heuristic_raises(self) -> None:
         """Unsupported heuristic name raises ValueError at construction."""
         with pytest.raises(ValueError, match="Unsupported heuristic"):
-            AStarPlanner(heuristic="euclidean")
+            AStarPlanner(heuristic="invalid_heuristic")
+
+    def test_euclidean_and_chebyshev_heuristics(self) -> None:
+        """Supported heuristics (euclidean, chebyshev) initialize and find valid paths."""
+        for h in ("euclidean", "chebyshev"):
+            planner = AStarPlanner(heuristic=h)
+            assert planner.heuristic_name == h
+            res = planner.plan(
+                start=(0, 0),
+                goal=(5, 4),
+                obstacles=set(),
+                width=6,
+                height=5,
+            )
+            assert res.success
+            assert planner.validate_path(res.path, obstacles=set(), width=6, height=5)
 
     def test_planning_time_recorded(self) -> None:
         """Planning time is positive after a search."""

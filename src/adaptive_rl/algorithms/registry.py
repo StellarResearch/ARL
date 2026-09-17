@@ -142,6 +142,20 @@ class AlgorithmRegistry:
             )
         return self._factories[clean]
 
+    def resolve(self, name: str) -> Callable[..., Any]:
+        """Resolve and return the factory callable for a registered algorithm.
+
+        Args:
+            name: Algorithm identifier (case-insensitive).
+
+        Returns:
+            Callable factory for the algorithm.
+
+        Raises:
+            AlgorithmRegistryError: If name is not registered.
+        """
+        return self.get_factory(name)
+
     def get_metadata(self, name: str) -> AlgorithmMetadata:
         """Retrieve metadata for a registered algorithm.
 
@@ -321,6 +335,7 @@ _register_defaults()
 # Public convenience API (mirrors environment registry pattern)
 register_algorithm = algorithm_registry.register
 get_algorithm_factory = algorithm_registry.get_factory
+resolve_algorithm = algorithm_registry.resolve
 get_algorithm_metadata = algorithm_registry.get_metadata
 list_algorithms = algorithm_registry.list_algorithms
 list_algorithms_by_kind = algorithm_registry.list_by_kind

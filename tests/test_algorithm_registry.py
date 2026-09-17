@@ -251,3 +251,22 @@ class TestGlobalAlgorithmRegistry:
         """Looking up an unregistered name raises AlgorithmRegistryError."""
         with pytest.raises(AlgorithmRegistryError, match="Unknown algorithm"):
             get_algorithm_metadata("rrt_star_unknown")
+
+    def test_resolve_algorithm_success(self) -> None:
+        """resolve and resolve_algorithm correctly return factory callables."""
+        from adaptive_rl.algorithms.registry import algorithm_registry, resolve_algorithm
+        from adaptive_rl.planners.astar import AStarPlanner
+
+        factory = resolve_algorithm("astar")
+        assert factory is AStarPlanner
+
+        # Case-insensitive resolution
+        assert algorithm_registry.resolve("PPO") is not None
+        assert algorithm_registry.resolve("  SaC  ") is not None
+
+    def test_resolve_algorithm_unknown_raises(self) -> None:
+        """resolve raises AlgorithmRegistryError for unknown algorithm."""
+        from adaptive_rl.algorithms.registry import resolve_algorithm
+
+        with pytest.raises(AlgorithmRegistryError, match="Unknown algorithm 'nonexistent'"):
+            resolve_algorithm("nonexistent")

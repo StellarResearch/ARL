@@ -14,6 +14,7 @@ from adaptive_rl.algorithms.registry import (
     list_algorithms_by_kind,
     list_all_algorithm_metadata,
     register_algorithm,
+    resolve_algorithm,
 )
 from adaptive_rl.algorithms.sac import SACAlgorithm
 
@@ -32,4 +33,5 @@ __all__ = [
     "list_algorithms_by_kind",
     "list_all_algorithm_metadata",
     "register_algorithm",
+    "resolve_algorithm",
 ]
