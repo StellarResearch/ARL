@@ -28,7 +28,7 @@ def test_cli_version() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     assert "AdaptiveRL" in result.output
-    assert "Phase 11" in result.output
+    assert "Phase" in result.output
 
 
 def test_cli_info() -> None:

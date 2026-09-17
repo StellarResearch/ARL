@@ -1,7 +1,8 @@
 """Command Line Interface for AdaptiveRL.
 
 Provides commands for inspecting environment status, validating configurations,
-and guiding developers through the multi-phase implementation roadmap.
+training agents, evaluating performance, running experiments, benchmarking,
+and displaying a terminal dashboard.
 """
 
 from __future__ import annotations
@@ -47,6 +48,20 @@ curriculum_app = typer.Typer(
 )
 app.add_typer(curriculum_app, name="curriculum")
 
+algorithm_app = typer.Typer(
+    name="algorithm",
+    help="Algorithm registry inspection and capability discovery commands.",
+    no_args_is_help=True,
+)
+app.add_typer(algorithm_app, name="algorithm")
+
+experiment_app = typer.Typer(
+    name="experiment",
+    help="Experiment lifecycle management: run, list, and inspect experiments.",
+    no_args_is_help=True,
+)
+app.add_typer(experiment_app, name="experiment")
+
 console = Console()
 
 
@@ -55,7 +70,7 @@ def version() -> None:
     """Show the installed AdaptiveRL version and phase status."""
     console.print(
         f"[bold green]AdaptiveRL[/bold green] version [bold cyan]{adaptive_rl.__version__}[/bold cyan] "
-        f"([yellow]Phase 11: Generalization to Unseen Environments[/yellow])"
+        f"([yellow]Phases 1–17: Complete Platform with Classical Baselines & Dashboard[/yellow])"
     )
 
 
@@ -95,7 +110,22 @@ def info() -> None:
         "Phase 11", "Generalization to Unseen Environments", "[bold green]COMPLETED[/bold green]"
     )
     table.add_row(
-        "Phase 12-17", "Research Baselines, Hardening & Final Audit", "[yellow]PLANNED[/yellow]"
+        "Phase 12", "Classical Navigation Baselines (A*)", "[bold green]COMPLETED[/bold green]"
+    )
+    table.add_row(
+        "Phase 13", "Algorithm Registry & SAC Hardening", "[bold green]COMPLETED[/bold green]"
+    )
+    table.add_row(
+        "Phase 14", "Reproducible Experiment Manager", "[bold green]COMPLETED[/bold green]"
+    )
+    table.add_row(
+        "Phase 15", "Benchmarking and Ablation Framework", "[bold green]COMPLETED[/bold green]"
+    )
+    table.add_row(
+        "Phase 16", "Standardized Metrics and Result Schemas", "[bold green]COMPLETED[/bold green]"
+    )
+    table.add_row(
+        "Phase 17", "Experiment Dashboard (Rich Terminal TUI)", "[bold green]COMPLETED[/bold green]"
     )
 
     console.print(table)
@@ -642,6 +672,389 @@ def run_generalization_command(
     except Exception as err:
         console.print(f"[bold red]Generalization experiment failed with error:[/bold red] {err}")
         raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Algorithm registry commands
+# ---------------------------------------------------------------------------
+
+
+@algorithm_app.command(name="list")
+def list_algorithms() -> None:
+    """List all registered algorithms and planners with their capabilities."""
+    from adaptive_rl.algorithms.registry import AlgorithmKind, list_all_algorithm_metadata
+
+    meta_map = list_all_algorithm_metadata()
+    if not meta_map:
+        console.print("[yellow]No algorithms currently registered.[/yellow]")
+        return
+
+    table = Table(title="Registered AdaptiveRL Algorithms and Planners")
+    table.add_column("Name", style="cyan", no_wrap=True)
+    table.add_column("Kind", style="magenta")
+    table.add_column("Action Space", style="green")
+    table.add_column("Trainable", style="yellow", justify="center")
+    table.add_column("Description")
+
+    for name, meta in meta_map.items():
+        kind_str = (
+            "[bold blue]RL Policy[/bold blue]"
+            if meta.kind == AlgorithmKind.RL_POLICY
+            else "[bold cyan]Planner[/bold cyan]"
+        )
+        trainable_str = "[green]✓[/green]" if meta.trainable else "[dim]✗[/dim]"
+        table.add_row(
+            name,
+            kind_str,
+            meta.action_space,
+            trainable_str,
+            meta.description[:70] + "..." if len(meta.description) > 70 else meta.description,
+        )
+
+    console.print(table)
+
+
+@algorithm_app.command(name="inspect")
+def inspect_algorithm(
+    name: str = typer.Argument(..., help="Algorithm name to inspect (e.g. ppo, sac, astar)"),
+) -> None:
+    """Inspect capabilities and hyperparameters of a registered algorithm."""
+    from adaptive_rl.algorithms.registry import (
+        AlgorithmKind,
+        AlgorithmRegistryError,
+        get_algorithm_metadata,
+    )
+
+    try:
+        meta = get_algorithm_metadata(name)
+    except AlgorithmRegistryError as err:
+        console.print(f"[bold red]Algorithm lookup failed:[/bold red] {err}")
+        raise typer.Exit(code=1)
+
+    kind_str = "RL Policy" if meta.kind == AlgorithmKind.RL_POLICY else "Deterministic Planner"
+    tags_str = ", ".join(meta.tags) if meta.tags else "none"
+
+    content = (
+        f"[bold]Name:[/bold] {meta.name}\n"
+        f"[bold]Kind:[/bold] {kind_str}\n"
+        f"[bold]Class:[/bold] {meta.class_name}\n"
+        f"[bold]Action Space:[/bold] {meta.action_space}\n"
+        f"[bold]Trainable:[/bold] {'Yes' if meta.trainable else 'No (deterministic planner)'}\n"
+        f"[bold]Tags:[/bold] {tags_str}\n\n"
+        f"[bold]Description:[/bold]\n{meta.description}"
+    )
+
+    if meta.hyperparameters:
+        hp_lines = "\n".join(f"  {k}: {v}" for k, v in meta.hyperparameters.items())
+        content += f"\n\n[bold]Default Hyperparameters:[/bold]\n{hp_lines}"
+
+    console.print(
+        Panel.fit(
+            content,
+            title=f"Algorithm: {meta.name.upper()}",
+            border_style="cyan",
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Experiment management commands
+# ---------------------------------------------------------------------------
+
+
+@experiment_app.command(name="run")
+def run_experiment(
+    config: Path = typer.Option(
+        ..., "--config", "-c", help="Path to experiment YAML configuration file"
+    ),
+    timesteps: Optional[int] = typer.Option(
+        None, "--timesteps", "-t", help="Override total training timesteps"
+    ),
+    seed: Optional[int] = typer.Option(None, "--seed", "-s", help="Override random seed"),
+    output_dir: Optional[Path] = typer.Option(
+        None, "--output-dir", "-o", help="Override base output directory"
+    ),
+) -> None:
+    """Run a complete experiment (training + evaluation) from a YAML config.
+
+    Creates a structured output directory under experiments/results/<experiment_id>/
+    containing the config copy, manifest, metrics, and model artifacts.
+    """
+    from adaptive_rl.experiments.manager import ExperimentManager
+
+    manager = ExperimentManager(base_output_dir=output_dir or Path("experiments/results"))
+
+    try:
+        exp_config = load_config(config)
+    except ConfigError as err:
+        console.print(f"[bold red]Configuration error:[/bold red] {err}")
+        raise typer.Exit(code=1)
+
+    console.print(
+        Panel.fit(
+            f"[bold green]Starting Experiment[/bold green]\n\n"
+            f"• [bold]Config:[/bold] {config}\n"
+            f"• [bold]Algorithm:[/bold] {exp_config.algorithm.name.upper()}\n"
+            f"• [bold]Environment:[/bold] {exp_config.environment.name}\n"
+            f"• [bold]Seed:[/bold] {seed or exp_config.seed}",
+            title="Experiment Manager",
+            border_style="cyan",
+        )
+    )
+
+    result = manager.run_from_config(
+        config_path=config,
+        timesteps_override=timesteps,
+        seed_override=seed,
+    )
+
+    if result.success:
+        console.print(
+            Panel.fit(
+                f"[bold green]Experiment Completed Successfully![/bold green]\n\n"
+                f"• [bold]Experiment ID:[/bold] {result.experiment_id}\n"
+                f"• [bold]Output Directory:[/bold] {result.output_dir}\n"
+                f"• [bold]Evaluation Status:[/bold] {result.manifest.evaluation_status}",
+                title="Experiment Result",
+                border_style="green",
+            )
+        )
+    else:
+        console.print(
+            Panel.fit(
+                f"[bold red]Experiment Failed[/bold red]\n\n"
+                f"• [bold]Experiment ID:[/bold] {result.experiment_id}\n"
+                f"• [bold]Error:[/bold] {result.error_message}",
+                title="Experiment Error",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@experiment_app.command(name="list")
+def list_experiments(
+    output_dir: Optional[Path] = typer.Option(
+        None, "--output-dir", "-o", help="Experiments base directory"
+    ),
+) -> None:
+    """List all experiments recorded in the results directory."""
+    from adaptive_rl.experiments.manager import ExperimentManager
+
+    manager = ExperimentManager(base_output_dir=output_dir or Path("experiments/results"))
+    experiments = manager.list_experiments()
+
+    if not experiments:
+        console.print(
+            "[yellow]No experiments found.[/yellow] Run one with [cyan]adaptive-rl experiment run[/cyan]."
+        )
+        return
+
+    table = Table(title=f"Recorded Experiments ({len(experiments)} total)")
+    table.add_column("Experiment ID", style="cyan", no_wrap=True, max_width=45)
+    table.add_column("Algorithm", style="magenta")
+    table.add_column("Environment", style="green")
+    table.add_column("Seed", style="blue", justify="right")
+    table.add_column("Status", justify="center")
+    table.add_column("Created At", style="dim")
+
+    for exp in experiments:
+        status = exp.get("evaluation_status", "?")
+        created_at = exp.get("created_at", "?")
+        if isinstance(created_at, str) and "T" in created_at:
+            created_at = created_at[:19].replace("T", " ") + " UTC"
+        status_str = (
+            "[bold green]completed[/bold green]"
+            if status == "completed"
+            else "[bold red]failed[/bold red]"
+            if status == "failed"
+            else f"[yellow]{status}[/yellow]"
+        )
+        table.add_row(
+            exp.get("experiment_id", "?"),
+            exp.get("algorithm", "?").upper(),
+            exp.get("environment", "?"),
+            str(exp.get("seed", "?")),
+            status_str,
+            created_at,
+        )
+
+    console.print(table)
+
+
+@experiment_app.command(name="inspect")
+def inspect_experiment(
+    experiment_id: str = typer.Argument(..., help="Experiment ID to inspect"),
+    output_dir: Optional[Path] = typer.Option(
+        None, "--output-dir", "-o", help="Experiments base directory"
+    ),
+) -> None:
+    """Show detailed metrics and manifest for a specific experiment."""
+    from adaptive_rl.experiments.manager import ExperimentManager
+    from adaptive_rl.visualization.dashboard import render_metrics
+
+    manager = ExperimentManager(base_output_dir=output_dir or Path("experiments/results"))
+    render_metrics(experiment_id, manager)
+
+
+# ---------------------------------------------------------------------------
+# Benchmark command
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def benchmark(
+    config: Path = typer.Option(
+        ..., "--config", "-c", help="Path to the YAML configuration to benchmark"
+    ),
+    seeds: Optional[str] = typer.Option(
+        None,
+        "--seeds",
+        help="Comma-separated list of seeds (e.g. 42,43,44). Default: 42,43,44.",
+    ),
+    timesteps: Optional[int] = typer.Option(
+        None, "--timesteps", "-t", help="Override training timesteps per seed"
+    ),
+    compare_config: Optional[Path] = typer.Option(
+        None, "--compare", help="Second config to compare against (ablation)"
+    ),
+    output_report: Optional[Path] = typer.Option(
+        None, "--output-report", "-o", help="Path to write comparison JSON report"
+    ),
+    output_dir: Optional[Path] = typer.Option(
+        None, "--output-dir", help="Base directory for experiment artifacts"
+    ),
+) -> None:
+    """Run multi-seed benchmark evaluation for an algorithm configuration.
+
+    Evaluates the configuration across multiple seeds and reports aggregate
+    statistics (mean ± std, min, max). Optionally compare two configurations.
+
+    Example:
+        adaptive-rl benchmark --config configs/gridworld_ppo.yaml --seeds 42,43,44
+        adaptive-rl benchmark --config configs/gridworld_ppo.yaml --compare configs/gridworld_astar.yaml
+    """
+    from adaptive_rl.benchmarking import BenchmarkRunner
+
+    seed_list = [int(s.strip()) for s in seeds.split(",")] if seeds else [42, 43, 44]
+    base_dir = output_dir or Path("experiments/results")
+
+    runner = BenchmarkRunner(seeds=seed_list, timesteps=timesteps, base_output_dir=base_dir)
+
+    if compare_config:
+        # Comparison mode
+        console.print(
+            Panel.fit(
+                f"[bold green]Running Ablation Comparison[/bold green]\n\n"
+                f"• [bold]Config A:[/bold] {config}\n"
+                f"• [bold]Config B:[/bold] {compare_config}\n"
+                f"• [bold]Seeds:[/bold] {seed_list}",
+                title="Benchmark Runner",
+                border_style="cyan",
+            )
+        )
+
+        comparison = runner.compare(
+            config_a=config,
+            config_b=compare_config,
+            output_path=output_report,
+        )
+
+        table = Table(title="Benchmark Comparison Results")
+        table.add_column("Metric", style="cyan")
+        table.add_column(comparison.arm_a.name, style="green", justify="right")
+        table.add_column(comparison.arm_b.name, style="magenta", justify="right")
+        table.add_column("Delta (B - A)", style="yellow", justify="right")
+
+        for metric, cmp in comparison.comparison.items():
+            a_mean = cmp.get("arm_a_mean")
+            b_mean = cmp.get("arm_b_mean")
+            delta = cmp.get("delta")
+
+            a_str = f"{a_mean:.4f}" if a_mean is not None else "N/A"
+            b_str = f"{b_mean:.4f}" if b_mean is not None else "N/A"
+            d_str = f"{delta:+.4f}" if delta is not None else "N/A"
+
+            table.add_row(metric, a_str, b_str, d_str)
+
+        console.print(table)
+
+        if output_report:
+            console.print(f"\n[bold green]Report saved to:[/bold green] {output_report}")
+
+    else:
+        # Single benchmark mode
+        console.print(
+            Panel.fit(
+                f"[bold green]Running Multi-Seed Benchmark[/bold green]\n\n"
+                f"• [bold]Config:[/bold] {config}\n"
+                f"• [bold]Seeds:[/bold] {seed_list}",
+                title="Benchmark Runner",
+                border_style="cyan",
+            )
+        )
+
+        result = runner.run(config_path=config)
+
+        table = Table(
+            title=f"Benchmark Results: {result.name} ({result.successful_seeds}/{len(result.seeds)} seeds)"
+        )
+        table.add_column("Metric", style="cyan")
+        table.add_column("Mean", style="green", justify="right")
+        table.add_column("Std Dev", style="yellow", justify="right")
+        table.add_column("Min", style="dim", justify="right")
+        table.add_column("Max", style="dim", justify="right")
+
+        for metric, stats in sorted(result.aggregate.items()):
+            table.add_row(
+                metric,
+                f"{stats.mean:.4f}",
+                f"± {stats.std:.4f}",
+                f"{stats.min:.4f}",
+                f"{stats.max:.4f}",
+            )
+
+        console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard command
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def dashboard(
+    experiment_id: Optional[str] = typer.Option(
+        None, "--experiment", "-e", help="Show detailed metrics for a specific experiment ID"
+    ),
+    compare: Optional[str] = typer.Option(
+        None,
+        "--compare",
+        help="Comma-separated list of experiment IDs to compare side by side",
+    ),
+    output_dir: Optional[Path] = typer.Option(
+        None, "--output-dir", "-o", help="Experiments base directory (default: experiments/results)"
+    ),
+) -> None:
+    """Open the AdaptiveRL terminal experiment dashboard.
+
+    Displays a Rich terminal UI with experiment overview, metrics, and comparisons.
+
+    Usage examples:
+        adaptive-rl dashboard
+        adaptive-rl dashboard --experiment 2026-09-17_gridworld_ppo_seed42
+        adaptive-rl dashboard --compare 2026-09-17_gridworld_ppo_seed42,2026-09-17_gridworld_astar_seed42
+    """
+    from adaptive_rl.visualization.dashboard import run_dashboard
+
+    compare_list = [s.strip() for s in compare.split(",")] if compare else None
+    base_dir = output_dir or Path("experiments/results")
+
+    run_dashboard(
+        base_output_dir=base_dir,
+        experiment_id=experiment_id,
+        compare=compare_list,
+    )
 
 
 if __name__ == "__main__":
