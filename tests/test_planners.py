@@ -568,3 +568,129 @@ class TestRRTStarPlanner:
             assert planner.heuristic_name == heur
             res = planner.plan(start=(0, 0), goal=(2, 2), obstacles=set(), width=3, height=3)
             assert res.success
+
+    def test_rrt_star_multilevel_subtree_rewire_cost_propagation(self) -> None:
+        """Multi-level subtree rewire propagates cost delta through parent -> child -> grandchild."""
+        from adaptive_rl.planners.rrt_star import RRTNode, RRTStarPlanner
+
+        planner = RRTStarPlanner()
+        root = RRTNode(0.0, 0.0, cost=0.0)
+        child = RRTNode(2.0, 0.0, cost=2.0, parent=root)
+        root.children.append(child)
+
+        grandchild = RRTNode(4.0, 0.0, cost=4.0, parent=child)
+        child.children.append(grandchild)
+
+        great_grandchild = RRTNode(6.0, 0.0, cost=6.0, parent=grandchild)
+        grandchild.children.append(great_grandchild)
+
+        # Rewire child to a new shorter parent path reducing cost by 0.5 (from 2.0 to 1.5)
+        planner._update_subtree_costs(child, 1.5)
+
+        assert child.cost == 1.5
+        assert grandchild.cost == 3.5
+        assert great_grandchild.cost == 5.5
+
+        # Rewire with a cost increase of 1.0 (from 1.5 to 2.5)
+        planner._update_subtree_costs(child, 2.5)
+        assert child.cost == 2.5
+        assert grandchild.cost == 4.5
+        assert great_grandchild.cost == 6.5
+
+    def test_rrt_star_constructor_parameter_validation(self) -> None:
+        """RRTStarPlanner validates hyperparameters and rejects invalid values early."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        # Zero and negative values
+        with pytest.raises(ValueError):
+            RRTStarPlanner(step_size=0.0)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(step_size=-0.5)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(search_radius=0.0)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(search_radius=-1.0)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(collision_resolution=0.0)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(collision_resolution=-0.05)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(max_iterations=0)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(max_iterations=-10)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(goal_bias=-0.1)
+        with pytest.raises(ValueError):
+            RRTStarPlanner(goal_bias=1.1)
+
+        # NaN and Inf values
+        with pytest.raises(ValueError):
+            RRTStarPlanner(step_size=float("nan"))
+        with pytest.raises(ValueError):
+            RRTStarPlanner(search_radius=float("inf"))
+        with pytest.raises(ValueError):
+            RRTStarPlanner(goal_bias=float("nan"))
+
+        # Invalid types
+        with pytest.raises(TypeError):
+            RRTStarPlanner(step_size="invalid")  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            RRTStarPlanner(step_size=True)  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            RRTStarPlanner(max_iterations=100.5)  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            RRTStarPlanner(seed="seed_string")  # type: ignore[arg-type]
+
+    def test_rrt_star_plan_geometry_validation(self) -> None:
+        """RRTStarPlanner.plan() rejects invalid dimensions, coordinates, and obstacle geometries."""
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        planner = RRTStarPlanner(seed=42)
+
+        # Non-positive or too small arena
+        with pytest.raises(ValueError):
+            planner.plan(start=(1.0, 1.0), goal=(5.0, 5.0), arena_width=0.0, arena_height=10.0)
+        with pytest.raises(ValueError):
+            planner.plan(
+                start=(1.0, 1.0),
+                goal=(5.0, 5.0),
+                arena_width=0.5,
+                arena_height=0.5,
+                agent_radius=0.3,
+            )
+
+        # Invalid agent or goal radius
+        with pytest.raises(ValueError):
+            planner.plan(
+                start=(1.0, 1.0),
+                goal=(5.0, 5.0),
+                arena_width=10.0,
+                arena_height=10.0,
+                agent_radius=-0.1,
+            )
+        with pytest.raises(ValueError):
+            planner.plan(
+                start=(1.0, 1.0),
+                goal=(5.0, 5.0),
+                arena_width=10.0,
+                arena_height=10.0,
+                goal_radius=0.0,
+            )
+
+        # Invalid obstacle specs
+        with pytest.raises(ValueError):
+            planner.plan(
+                start=(1.0, 1.0),
+                goal=(5.0, 5.0),
+                arena_width=10.0,
+                arena_height=10.0,
+                obstacles=[(2.0, 2.0, -1.0)],
+            )
+        with pytest.raises(TypeError):
+            planner.plan(
+                start=(1.0, 1.0),
+                goal=(5.0, 5.0),
+                arena_width=10.0,
+                arena_height=10.0,
+                obstacles=[("x", "y", "r")],  # type: ignore[list-item]
+            )

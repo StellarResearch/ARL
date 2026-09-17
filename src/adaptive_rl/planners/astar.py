@@ -160,20 +160,39 @@ class AStarPlanner(BasePlanner):
             raise ValueError(f"Grid dimensions must be positive integers, got {width}x{height}.")
 
         # Coordinate format validation
-        if not (isinstance(start, (tuple, list)) and len(start) == 2 and isinstance(start[0], int) and isinstance(start[1], int)):
+        if not (
+            isinstance(start, (tuple, list))
+            and len(start) == 2
+            and isinstance(start[0], int)
+            and isinstance(start[1], int)
+        ):
             raise ValueError(f"Start coordinate {start} must be a 2-tuple of integers.")
-        if not (isinstance(goal, (tuple, list)) and len(goal) == 2 and isinstance(goal[0], int) and isinstance(goal[1], int)):
+        if not (
+            isinstance(goal, (tuple, list))
+            and len(goal) == 2
+            and isinstance(goal[0], int)
+            and isinstance(goal[1], int)
+        ):
             raise ValueError(f"Goal coordinate {goal} must be a 2-tuple of integers.")
 
         # Obstacle validation
         try:
             obs_set = set(obstacles) if obstacles is not None else set()
         except TypeError as exc:
-            raise ValueError(f"Obstacles must be an iterable collection of coordinates: {exc}") from exc
+            raise ValueError(
+                f"Obstacles must be an iterable collection of coordinates: {exc}"
+            ) from exc
 
         for obs in obs_set:
-            if not (isinstance(obs, (tuple, list)) and len(obs) == 2 and isinstance(obs[0], int) and isinstance(obs[1], int)):
-                raise ValueError(f"Invalid obstacle coordinate {obs}: expected 2-tuple of integers.")
+            if not (
+                isinstance(obs, (tuple, list))
+                and len(obs) == 2
+                and isinstance(obs[0], int)
+                and isinstance(obs[1], int)
+            ):
+                raise ValueError(
+                    f"Invalid obstacle coordinate {obs}: expected 2-tuple of integers."
+                )
 
         # Bounds and collision validation
         if not (0 <= start[0] < width and 0 <= start[1] < height):

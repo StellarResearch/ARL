@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -158,6 +159,34 @@ class TestExperimentCLI:
             )
             assert result.exit_code == 0, f"Experiment run failed:\n{result.output}"
             assert "Completed" in result.output or "completed" in result.output.lower()
+
+    def test_experiment_run_seed_zero(self) -> None:
+        """experiment run with --seed 0 preserves seed=0 and displays Seed: 0."""
+        config_path = Path("configs/gridworld_astar.yaml")
+        if not config_path.exists():
+            pytest.skip("configs/gridworld_astar.yaml not found")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = runner.invoke(
+                app,
+                [
+                    "experiment",
+                    "run",
+                    "--config",
+                    str(config_path),
+                    "--output-dir",
+                    tmpdir,
+                    "--seed",
+                    "0",
+                ],
+            )
+            assert result.exit_code == 0, f"Experiment run failed:\n{result.output}"
+            assert "Seed: 0" in result.output
+            manifest_files = list(Path(tmpdir).rglob("manifest.json"))
+            assert len(manifest_files) >= 1
+            with open(manifest_files[0], encoding="utf-8") as f:
+                manifest_data = json.load(f)
+            assert manifest_data["seed"] == 0
 
     def test_experiment_run_invalid_config(self) -> None:
         """experiment run with missing config returns exit code 1."""

@@ -35,15 +35,18 @@ are configurable via YAML. No claim is made about optimality of default hyperpar
 | Planner | Type | Environment | Deterministic |
 |:--------|:-----|:------------|:--------------|
 | A* | Shortest-path grid search | GridWorld (discrete) | Yes |
-| RRT* | Asymptotically optimal sampling planner | Navigation2D (continuous) | Probabilistic (seed-controlled) |
+| RRT* | Sampling planner with rewiring heuristic | Navigation2D (continuous) | Probabilistic (seed-controlled) |
 
 A* is implemented directly against the `GridWorldEnv` grid representation. It uses
 the Manhattan distance heuristic, which is admissible and consistent for 4-connected
 discrete grids. Euclidean and Chebyshev heuristics are also supported.
 
 RRT* (Rapidly-exploring Random Tree Star) is implemented for continuous 2D motion planning
-against `Navigation2DEnv`. Under uniform sampling completeness, RRT* provides asymptotic
-optimality guarantees by rewiring local parent connections within a neighborhood radius.
+against `Navigation2DEnv`. It employs near-neighbor rewiring within a bounded search radius
+heuristic to progressively shorten sampled paths and navigate around circular obstacles.
+Note: Full theoretical asymptotic optimality (Karaman & Frazzoli, 2011) requires a sample-dependent
+shrinking connection radius; this baseline uses a fixed search radius as a practical bounded-neighborhood
+rewiring approximation.
 
 > [!IMPORTANT]
 > Classical planners (A*, RRT*) are not RL algorithms. They have direct access to the geometry

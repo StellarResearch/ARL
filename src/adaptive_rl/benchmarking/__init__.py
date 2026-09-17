@@ -131,14 +131,10 @@ class BenchmarkResult:
                 }
             self.successful_seeds = len(self.successful_seed_ids)
             self.failed_seeds = len(self.failed_seed_ids)
-            self.complete = (
-                self.failed_seeds == 0 and self.successful_seeds == self.requested_seeds
-            )
+            self.complete = self.failed_seeds == 0 and self.successful_seeds == self.requested_seeds
         else:
             self.failed_seeds = self.requested_seeds - self.successful_seeds
-            self.complete = (
-                self.failed_seeds == 0 and self.successful_seeds == self.requested_seeds
-            )
+            self.complete = self.failed_seeds == 0 and self.successful_seeds == self.requested_seeds
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to plain dictionary (JSON-serializable)."""

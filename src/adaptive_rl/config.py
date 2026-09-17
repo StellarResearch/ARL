@@ -41,9 +41,13 @@ class RRTStarParametersConfig(BaseModel):
 
     step_size: float = Field(0.5, gt=0.0, description="Maximum extension distance per tree step")
     max_iterations: int = Field(1500, ge=1, description="Maximum random samples to expand")
-    goal_bias: float = Field(0.1, ge=0.0, le=1.0, description="Probability of sampling goal directly")
+    goal_bias: float = Field(
+        0.1, ge=0.0, le=1.0, description="Probability of sampling goal directly"
+    )
     search_radius: float = Field(1.5, gt=0.0, description="Radius for rewiring near neighbors")
-    collision_resolution: float = Field(0.05, gt=0.0, description="Step size for collision checking")
+    collision_resolution: float = Field(
+        0.05, gt=0.0, description="Step size for collision checking"
+    )
     seed: Optional[int] = Field(None, description="Optional fixed random seed for planner")
 
 
@@ -149,13 +153,13 @@ class AlgorithmConfig(BaseModel):
                     )
                 raw_params = data.get("parameters", {})
                 if raw_name == "astar":
-                    data["parameters"] = AStarParametersConfig.model_validate(raw_params).model_dump(
-                        exclude_none=True
-                    )
+                    data["parameters"] = AStarParametersConfig.model_validate(
+                        raw_params
+                    ).model_dump(exclude_none=True)
                 elif raw_name in ("rrt_star", "rrt", "rrt*"):
-                    data["parameters"] = RRTStarParametersConfig.model_validate(raw_params).model_dump(
-                        exclude_none=True
-                    )
+                    data["parameters"] = RRTStarParametersConfig.model_validate(
+                        raw_params
+                    ).model_dump(exclude_none=True)
             else:
                 # Supply default RL hyperparameter values if not specified
                 if "learning_rate" not in data:

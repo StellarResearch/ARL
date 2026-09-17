@@ -94,18 +94,28 @@ class StandardizedExperimentMetrics(BaseModel):
         """Construct standardized metrics from RL EvaluationMetrics."""
         extra = eval_metrics.additional_metrics
 
+        def _first_not_none(*values: Any) -> Any:
+            for val in values:
+                if val is not None:
+                    return val
+            return None
+
         return cls(
             episodes=eval_metrics.episodes,
             episode_return=eval_metrics.mean_reward,
             success_rate=eval_metrics.success_rate,
             collision_rate=eval_metrics.collision_rate,
             episode_length=eval_metrics.mean_episode_length,
-            path_length=extra.get("mean_path_length") or extra.get("path_length"),
+            path_length=_first_not_none(extra.get("mean_path_length"), extra.get("path_length")),
             path_efficiency=extra.get("path_efficiency"),
-            planning_time=extra.get("mean_planning_time") or extra.get("planning_time"),
-            generalization_gap=generalization_gap or extra.get("generalization_gap"),
-            battery_remaining=extra.get("mean_battery_remaining") or extra.get("battery_remaining"),
-            battery_used=extra.get("mean_battery_used") or extra.get("battery_used"),
+            planning_time=_first_not_none(
+                extra.get("mean_planning_time"), extra.get("planning_time")
+            ),
+            generalization_gap=_first_not_none(generalization_gap, extra.get("generalization_gap")),
+            battery_remaining=_first_not_none(
+                extra.get("mean_battery_remaining"), extra.get("battery_remaining")
+            ),
+            battery_used=_first_not_none(extra.get("mean_battery_used"), extra.get("battery_used")),
             dynamic_collision_count=extra.get("dynamic_collision_count"),
             additional_metrics={
                 k: v

@@ -221,7 +221,9 @@ environment:
 """,
         encoding="utf-8",
     )
-    with pytest.raises(ConfigError, match="Input should be 'manhattan', 'euclidean' or 'chebyshev'"):
+    with pytest.raises(
+        ConfigError, match="Input should be 'manhattan', 'euclidean' or 'chebyshev'"
+    ):
         load_config(bad_yaml)
 
 

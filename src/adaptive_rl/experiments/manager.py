@@ -68,6 +68,8 @@ class ExperimentManifest:
     notes: str = ""
     experiment_name: str = ""
     base_experiment_id: str = ""
+    error_type: Optional[str] = None
+    error_traceback: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize manifest to a plain dictionary."""
@@ -96,6 +98,8 @@ class ExperimentResult:
         training_result: TrainingResult dataclass (None for planners).
         success: Whether the experiment completed without fatal errors.
         error_message: Error description if success is False.
+        error_type: Exception type name if failed.
+        error_traceback: Full exception traceback if failed.
     """
 
     experiment_id: str
@@ -105,6 +109,8 @@ class ExperimentResult:
     training_result: Any = None
     success: bool = True
     error_message: str = ""
+    error_type: Optional[str] = None
+    error_traceback: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -241,19 +247,29 @@ class ExperimentManager:
         try:
             config = load_config(config_path)
         except Exception as exc:
+            import traceback
+
             experiment_id = f"failed_{int(time.time())}"
+            error_type = type(exc).__name__
+            error_msg = f"Config loading failed: {error_type}: {exc}"
+            error_tb = traceback.format_exc()
             manifest = self._make_manifest(
                 experiment_id=experiment_id,
                 config=None,
                 config_path=str(config_path),
             )
             manifest.evaluation_status = "failed"
+            manifest.error_type = error_type
+            manifest.error_traceback = error_tb
+            manifest.notes = error_msg
             return ExperimentResult(
                 experiment_id=experiment_id,
                 output_dir=self.base_output_dir / experiment_id,
                 manifest=manifest,
                 success=False,
-                error_message=f"Config loading failed: {exc}",
+                error_message=error_msg,
+                error_type=error_type,
+                error_traceback=error_tb,
             )
 
         if timesteps_override is not None and config.training is not None:
@@ -264,10 +280,11 @@ class ExperimentManager:
         return self.run(config=config, config_path=config_path)
 
     def _resolve_unique_run(self, base_id: str) -> tuple[str, Path]:
-        """Resolve a unique, non-colliding experiment ID and artifact directory.
+        """Resolve an atomically unique, non-colliding experiment ID and artifact directory.
 
-        Guarantees that repeated runs with identical configurations create independent
-        artifact directories without overwriting previous runs.
+        Uses atomic directory creation (FileExistsError handling) to guarantee that repeated
+        or concurrent runs with identical configurations create independent artifact directories
+        without race conditions.
 
         Args:
             base_id: Deterministic base experiment identifier.
@@ -275,17 +292,24 @@ class ExperimentManager:
         Returns:
             Tuple of (unique_experiment_id, unique_output_dir).
         """
+        self.base_output_dir.mkdir(parents=True, exist_ok=True)
+
         target_dir = self.base_output_dir / base_id
-        if not target_dir.exists():
+        try:
+            target_dir.mkdir(parents=False, exist_ok=False)
             return base_id, target_dir
+        except FileExistsError:
+            pass
 
         counter = 2
         while True:
             candidate_id = f"{base_id}_run{counter:02d}"
             candidate_dir = self.base_output_dir / candidate_id
-            if not candidate_dir.exists():
+            try:
+                candidate_dir.mkdir(parents=False, exist_ok=False)
                 return candidate_id, candidate_dir
-            counter += 1
+            except FileExistsError:
+                counter += 1
 
     def run(
         self,
@@ -341,10 +365,10 @@ class ExperimentManager:
         else:
             result = self._run_rl_experiment(config, output_dir, manifest)
 
-        # Save manifest
+        # Save manifest ensuring its own artifact entry is included in the serialized file
         manifest_path = output_dir / "manifest.json"
-        manifest.save(manifest_path)
         manifest.artifact_paths["manifest"] = str(manifest_path)
+        manifest.save(manifest_path)
         result.manifest = manifest
 
         return result
@@ -441,10 +465,16 @@ class ExperimentManager:
             manifest.artifact_paths["evaluation"] = str(eval_path)
 
         except Exception as exc:
+            import traceback
+
             success = False
-            error_msg = str(exc)
+            error_type = type(exc).__name__
+            error_msg = f"{error_type}: {exc}"
+            error_tb = traceback.format_exc()
             manifest.evaluation_status = "failed"
-            manifest.notes = f"Error: {exc}"
+            manifest.error_type = error_type
+            manifest.error_traceback = error_tb
+            manifest.notes = f"Error: {error_msg}\n{error_tb}"
         finally:
             if eval_env is not None:
                 try:
@@ -465,6 +495,8 @@ class ExperimentManager:
             training_result=training_result,
             success=success,
             error_message=error_msg,
+            error_type=getattr(manifest, "error_type", None),
+            error_traceback=getattr(manifest, "error_traceback", None),
         )
 
     # ------------------------------------------------------------------
@@ -541,10 +573,16 @@ class ExperimentManager:
             manifest.artifact_paths["metrics_csv"] = str(csv_path)
 
         except Exception as exc:
+            import traceback
+
             success = False
-            error_msg = str(exc)
+            error_type = type(exc).__name__
+            error_msg = f"{error_type}: {exc}"
+            error_tb = traceback.format_exc()
             manifest.evaluation_status = "failed"
-            manifest.notes = f"Error: {exc}"
+            manifest.error_type = error_type
+            manifest.error_traceback = error_tb
+            manifest.notes = f"Error: {error_msg}\n{error_tb}"
         finally:
             if env is not None:
                 try:
@@ -560,6 +598,8 @@ class ExperimentManager:
             training_result=None,
             success=success,
             error_message=error_msg,
+            error_type=getattr(manifest, "error_type", None),
+            error_traceback=getattr(manifest, "error_traceback", None),
         )
 
     # ------------------------------------------------------------------

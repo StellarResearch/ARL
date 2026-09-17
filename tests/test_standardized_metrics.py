@@ -123,3 +123,37 @@ def test_standardized_metrics_csv_serialization(tmp_path: Path) -> None:
     assert row["episode_return"] == ""
     assert row["success_rate"] == "0.9"
     assert "all_path_lengths" not in row  # Lists must be excluded from scalar CSV
+
+
+def test_standardized_metrics_preserves_zero_values() -> None:
+    """StandardizedExperimentMetrics.from_rl_metrics must preserve measured 0.0 values."""
+    rl_metrics = EvaluationMetrics(
+        episodes=10,
+        mean_reward=0.0,
+        std_reward=0.0,
+        min_reward=0.0,
+        max_reward=0.0,
+        success_rate=0.0,
+        collision_rate=0.0,
+        mean_episode_length=0.0,
+        std_episode_length=0.0,
+        additional_metrics={
+            "mean_path_length": 0.0,
+            "path_length": 15.0,  # Should not fall through
+            "mean_planning_time": 0.0,
+            "planning_time": 1.2,  # Should not fall through
+            "mean_battery_remaining": 0.0,
+            "battery_remaining": 50.0,  # Should not fall through
+            "mean_battery_used": 0.0,
+            "battery_used": 10.0,  # Should not fall through
+            "generalization_gap": 0.0,
+        },
+    )
+
+    std = StandardizedExperimentMetrics.from_rl_metrics(rl_metrics, generalization_gap=0.0)
+
+    assert std.path_length == 0.0
+    assert std.planning_time == 0.0
+    assert std.generalization_gap == 0.0
+    assert std.battery_remaining == 0.0
+    assert std.battery_used == 0.0

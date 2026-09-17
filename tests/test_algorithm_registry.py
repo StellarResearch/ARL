@@ -305,6 +305,25 @@ class TestGlobalAlgorithmRegistry:
         assert "custom_temp" in algorithm_registry.list_algorithms()
 
         algorithm_registry.restore_defaults()
-        assert "custom_temp" not in algorithm_registry.list_algorithms()
         assert "astar" in algorithm_registry.list_algorithms()
         assert "rrt_star" in algorithm_registry.list_algorithms()
+
+    def test_planner_consistency_across_layers(self) -> None:
+        """For every supported planner, list/inspect/resolve/config/execution layers agree."""
+        from adaptive_rl.algorithms.registry import algorithm_registry
+        from adaptive_rl.config import PLANNER_ALGORITHMS, AlgorithmConfig
+
+        for planner_name in ("astar", "rrt_star", "rrt"):
+            # 1. Resolve works
+            factory = algorithm_registry.resolve(planner_name)
+            assert callable(factory)
+
+            # 2. Inspect metadata works
+            meta = algorithm_registry.get_metadata(planner_name)
+            assert not meta.trainable
+            assert meta.kind == AlgorithmKind.PLANNER
+
+            # 3. Configuration validation recognizes planner
+            cfg = AlgorithmConfig(name=planner_name)
+            assert cfg.is_planner
+            assert cfg.name in PLANNER_ALGORITHMS

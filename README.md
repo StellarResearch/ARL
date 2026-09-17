@@ -91,7 +91,7 @@ For in-depth architectural principles, see [docs/ARCHITECTURE.md](docs/ARCHITECT
 ### Quick Start
 ```bash
 # 1. Clone the repository
-git clone https://github.com/AryanXCode646/ARL.git
+git clone https://github.com/ashishsinghbora/ARL.git
 cd ARL
 
 # 2. Create and activate a virtual environment
