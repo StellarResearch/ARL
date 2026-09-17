@@ -766,3 +766,87 @@ class TestRRTStarPlanner:
         # Unknown planner rejected
         with pytest.raises(ValueError, match="Unknown planner 'dijkstra'"):
             make_planner("dijkstra")
+
+    def test_failed_episodes_record_none_in_all_path_lengths(self) -> None:
+        """Failed planner episodes must record None in all_path_lengths, never 0.0."""
+        from unittest.mock import MagicMock
+
+        from adaptive_rl.environments.gridworld.grid import GridWorldEnv
+        from adaptive_rl.planners.adapter import PlannerAdapter
+        from adaptive_rl.planners.base import PlannerResult
+
+        env = GridWorldEnv(width=5, height=5, num_obstacles=0)
+        planner = AStarPlanner()
+
+        # Mock plan to return failure
+        planner.plan = MagicMock(
+            return_value=PlannerResult(success=False, failure_reason="blocked")
+        )
+
+        adapter = PlannerAdapter(planner=planner, env=env)
+        metrics = adapter.evaluate(num_episodes=3, base_seed=42)
+
+        assert metrics.success_rate == 0.0
+        assert metrics.all_path_lengths == [None, None, None]
+        assert 0.0 not in metrics.all_path_lengths
+
+        # to_dict must output None (JSON null), not 0.0
+        d = metrics.to_dict()
+        assert d["all_path_lengths"] == [None, None, None]
+
+    def test_planner_polymorphism_and_hierarchy(self) -> None:
+        """A* and RRT* adhere to the unified BasePlanner interface with canonical names."""
+        from adaptive_rl.planners.astar import AStarPlanner
+        from adaptive_rl.planners.base import (
+            BaseContinuousPlanner,
+            BaseGridPlanner,
+            BasePlanner,
+        )
+        from adaptive_rl.planners.rrt_star import RRTStarPlanner
+
+        astar = AStarPlanner(seed=10)
+        rrt = RRTStarPlanner(seed=20)
+
+        # Both inherit from BasePlanner
+        assert isinstance(astar, BasePlanner)
+        assert isinstance(rrt, BasePlanner)
+
+        # Domain-specific subclasses
+        assert isinstance(astar, BaseGridPlanner)
+        assert isinstance(rrt, BaseContinuousPlanner)
+
+        # Canonical naming contract
+        assert astar.name == "astar"
+        assert rrt.name == "rrt_star"
+        assert astar.seed == 10
+        assert rrt.seed == 20
+
+    def test_planner_adapter_extensible_registration(self) -> None:
+        """PlannerAdapter allows registering custom planner-environment evaluators."""
+        from adaptive_rl.planners.adapter import PlannerAdapter, PlannerEvaluationMetrics
+        from adaptive_rl.planners.base import BasePlanner
+
+        class CustomDummyPlanner(BasePlanner):
+            @property
+            def name(self) -> str:
+                return "custom_dummy"
+
+        class CustomDummyEnv:
+            pass
+
+        def custom_evaluator(adapter: PlannerAdapter, num_episodes: int, base_seed: int | None):
+            return PlannerEvaluationMetrics(
+                episodes=num_episodes,
+                success_rate=1.0,
+                all_path_lengths=[12.5] * num_episodes,
+                all_planning_times=[0.01] * num_episodes,
+            )
+
+        PlannerAdapter.register_evaluator(CustomDummyPlanner, CustomDummyEnv, custom_evaluator)
+
+        adapter = PlannerAdapter(planner=CustomDummyPlanner(), env=CustomDummyEnv())
+        res = adapter.evaluate(num_episodes=2)
+
+        assert res.episodes == 2
+        assert res.success_rate == 1.0
+        assert res.all_path_lengths == [12.5, 12.5]

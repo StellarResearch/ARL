@@ -153,7 +153,7 @@ The `AlgorithmRegistry` mirrors the `EnvironmentRegistry` design:
 from adaptive_rl.algorithms.registry import algorithm_registry, AlgorithmKind
 
 rl_algos = algorithm_registry.list_by_kind(AlgorithmKind.RL_POLICY)  # ['ppo', 'sac']
-planners = algorithm_registry.list_by_kind(AlgorithmKind.PLANNER)    # ['astar', 'rrt_star']
+planners = algorithm_registry.list_by_kind(AlgorithmKind.PLANNER)  # ['astar', 'rrt_star']
 ```
 
 ### 3.3 Experiment Manager (`adaptive_rl.experiments.manager`)

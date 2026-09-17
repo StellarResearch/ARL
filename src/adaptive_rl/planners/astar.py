@@ -14,7 +14,11 @@ import heapq
 import time
 from typing import Dict, List, Optional, Tuple
 
-from adaptive_rl.planners.base import BasePlanner, GridCoordinate, PlannerResult
+from adaptive_rl.planners.base import (
+    BaseGridPlanner,
+    GridCoordinate,
+    PlannerResult,
+)
 
 # 4-connected grid: UP, DOWN, LEFT, RIGHT
 _NEIGHBORS: List[Tuple[int, int]] = [(0, -1), (0, 1), (-1, 0), (1, 0)]
@@ -25,7 +29,7 @@ def _manhattan(a: GridCoordinate, b: GridCoordinate) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
-class AStarPlanner(BasePlanner):
+class AStarPlanner(BaseGridPlanner):
     """A* shortest-path planner for discrete 2D grid environments.
 
     Operates on the same grid representation used by :class:`GridWorldEnv`,

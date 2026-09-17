@@ -349,8 +349,8 @@ class TestBenchmarkCLI:
             app,
             ["benchmark", "--config", "/nonexistent/config.yaml", "--seeds", "42"],
         )
-        # Should fail gracefully
-        assert result.exit_code != 0 or "error" in result.output.lower()
+        # Should fail gracefully with exit code 1
+        assert result.exit_code == 1
 
     def test_benchmark_fatal_failure_exits_1(self) -> None:
         """benchmark exits with code 1 when all seeds fail."""

@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from adaptive_rl.planners.base import PlannerResult
+from adaptive_rl.planners.base import BaseContinuousPlanner, PlannerResult
 
 ContinuousCoordinate = Tuple[float, float]
 CircularObstacle = Tuple[float, float, float]  # (x, y, radius)
@@ -46,11 +46,19 @@ def _euclidean_dist(p1: ContinuousCoordinate, p2: ContinuousCoordinate) -> float
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 
-class RRTStarPlanner:
-    """RRT* path planner for continuous 2D environments.
+class RRTStarPlanner(BaseContinuousPlanner):
+    """RRT* bounded-neighborhood path planner for continuous 2D environments.
 
     Navigates a 2D rectangular arena with circular obstacles and perimeter walls,
     matching the collision geometry of :class:`ContinuousNavigation2DEnv`.
+
+    Implementation Note:
+        This planner implements an RRT*-style bounded-neighborhood rewiring heuristic
+        with a fixed search radius. It optimizes trajectory length during exploration
+        but does not implement the dynamic shrinking connection radius
+        gamma * (log(n)/n)^(1/d) required for theoretical asymptotic optimality
+        (Karaman & Frazzoli, 2011). Near-neighbor queries perform a linear scan
+        over search nodes, suitable for standard benchmark iteration budgets (<= 2000 steps).
 
     Features:
     - Configurable step size, goal bias, and maximum iterations
@@ -138,12 +146,12 @@ class RRTStarPlanner:
         if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
             raise TypeError(f"seed must be an integer or None, got {type(seed).__name__}")
 
+        super().__init__(seed=seed)
         self.step_size = step_size
         self.max_iterations = max_iterations
         self.goal_bias = goal_bias
         self.search_radius = search_radius
         self.collision_resolution = collision_resolution
-        self.seed = seed
 
     @property
     def name(self) -> str:

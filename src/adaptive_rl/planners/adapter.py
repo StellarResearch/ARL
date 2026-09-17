@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Type, cast
 
 import numpy as np
 
@@ -19,12 +19,13 @@ if TYPE_CHECKING:
 
 from adaptive_rl.planners.astar import AStarPlanner
 from adaptive_rl.planners.base import (
+    BaseContinuousPlanner,
+    BaseGridPlanner,
     BasePlanner,
     ContinuousCoordinate,
     GridCoordinate,
     PlannerResult,
 )
-from adaptive_rl.planners.rrt_star import RRTStarPlanner
 
 
 @dataclass
@@ -44,8 +45,8 @@ class PlannerEvaluationMetrics:
         max_path_length: Maximum path length over successes.
         mean_planning_time: Mean wall-clock planning time in seconds.
         std_planning_time: Standard deviation of planning time.
-        collision_rate: Should always be 0.0 for a correct planner (validated paths only).
-        all_path_lengths: Raw per-episode path lengths (0 if failed).
+        collision_rate: Should always be None for offline planners (no dynamic environment step execution).
+        all_path_lengths: Raw per-episode path lengths (None if failed or unavailable).
         all_planning_times: Raw per-episode planning times.
     """
 
@@ -58,7 +59,7 @@ class PlannerEvaluationMetrics:
     mean_planning_time: float = 0.0
     std_planning_time: float = 0.0
     collision_rate: Optional[float] = None  # None if no dynamic environment execution occurred
-    all_path_lengths: List[float] = field(default_factory=list)
+    all_path_lengths: List[Optional[float]] = field(default_factory=list)
     all_planning_times: List[float] = field(default_factory=list)
     additional_metrics: Dict[str, Any] = field(default_factory=dict)
 
@@ -80,12 +81,14 @@ class PlannerEvaluationMetrics:
         }
 
 
-class PlannerAdapter:
-    """Unified evaluator for classical baselines (A*, RRT*) on compatible environments.
+EvaluatorCallable = Callable[["PlannerAdapter", int, Optional[int]], PlannerEvaluationMetrics]
 
-    Supports:
-    - :class:`AStarPlanner` evaluated on :class:`GridWorldEnv`
-    - :class:`RRTStarPlanner` evaluated on :class:`ContinuousNavigation2DEnv`
+
+class PlannerAdapter:
+    """Unified evaluator for classical baselines on compatible environments.
+
+    Uses an extensible evaluator registry pattern to dispatch evaluation logic
+    based on planner and environment abstractions without hardcoded concrete-type branching.
 
     Example::
 
@@ -99,45 +102,66 @@ class PlannerAdapter:
         metrics = adapter.evaluate(num_episodes=20, base_seed=42)
     """
 
+    _evaluator_registry: Dict[Tuple[Type[Any], Type[Any]], EvaluatorCallable] = {}
+
+    @classmethod
+    def register_evaluator(
+        cls,
+        planner_cls: Type[Any],
+        env_cls: Type[Any],
+        evaluator_fn: EvaluatorCallable,
+    ) -> None:
+        """Register an evaluation handler for a planner-environment class pair."""
+        cls._evaluator_registry[(planner_cls, env_cls)] = evaluator_fn
+
+    @classmethod
+    def find_evaluator(
+        cls, planner_cls: Type[Any], env_cls: Type[Any]
+    ) -> Optional[EvaluatorCallable]:
+        """Find the most specific registered evaluator for the given planner and env types."""
+        # 1. Exact match
+        if (planner_cls, env_cls) in cls._evaluator_registry:
+            return cls._evaluator_registry[(planner_cls, env_cls)]
+
+        # 2. Subclass matching
+        for (p_cls, e_cls), fn in cls._evaluator_registry.items():
+            if issubclass(planner_cls, p_cls) and issubclass(env_cls, e_cls):
+                return fn
+        return None
+
     def __init__(
         self,
-        planner: Union[BasePlanner, AStarPlanner, RRTStarPlanner],
-        env: Union[GridWorldEnv, ContinuousNavigation2DEnv],
+        planner: BasePlanner,
+        env: Any,
     ) -> None:
         """Initialize the planner adapter.
 
         Args:
-            planner: Planner instance (AStarPlanner or RRTStarPlanner).
+            planner: Planner instance conforming to BasePlanner.
             env: Compatible Gymnasium environment instance.
 
         Raises:
             TypeError: If planner/env types are incompatible or unsupported.
         """
         try:
-            from adaptive_rl.environments.gridworld.grid import GridWorldEnv
-            from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
+            import gymnasium as _gym  # noqa: F401
         except ImportError as e:
             raise ImportError(
                 f"PlannerAdapter requires the 'rl' optional dependencies to interact with Gymnasium environments: {e}. "
                 "Install with: pip install 'adaptive-rl[rl]'"
             ) from e
 
-        if isinstance(planner, (BasePlanner, AStarPlanner)):
-            if not isinstance(env, GridWorldEnv):
-                raise TypeError(f"AStarPlanner requires a GridWorldEnv, got {type(env).__name__}.")
-        elif isinstance(planner, RRTStarPlanner):
-            if not isinstance(env, ContinuousNavigation2DEnv):
-                raise TypeError(
-                    f"RRTStarPlanner requires a ContinuousNavigation2DEnv, got {type(env).__name__}."
-                )
-        else:
+        evaluator = self.find_evaluator(type(planner), type(env))
+        if evaluator is None:
             raise TypeError(
-                f"Unsupported planner type '{type(planner).__name__}'. "
-                "Expected AStarPlanner or RRTStarPlanner."
+                f"No evaluation adapter registered for planner '{type(planner).__name__}' "
+                f"on environment '{type(env).__name__}'. Expected GridWorldEnv for discrete planners "
+                "or ContinuousNavigation2DEnv for continuous planners."
             )
 
         self.planner = planner
         self.env = env
+        self._evaluator = evaluator
 
     def evaluate(
         self,
@@ -159,24 +183,19 @@ class PlannerAdapter:
         if num_episodes < 1:
             raise ValueError(f"num_episodes must be >= 1, got {num_episodes}.")
 
-        if isinstance(self.planner, (BasePlanner, AStarPlanner)):
-            return self._evaluate_gridworld(num_episodes, base_seed)
-        elif isinstance(self.planner, RRTStarPlanner):
-            return self._evaluate_continuous_nav(num_episodes, base_seed)
-        else:
-            raise RuntimeError(f"Unexpected planner state: {type(self.planner)}")
+        return self._evaluator(self, num_episodes, base_seed)
 
     def _evaluate_gridworld(
         self,
         num_episodes: int,
         base_seed: Optional[int],
     ) -> PlannerEvaluationMetrics:
-        """Evaluate A* on GridWorldEnv."""
-        env: GridWorldEnv = self.env  # type: ignore[assignment]
-        planner: Union[BasePlanner, AStarPlanner] = self.planner  # type: ignore[assignment]
+        """Evaluate grid-based planner on GridWorldEnv."""
+        env: Any = self.env
+        planner: Any = self.planner
 
         successes = 0
-        path_lengths: List[float] = []
+        path_lengths: List[Optional[float]] = []
         planning_times: List[float] = []
         successful_path_lengths: List[float] = []
 
@@ -216,7 +235,7 @@ class PlannerAdapter:
                 path_lengths.append(float(result.path_length))
                 successful_path_lengths.append(float(result.path_length))
             else:
-                path_lengths.append(0.0)
+                path_lengths.append(None)
 
         return self._build_metrics(
             num_episodes=num_episodes,
@@ -233,12 +252,12 @@ class PlannerAdapter:
         num_episodes: int,
         base_seed: Optional[int],
     ) -> PlannerEvaluationMetrics:
-        """Evaluate RRT* on ContinuousNavigation2DEnv."""
-        env: ContinuousNavigation2DEnv = self.env  # type: ignore[assignment]
-        planner: RRTStarPlanner = self.planner  # type: ignore[assignment]
+        """Evaluate continuous-space planner on ContinuousNavigation2DEnv."""
+        env: Any = self.env
+        planner: Any = self.planner
 
         successes = 0
-        path_lengths: List[float] = []
+        path_lengths: List[Optional[float]] = []
         planning_times: List[float] = []
         successful_path_lengths: List[float] = []
 
@@ -292,7 +311,7 @@ class PlannerAdapter:
                 path_lengths.append(float(result.path_length))
                 successful_path_lengths.append(float(result.path_length))
             else:
-                path_lengths.append(0.0)
+                path_lengths.append(None)
 
         return self._build_metrics(
             num_episodes=num_episodes,
@@ -308,7 +327,7 @@ class PlannerAdapter:
         self,
         num_episodes: int,
         successes: int,
-        path_lengths: List[float],
+        path_lengths: List[Optional[float]],
         successful_path_lengths: List[float],
         planning_times: List[float],
         env_name: str,
@@ -343,3 +362,18 @@ class PlannerAdapter:
                 "collision_semantics": "collision_rate is None because no dynamic environment execution occurred.",
             },
         )
+
+
+# Register default evaluators for built-in planners and environments
+try:
+    from adaptive_rl.environments.gridworld.grid import GridWorldEnv
+    from adaptive_rl.environments.navigation.navigation2d import ContinuousNavigation2DEnv
+
+    PlannerAdapter.register_evaluator(
+        BaseGridPlanner, GridWorldEnv, PlannerAdapter._evaluate_gridworld
+    )
+    PlannerAdapter.register_evaluator(
+        BaseContinuousPlanner, ContinuousNavigation2DEnv, PlannerAdapter._evaluate_continuous_nav
+    )
+except ImportError:
+    pass
