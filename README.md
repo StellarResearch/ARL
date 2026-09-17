@@ -35,7 +35,12 @@ AdaptiveRL is developed incrementally across verifiable phases.
 | **Phase 9** | **Autonomous 3D Drone Navigation** | **Completed** | 3D quadrotor translation kinematics, aerodynamic drag, 16-ray 3D spherical LiDAR, and SAC/PPO continuous control. |
 | **Phase 10** | **Drone Disturbances & Constraints** | **Completed** | Atmospheric wind fields, Ornstein-Uhlenbeck turbulence, battery depletion, dynamic 3D obstacles. |
 | **Phase 11** | **Generalization to Unseen Environments** | **Completed** | Strictly partitioned train/test seed distributions, zero-overlap validation, generalization gap tracking. |
-| Phase 12-17| Research Baselines & Hardening | *Planned* | Classical baselines (A*, RRT*), SAC algorithm registry, experiment manager, and dashboard. |
+| **Phase 12** | **Classical Navigation Baselines (A*)** | **Completed** | A* shortest-path planner for GridWorld, `BasePlanner` abstraction, `PlannerAdapter` evaluation, planner metrics. |
+| **Phase 13** | **Algorithm Registry & SAC Hardening** | **Completed** | `AlgorithmRegistry` with capability metadata, `AlgorithmKind` enum, `adaptive-rl algorithm list/inspect` CLI. |
+| **Phase 14** | **Reproducible Experiment Manager** | **Completed** | `ExperimentManager` with date-based IDs, provenance manifests (git commit, Python, packages), YAML-driven runs. |
+| **Phase 15** | **Benchmarking & Ablation Framework** | **Completed** | `BenchmarkRunner` multi-seed evaluation, `AggregateStats` (mean ± std, min, max), `ComparisonReport` for ablations. |
+| **Phase 16** | **Standardized Metrics Schema** | **Completed** | `EvaluationMetrics` extended with planner-compatible fields, `PlannerEvaluationMetrics`, CSV export. |
+| **Phase 17** | **Experiment Dashboard (Rich TUI)** | **Completed** | Terminal dashboard via `adaptive-rl dashboard` using Rich, showing overview, per-experiment metrics, and comparisons. |
 
 ---
 
@@ -86,7 +91,7 @@ For in-depth architectural principles, see [docs/ARCHITECTURE.md](docs/ARCHITECT
 ### Quick Start
 ```bash
 # 1. Clone the repository
-git clone https://github.com/ashishsinghbora/ARL.git
+git clone https://github.com/AryanXCode646/ARL.git
 cd ARL
 
 # 2. Create and activate a virtual environment

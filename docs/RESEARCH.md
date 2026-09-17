@@ -1,96 +1,229 @@
-# AdaptiveRL Research & Benchmark Strategy
+# AdaptiveRL — Research Methodology and Baseline Design
 
-## 1. Research Objectives
-
-AdaptiveRL investigates three primary research questions in reinforcement learning:
-
-1. **Multi-Domain Adaptability:** Can a single, unspecialized RL training engine effectively learn policies across discrete control (GridWorld), continuous control (2D navigation), discrete switching (traffic signals), and under-actuated 3D kinematics (autonomous drone navigation)?
-2. **Generalization to Unseen Distributions:** How well do agents trained on procedurally generated environments generalize when evaluated on distinct, held-out test distributions?
-3. **RL vs. Classical Planning:** Under what condition (dynamic obstacles, wind disturbances, energy constraints) does learned RL outperform or complement classical planners (A*, RRT*)?
+This document describes the research approach, evaluation methodology, classical
+baseline design, ablation framework, and limitations of the AdaptiveRL platform.
 
 ---
 
-## 2. Experimental Benchmark Environments
+## 1. Overview
+
+AdaptiveRL is a multi-environment reinforcement learning research platform, not a
+claim to novel algorithmic contributions. Its value lies in:
+
+- Providing reproducible training and evaluation infrastructure across diverse environments.
+- Enabling principled comparison of RL algorithms against classical planning baselines.
+- Supporting ablation studies on curriculum learning, environmental disturbances, and generalization.
+- Encouraging honest reporting of what was measured versus what was claimed.
+
+---
+
+## 2. Supported Algorithms and Planners
+
+### 2.1 RL Algorithms
+
+| Algorithm | Type | Action Space | Source |
+|:----------|:-----|:-------------|:-------|
+| PPO | On-policy actor-critic | Discrete and continuous | Stable-Baselines3 |
+| SAC | Off-policy max-entropy | Continuous only | Stable-Baselines3 |
+
+Both algorithms are wrapped through the `BaseAlgorithm` interface. Hyperparameters
+are configurable via YAML. No claim is made about optimality of default hyperparameters
+— they are reasonable starting points for experimentation.
+
+### 2.2 Classical Navigation Baselines
+
+| Planner | Type | Environment | Deterministic |
+|:--------|:-----|:------------|:--------------|
+| A* | Shortest-path grid search | GridWorld (discrete) | Yes |
+
+A* is implemented directly against the `GridWorldEnv` grid representation. It uses
+the Manhattan distance heuristic, which is admissible and consistent for 4-connected
+discrete grids.
+
+> [!IMPORTANT]
+> A* is not an RL algorithm. It has access to the full grid map (start, goal,
+> obstacles) at planning time. RL agents must learn a policy from interaction
+> without direct access to the grid structure. This is a fundamental methodological
+> difference and must be considered when interpreting comparisons.
+
+---
+
+## 3. Baseline Comparison Methodology
+
+### 3.1 What Can Be Compared
+
+| Metric | PPO | SAC | A* |
+|:-------|:----|:----|:---|
+| Success Rate | ✓ | ✓ | ✓ |
+| Collision Rate | ✓ | ✓ | ✓ (always 0 for validated paths) |
+| Episode Reward | ✓ | ✓ | ✗ (not applicable) |
+| Episode Length | ✓ | ✓ | ✗ (planner doesn't step episode) |
+| Path Length | ✗ | ✗ | ✓ |
+| Planning Time | ✗ | ✗ | ✓ |
+
+### 3.2 Comparison Caveats
+
+- **A* has full observability**: The A* planner receives the complete grid layout at
+  planning time. RL agents observe only a local feature vector (normalized positions).
+  This gives A* a structural advantage in success rate on solvable instances.
+  
+- **A* is not a policy**: A* computes a path per episode. It does not generalize
+  a learned policy across novel grids. RL agents learn generalizable policies.
+  
+- **Success rate comparison is valid but limited**: A* should achieve near-100%
+  success rate on any solvable grid. RL agents may achieve lower success rates
+  but require no grid-specific knowledge.
+
+- **Reward comparison is invalid**: A* does not accumulate reward in the RL sense.
+  Comparing rewards between A* and PPO/SAC is methodologically incorrect.
+
+### 3.3 Valid Research Questions
+
+- "Does the RL policy approach A*'s success rate after sufficient training?"
+- "How does the RL policy's path efficiency compare to the A*-optimal path?"
+- "Does curriculum learning improve RL success rate faster than flat training?"
+- "Does the agent generalize to unseen grid configurations?"
+
+---
+
+## 4. Ablation Study Design
+
+### 4.1 Curriculum Ablation
+
+Compare agents trained with and without curriculum learning:
+- **Curriculum enabled**: Progressive obstacle density increase via `CurriculumTrainer`.
+- **Curriculum disabled**: Fixed obstacle density throughout training.
+
+Measure: success rate at fixed training budget (e.g. 50k timesteps).
+
+### 4.2 Disturbance Ablation (Drone)
+
+Compare drone agent performance under different conditions:
+- **Baseline**: No wind or turbulence.
+- **Wind**: Constant directional wind field.
+- **Turbulence**: Ornstein-Uhlenbeck turbulence process.
+- **Dynamic obstacles**: Moving obstacle agents.
+
+Configs: `configs/drone.yaml`, `configs/drone_disturbed_ppo.yaml`,
+`configs/drone_disturbed_sac.yaml`.
+
+### 4.3 Algorithm Ablation
+
+Compare PPO vs SAC on identical environments:
+- **GridWorld**: PPO (discrete action space, SAC not applicable).
+- **Navigation 2D**: Both PPO and SAC applicable.
+- **Drone 3D**: Both PPO and SAC applicable.
+
+### 4.4 Generalization Ablation
+
+Measure performance degradation from training to held-out environments:
+- **Train distribution**: Seeds [1000, 1015).
+- **Test distribution**: Seeds [2000, 2015).
+- **Overlap**: 0 (validated by design).
+
+Metric: generalization gap = train_success_rate − test_success_rate.
+
+---
+
+## 5. Train/Test Protocol
+
+All generalization experiments strictly separate training and evaluation seeds.
 
 ```
-+-----------------------------------------------------------------------------+
-| Milestone 1: Discrete GridWorld (Phase 3)                                   |
-| - Proves basic environment contracts, discrete actions, and PPO convergence.|
-+-----------------------------------------------------------------------------+
-                                       |
-                                       v
-+-----------------------------------------------------------------------------+
-| Milestone 2: Continuous 2D Navigation (Phase 6)                             |
-| - Continuous [dx, dy] velocity actions, distance-to-goal and obstacle rays. |
-+-----------------------------------------------------------------------------+
-                                       |
-                                       v
-+-----------------------------------------------------------------------------+
-| Milestone 3: Traffic Signal Optimization (Phase 8)                          |
-| - Multi-agent / queue-based environment validating non-spatial tasks.       |
-+-----------------------------------------------------------------------------+
-                                       |
-                                       v
-+-----------------------------------------------------------------------------+
-| Milestone 4: Autonomous Drone Navigation (Phases 9 & 10)                    |
-| - 3D kinematic simulation, wind vectors, dynamic obstacles, battery limits. |
-+-----------------------------------------------------------------------------+
+Training seeds: [1000, 1015)   (15 seeds)
+Test seeds:     [2000, 2015)   (15 seeds)
+Overlap:        0 seeds (verified)
 ```
 
+Evaluation on training seeds measures optimization performance.
+Evaluation on test seeds measures generalization.
+
+The `GeneralizationDistribution` class enforces overlap validation:
+```python
+assert len(set(train_seeds) & set(test_seeds)) == 0
+```
+
+> [!CAUTION]
+> Never evaluate on seeds that appeared during training. Doing so inflates
+> test performance and produces unreliable generalization estimates.
+
 ---
 
-## 3. Generalization & Evaluation Protocol
+## 6. Statistical Reporting Standards
 
-To prevent test-set contamination and misleading success claims:
-* **Training Scenario Generation:** Scenarios generated from a designated seed pool (e.g. seeds `0` to `999`).
-* **Evaluation Scenario Generation:** Scenarios generated from an independent seed pool (e.g. seeds `1000` to `1999`) with strictly disjoint layouts.
-* **Metric Reporting:** All benchmark results must report both training return and unseen generalization return alongside success rate, collision frequency, and step counts.
+### 6.1 Multi-Seed Evaluation
+
+All benchmark results should be reported over at least 3 seeds (ideally 5+):
+- Mean ± standard deviation.
+- Min and max for range indication.
+
+Single-seed results are acceptable for smoke tests and debugging but should not
+be presented as scientific conclusions.
+
+### 6.2 Metrics Reported
+
+| Metric | Unit | Source |
+|:-------|:-----|:-------|
+| `success_rate` | fraction [0, 1] | Episode info `success` flag |
+| `collision_rate` | fraction [0, 1] | Episode info `collision` flag |
+| `mean_reward` | reward units | Cumulative per-episode reward |
+| `std_reward` | reward units | Standard deviation over episodes |
+| `mean_episode_length` | steps | Steps per episode |
+| `mean_path_length` | steps | A* path length (steps, not reward) |
+| `mean_planning_time` | seconds | Wall-clock per-episode planning time |
+| `generalization_gap` | fraction | train_success − test_success |
+
+### 6.3 Honest Language
+
+This document and all associated README/documentation use the following conventions:
+
+- **Implemented**: Code exists and passes tests.
+- **Evaluated**: Results were actually measured and recorded.
+- **Smoke tested**: A lightweight run was performed to verify the pipeline works.
+- **Untested at scale**: Infrastructure exists but full training runs have not been recorded.
+
+We do **not** use: "proves", "optimal", "state of the art", "production ready" without
+supporting experimental evidence.
 
 ---
 
-## 4. Phase 11: Generalization to Unseen Environments Benchmark
+## 7. Limitations
 
-### 4.1 Hypothesis
-Reinforcement learning agents trained in procedurally generated environments learn state-action policies grounded in generalized spatial representations (e.g. goal-directed vectors, LiDAR obstacle avoidance). When evaluated on completely unseen environment layouts generated from an independent seed distribution, trained agents will transfer core navigation capabilities, but will exhibit a statistically measurable **generalization gap** ($\Delta_{\text{gen}}$) compared to performance on the training distribution:
-$$\Delta_{\text{success}} = \text{Success}_{\text{train}} - \text{Success}_{\text{unseen}}$$
-$$\Delta_{\text{reward}} = \text{Reward}_{\text{train}} - \text{Reward}_{\text{unseen}}$$
+### 7.1 Algorithmic Limitations
 
-### 4.2 Methodology & Experimental Design
-1. **Strict Partitioning & Zero Overlap**:
-   - Environment instances are generated through procedural seed distributions.
-   - **Training Distribution ($D_{\text{train}}$)**: Seeds $[100 .. 150)$ (or $[1000 .. 1050)$). The training environment is wrapped in `TrainingDistributionWrapper` to strictly enforce that during all training episodes, the agent only observes topologies within $D_{\text{train}}$.
-   - **Unseen Test Distribution ($D_{\text{test}}$)**: Seeds $[200 .. 250)$ (or $[2000 .. 2050)$).
-   - `GeneralizationDistribution` executes automated set-intersection assertions ensuring $|D_{\text{train}} \cap D_{\text{test}}| = 0$.
-2. **Evaluation Protocol**:
-   - The identical trained model policy is evaluated deterministically over every individual seed in $D_{\text{train}}$ and $D_{\text{test}}$.
-   - Metrics are recorded on an episode-by-episode basis without policy weight updates.
+- **A* not applicable to continuous environments**: The current A* implementation
+  works only on discrete GridWorld. Continuous navigation (Navigation2D, Drone3D)
+  does not expose a planning graph.
 
-### 4.3 Variables
-- **Independent Variable**: Environment layout seed partition (seen training distribution vs unseen test distribution).
-- **Controlled Variables**:
-  - Grid / arena dimensions ($6 \times 6$ grid, $20\text{m} \times 20\text{m}$ continuous arena).
-  - Obstacle count and geometry (4 obstacles, radius 1.0m).
-  - Sensor configurations (16-ray LiDAR / grid coordinate features).
-  - Policy network weights and evaluation determinism (`deterministic=True`).
+- **No true closed-loop planning**: A* computes an open-loop path at episode start.
+  It does not replan if the environment changes mid-episode (as dynamic obstacles do).
 
-### 4.4 Standard Metrics
-- **Success Rate ($S_{\text{train}}, S_{\text{test}}$)**: Proportion of episodes where the agent successfully reaches the designated goal.
-- **Collision Rate ($C_{\text{train}}, C_{\text{test}}$)**: Proportion of episodes terminating due to boundary or obstacle collisions.
-- **Mean Episodic Return ($\bar{R}_{\text{train}}, \bar{R}_{\text{test}}$)**: Mean cumulative discounted reward.
-- **Mean Episode Length ($\bar{L}_{\text{train}}, \bar{L}_{\text{test}}$)**: Steps required to terminate or reach goal.
-- **Generalization Gap ($\Delta_{\text{success}}, \Delta_{\text{reward}}$)**: Absolute performance degradation on unseen topologies.
-- **Relative Success Retention**: Ratio of unseen success to training success ($S_{\text{test}} / S_{\text{train}}$).
+- **No statistical significance testing**: The benchmarking framework reports
+  descriptive statistics (mean ± std) but does not perform significance tests
+  (e.g. Mann-Whitney U, t-test). Interpret comparisons accordingly.
 
-### 4.5 Empirical Benchmark Results
+### 7.2 Computational Limitations
 
-| Environment | Algorithm | Training Budget | Train Success | Unseen Test Success | Generalization Gap | Mean Reward (Train vs Test) | Relative Retention |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **GridWorld** | PPO | 30,000 steps | 92.0% | 84.0% | +8.0% | +84.2 vs +75.6 | 91.3% |
-| **Continuous Navigation** | SAC | 25,000 steps | 88.0% | 76.0% | +12.0% | +68.4 vs +54.1 | 86.4% |
+- Training runs of 50k+ timesteps have not been systematically recorded in this
+  codebase. The infrastructure exists; results require user-initiated training.
 
-### 4.6 Limitations
-1. **In-Distribution Variation Only**:
-   - The test seeds represent unseen layouts drawn from the *same* parameter distribution (same obstacle count, identical grid size). Out-of-distribution generalization (e.g. evaluating an agent trained on 4 obstacles on 12 obstacles, or evaluating in a $12 \times 12$ grid) requires further architectural mechanisms such as curriculum learning or domain randomization.
-2. **Fixed Goal/Start Coordinates**:
-   - Certain procedural generators maintain fixed start/goal corners while randomizing internal obstacle placements; full coordinate randomization introduces higher variance requiring larger evaluation sample sizes ($N \ge 100$).
+- Smoke tests use 500–2000 timesteps, which is insufficient for meaningful policy
+  learning. They validate pipeline integrity, not algorithm performance.
 
+### 7.3 Reproducibility Limitations
+
+- PyTorch training may not be bit-for-bit reproducible across machines or versions.
+- A* planning is fully deterministic given the same grid layout and seed.
+- Environment generation is deterministic given the same seed.
+
+---
+
+## 8. Future Research Directions
+
+The following are possible research extensions, not current claims:
+
+- Implementing RRT* for continuous 2D navigation comparison.
+- Multi-objective reward balancing for drone battery + success trade-offs.
+- Meta-learning for faster adaptation to novel environments.
+- Population-based training for hyperparameter optimization.
+- Safety constraints and safe RL exploration.

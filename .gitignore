@@ -97,3 +97,4 @@ runs/
 *.zip
 *.pt
 *.pth
+mcp_config.json

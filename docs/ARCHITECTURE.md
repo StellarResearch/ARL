@@ -113,3 +113,129 @@ The relationship between environments and the training engine follows a strict u
 3. **Seamless Benchmark Portability:** Standard third-party environments (such as Gymnasium's `CartPole-v1`, `Pendulum-v1`, or `BipedalWalker-v3`) can be trained using the exact same CLI command and training engine without wrapping or rewriting them.
 4. **Isolated Testability:** Test suites can use lightweight dummy environments (like `DummyTestEnv`) to test the registry, vectorization, and training loops rapidly without incurring heavy simulation overhead.
 
+---
+
+## 3. Phase 12–17: Classical Baselines, Registries, and Experiment Management
+
+### 3.1 Planner Layer (`adaptive_rl.planners`)
+
+Classical navigation planners are implemented as a distinct layer separate from
+RL algorithms. This separation respects the fundamental difference between:
+
+- **RL policies**: Learned, stochastic, model-free, generalize through interaction.
+- **Classical planners**: Deterministic, model-based, compute solutions per-instance.
+
+```
+BasePlanner (ABC)
+  └── AStarPlanner
+        └── PlannerAdapter (GridWorldEnv integration)
+```
+
+Planners expose the same success/collision metrics as RL agents where applicable,
+but have planner-specific metrics (path length, planning time) that RL agents do not.
+The `PlannerAdapter` runs the planner on the same GridWorldEnv layouts as RL evaluation,
+enabling direct success-rate comparison.
+
+### 3.2 Algorithm Registry (`adaptive_rl.algorithms.registry`)
+
+The `AlgorithmRegistry` mirrors the `EnvironmentRegistry` design:
+- Both RL algorithms (PPO, SAC) and planners (A*) are registered.
+- Each registration includes typed `AlgorithmMetadata` with capability flags.
+- `AlgorithmKind.RL_POLICY` vs `AlgorithmKind.PLANNER` prevents type confusion.
+- CLI commands (`adaptive-rl algorithm list`, `algorithm inspect <name>`) expose the registry.
+
+```python
+from adaptive_rl.algorithms.registry import algorithm_registry, AlgorithmKind
+rl_algos = algorithm_registry.list_by_kind(AlgorithmKind.RL_POLICY)   # ['ppo', 'sac']
+planners = algorithm_registry.list_by_kind(AlgorithmKind.PLANNER)     # ['astar']
+```
+
+### 3.3 Experiment Manager (`adaptive_rl.experiments.manager`)
+
+`ExperimentManager` provides reproducible experiment orchestration:
+
+```
+run(config) → ExperimentResult
+  ├── Generate experiment_id (date + env + algo + seed)
+  ├── Create output directory structure
+  ├── Record provenance (git commit, Python, packages, platform)
+  ├── Save config copy
+  ├── Run training (RL) or planning (planner)
+  ├── Evaluate performance
+  ├── Save metrics.json + metrics.csv
+  └── Save manifest.json
+```
+
+Every experiment is self-contained and independently reproducible from its `config.yaml` copy.
+
+### 3.4 Benchmarking Framework (`adaptive_rl.benchmarking`)
+
+`BenchmarkRunner` extends `ExperimentManager` with multi-seed execution:
+- Runs the same configuration across N seeds.
+- Aggregates statistics (mean ± std, min, max) per metric.
+- Supports two-arm comparisons (ablations).
+- Saves `ComparisonReport` as JSON.
+
+### 3.5 Dashboard (`adaptive_rl.visualization.dashboard`)
+
+The terminal dashboard uses `rich` (already a project dependency) to render
+experiment results from saved artifacts:
+
+- **Overview**: All experiments with status, algorithm, environment, seed, timestamp.
+- **Detail**: Metrics for a single experiment, including a text sparkline for reward.
+- **Comparison**: Side-by-side metric table for multiple experiments.
+
+No external plotting libraries are required. The dashboard is purely text-based,
+works over SSH, and does not require a graphical environment.
+
+---
+
+## 4. Complete Module Reference
+
+```
+src/adaptive_rl/
+├── __init__.py               — Package root and version
+├── cli.py                    — Typer CLI (all commands)
+├── config.py                 — Pydantic configuration schemas
+├── algorithms/
+│   ├── base.py               — BaseAlgorithm abstract interface
+│   ├── ppo.py                — SB3 PPO wrapper
+│   ├── sac.py                — SB3 SAC wrapper
+│   └── registry.py           — AlgorithmRegistry (Phase 13)
+├── planners/
+│   ├── base.py               — BasePlanner + PlannerResult (Phase 12)
+│   ├── astar.py              — A* planner implementation (Phase 12)
+│   └── adapter.py            — PlannerAdapter for GridWorldEnv (Phase 12)
+├── environments/
+│   ├── base.py               — AdaptiveRLEnv abstract base
+│   ├── registry.py           — EnvironmentRegistry
+│   ├── metadata.py           — EnvironmentMetadata
+│   ├── seeded_wrapper.py     — TrainingDistributionWrapper
+│   ├── testing.py            — DummyTestEnv
+│   ├── gridworld/            — GridWorld environment (Phase 3)
+│   ├── navigation/           — ContinuousNavigation2D (Phase 6)
+│   ├── traffic/              — TrafficSignalEnv (Phase 8)
+│   └── drone/                — DroneNavigation3D + DroneDisturbance3D (Phase 9-10)
+├── training/
+│   ├── trainer.py            — PPOTrainer, SACTrainer, get_trainer
+│   ├── callbacks.py          — MetricLoggerCallback, CheckpointCallback
+│   └── checkpointing.py      — CheckpointManager
+├── evaluation/
+│   ├── evaluator.py          — Evaluator, BaseEvaluator
+│   ├── metrics.py            — EvaluationMetrics (Phase 16)
+│   ├── generalization.py     — GeneralizationReport, GeneralizationDistribution
+│   └── scenarios.py          — EvaluationScenario
+├── experiments/
+│   ├── runner.py             — BaseExperimentRunner
+│   ├── generalization_runner.py — GeneralizationExperimentRunner (Phase 11)
+│   └── manager.py            — ExperimentManager (Phase 14)
+├── benchmarking/
+│   └── __init__.py           — BenchmarkRunner, AggregateStats (Phase 15)
+├── curriculum/               — Curriculum learning (Phase 7)
+├── rewards/                  — Reward function interfaces
+├── models/                   — Model artifact management
+└── visualization/
+    ├── plots.py              — PlotManager (text summaries)
+    ├── renderer.py           — BaseRenderer
+    └── dashboard.py          — Rich terminal dashboard (Phase 17)
+```
