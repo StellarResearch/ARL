@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Set
+from typing import Any, Optional, Set
 
 import pytest
 
@@ -942,3 +942,178 @@ class TestRRTStarPlanner:
             obstacles=obstacles,
             agent_radius=0.0,
         )
+
+
+class TestEvaluatorRegistrySpecificity:
+    """Tests for deterministic MRO-based evaluator dispatch in PlannerAdapter."""
+
+    def test_overlapping_registrations_most_specific_selected(self) -> None:
+        """Verify most specific evaluator is chosen regardless of registration order."""
+        from adaptive_rl.planners.adapter import PlannerAdapter
+        from adaptive_rl.planners.base import BasePlanner
+
+        class HierarchyBasePlanner(BasePlanner):
+            @property
+            def name(self) -> str:
+                return "base_planner"
+
+        class HierarchySpecificPlanner(HierarchyBasePlanner):
+            @property
+            def name(self) -> str:
+                return "specific_planner"
+
+        class HierarchyBaseEnv:
+            pass
+
+        class HierarchySpecificEnv(HierarchyBaseEnv):
+            pass
+
+        def fn_base_base(adapter: Any, n: int, s: Optional[int]) -> Any:
+            return None
+
+        def fn_specific_base(adapter: Any, n: int, s: Optional[int]) -> Any:
+            return None
+
+        def fn_base_specific(adapter: Any, n: int, s: Optional[int]) -> Any:
+            return None
+
+        def fn_specific_specific(adapter: Any, n: int, s: Optional[int]) -> Any:
+            return None
+
+        # Test registration order 1: general registered before specific
+        registry_backup = dict(PlannerAdapter._evaluator_registry)
+        try:
+            PlannerAdapter._evaluator_registry.clear()
+            PlannerAdapter.register_evaluator(HierarchyBasePlanner, HierarchyBaseEnv, fn_base_base)
+            PlannerAdapter.register_evaluator(
+                HierarchySpecificPlanner, HierarchyBaseEnv, fn_specific_base
+            )
+            PlannerAdapter.register_evaluator(
+                HierarchyBasePlanner, HierarchySpecificEnv, fn_base_specific
+            )
+            PlannerAdapter.register_evaluator(
+                HierarchySpecificPlanner, HierarchySpecificEnv, fn_specific_specific
+            )
+
+            assert (
+                PlannerAdapter.find_evaluator(HierarchySpecificPlanner, HierarchySpecificEnv)
+                is fn_specific_specific
+            )
+            assert (
+                PlannerAdapter.find_evaluator(HierarchySpecificPlanner, HierarchyBaseEnv)
+                is fn_specific_base
+            )
+            assert (
+                PlannerAdapter.find_evaluator(HierarchyBasePlanner, HierarchySpecificEnv)
+                is fn_base_specific
+            )
+            assert (
+                PlannerAdapter.find_evaluator(HierarchyBasePlanner, HierarchyBaseEnv)
+                is fn_base_base
+            )
+
+            # Test registration order 2: reverse order produces identical resolution
+            PlannerAdapter._evaluator_registry.clear()
+            PlannerAdapter.register_evaluator(
+                HierarchySpecificPlanner, HierarchySpecificEnv, fn_specific_specific
+            )
+            PlannerAdapter.register_evaluator(
+                HierarchyBasePlanner, HierarchySpecificEnv, fn_base_specific
+            )
+            PlannerAdapter.register_evaluator(
+                HierarchySpecificPlanner, HierarchyBaseEnv, fn_specific_base
+            )
+            PlannerAdapter.register_evaluator(HierarchyBasePlanner, HierarchyBaseEnv, fn_base_base)
+
+            assert (
+                PlannerAdapter.find_evaluator(HierarchySpecificPlanner, HierarchySpecificEnv)
+                is fn_specific_specific
+            )
+            assert (
+                PlannerAdapter.find_evaluator(HierarchySpecificPlanner, HierarchyBaseEnv)
+                is fn_specific_base
+            )
+            assert (
+                PlannerAdapter.find_evaluator(HierarchyBasePlanner, HierarchySpecificEnv)
+                is fn_base_specific
+            )
+            assert (
+                PlannerAdapter.find_evaluator(HierarchyBasePlanner, HierarchyBaseEnv)
+                is fn_base_base
+            )
+
+            # Test missing exact match: falls back to most specific planner superclass
+            PlannerAdapter._evaluator_registry.clear()
+            PlannerAdapter.register_evaluator(HierarchyBasePlanner, HierarchyBaseEnv, fn_base_base)
+            PlannerAdapter.register_evaluator(
+                HierarchySpecificPlanner, HierarchyBaseEnv, fn_specific_base
+            )
+            PlannerAdapter.register_evaluator(
+                HierarchyBasePlanner, HierarchySpecificEnv, fn_base_specific
+            )
+            # Both fn_specific_base (p_dist=0, e_dist=1) and fn_base_specific (p_dist=1, e_dist=0) match.
+            # Planner specificity (p_dist) takes priority:
+            assert (
+                PlannerAdapter.find_evaluator(HierarchySpecificPlanner, HierarchySpecificEnv)
+                is fn_specific_base
+            )
+
+            # Completely unregistered types return None
+            class UnrelatedType:
+                pass
+
+            assert PlannerAdapter.find_evaluator(UnrelatedType, HierarchyBaseEnv) is None  # type: ignore
+        finally:
+            PlannerAdapter._evaluator_registry = registry_backup
+
+
+class TestPlannerMissingVsZeroMetrics:
+    """Tests for preserving None for unmeasured planning time vs 0.0 for measured zero."""
+
+    def test_planner_result_unmeasured_time_is_none(self) -> None:
+        """PlannerResult without explicit timing has planning_time_seconds = None."""
+        res = PlannerResult(success=False, failure_reason="Test failure")
+        assert res.planning_time_seconds is None
+
+        # Explicit measured zero is preserved
+        res_zero = PlannerResult(success=True, planning_time_seconds=0.0)
+        assert res_zero.planning_time_seconds == 0.0
+
+    def test_adapter_build_metrics_unmeasured_time(self) -> None:
+        """PlannerAdapter._build_metrics reports None when all episodes are unmeasured."""
+        from adaptive_rl.planners.adapter import PlannerAdapter
+        from adaptive_rl.planners.astar import AStarPlanner
+
+        adapter = PlannerAdapter.__new__(PlannerAdapter)
+        adapter.planner = AStarPlanner()
+
+        # Case 1: All episodes unmeasured (e.g. exceptions before timing)
+        unmeasured_metrics = adapter._build_metrics(
+            num_episodes=2,
+            successes=0,
+            path_lengths=[None, None],
+            successful_path_lengths=[],
+            planning_times=[None, None],
+            env_name="test_env",
+            base_seed=42,
+        )
+        assert unmeasured_metrics.mean_planning_time is None
+        assert unmeasured_metrics.std_planning_time is None
+        assert unmeasured_metrics.all_planning_times == [None, None]
+
+        # Case 2: Measured zero timing (e.g. instant resolution)
+        measured_zero_metrics = adapter._build_metrics(
+            num_episodes=2,
+            successes=2,
+            path_lengths=[0.0, 0.0],
+            successful_path_lengths=[0.0, 0.0],
+            planning_times=[0.0, 0.0],
+            env_name="test_env",
+            base_seed=42,
+        )
+        assert measured_zero_metrics.mean_planning_time == 0.0
+        assert measured_zero_metrics.std_planning_time == 0.0
+        assert measured_zero_metrics.all_planning_times == [0.0, 0.0]
+
+        # Unmeasured vs measured zero must strictly not be equal
+        assert unmeasured_metrics.mean_planning_time != measured_zero_metrics.mean_planning_time

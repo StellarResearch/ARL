@@ -26,7 +26,7 @@ class PlannerResult:
               Empty list if no path was found.
         path_length: Total number of steps or arc length (None if failed;
                      0.0 for a measured zero-length path when start == goal).
-        planning_time_seconds: Wall-clock seconds spent planning.
+        planning_time_seconds: Wall-clock seconds spent planning (None if unmeasured).
         nodes_explored: Number of search nodes expanded (algorithm-dependent).
         failure_reason: Human-readable reason for failure if success is False.
     """
@@ -34,7 +34,7 @@ class PlannerResult:
     success: bool
     path: Sequence[Coordinate] = field(default_factory=list)
     path_length: Optional[float] = None
-    planning_time_seconds: float = 0.0
+    planning_time_seconds: Optional[float] = None
     nodes_explored: int = 0
     failure_reason: Optional[str] = None
 

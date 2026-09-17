@@ -56,11 +56,11 @@ class PlannerEvaluationMetrics:
     std_path_length: Optional[float] = None
     min_path_length: Optional[float] = None
     max_path_length: Optional[float] = None
-    mean_planning_time: float = 0.0
-    std_planning_time: float = 0.0
+    mean_planning_time: Optional[float] = None
+    std_planning_time: Optional[float] = None
     collision_rate: Optional[float] = None  # None if no dynamic environment execution occurred
     all_path_lengths: List[Optional[float]] = field(default_factory=list)
-    all_planning_times: List[float] = field(default_factory=list)
+    all_planning_times: List[Optional[float]] = field(default_factory=list)
     additional_metrics: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -118,16 +118,36 @@ class PlannerAdapter:
     def find_evaluator(
         cls, planner_cls: Type[Any], env_cls: Type[Any]
     ) -> Optional[EvaluatorCallable]:
-        """Find the most specific registered evaluator for the given planner and env types."""
+        """Find the most specific registered evaluator for the given planner and env types.
+
+        Resolution order:
+        1. Exact match: (planner_cls, env_cls)
+        2. Most specific registered superclass matching:
+           - Minimal inheritance distance in planner MRO
+           - Minimal inheritance distance in environment MRO
+           - Deterministic tie-breaking by class qualified names
+        """
         # 1. Exact match
         if (planner_cls, env_cls) in cls._evaluator_registry:
             return cls._evaluator_registry[(planner_cls, env_cls)]
 
-        # 2. Subclass matching
+        # 2. Subclass matching with deterministic specificity
+        candidates: List[Tuple[int, int, str, str, EvaluatorCallable]] = []
+        planner_mro = planner_cls.mro()
+        env_mro = env_cls.mro()
+
         for (p_cls, e_cls), fn in cls._evaluator_registry.items():
             if issubclass(planner_cls, p_cls) and issubclass(env_cls, e_cls):
-                return fn
-        return None
+                p_dist = planner_mro.index(p_cls) if p_cls in planner_mro else len(planner_mro)
+                e_dist = env_mro.index(e_cls) if e_cls in env_mro else len(env_mro)
+                candidates.append((p_dist, e_dist, p_cls.__qualname__, e_cls.__qualname__, fn))
+
+        if not candidates:
+            return None
+
+        # Sort by: most specific planner (min p_dist), most specific env (min e_dist), deterministic name order
+        candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+        return candidates[0][4]
 
     def __init__(
         self,
@@ -196,7 +216,7 @@ class PlannerAdapter:
 
         successes = 0
         path_lengths: List[Optional[float]] = []
-        planning_times: List[float] = []
+        planning_times: List[Optional[float]] = []
         successful_path_lengths: List[float] = []
 
         from adaptive_rl.evaluation.seeding import derive_evaluation_seed
@@ -263,7 +283,7 @@ class PlannerAdapter:
 
         successes = 0
         path_lengths: List[Optional[float]] = []
-        planning_times: List[float] = []
+        planning_times: List[Optional[float]] = []
         successful_path_lengths: List[float] = []
 
         for ep in range(num_episodes):
@@ -342,7 +362,7 @@ class PlannerAdapter:
         successes: int,
         path_lengths: List[Optional[float]],
         successful_path_lengths: List[float],
-        planning_times: List[float],
+        planning_times: List[Optional[float]],
         env_name: str,
         base_seed: Optional[int],
     ) -> PlannerEvaluationMetrics:
@@ -352,8 +372,9 @@ class PlannerAdapter:
         std_path = float(np.std(successful_path_lengths)) if successful_path_lengths else None
         min_path = float(np.min(successful_path_lengths)) if successful_path_lengths else None
         max_path = float(np.max(successful_path_lengths)) if successful_path_lengths else None
-        mean_pt = float(np.mean(planning_times)) if planning_times else 0.0
-        std_pt = float(np.std(planning_times)) if planning_times else 0.0
+        valid_planning_times = [t for t in planning_times if t is not None]
+        mean_pt = float(np.mean(valid_planning_times)) if valid_planning_times else None
+        std_pt = float(np.std(valid_planning_times)) if valid_planning_times else None
 
         return PlannerEvaluationMetrics(
             episodes=num_episodes,

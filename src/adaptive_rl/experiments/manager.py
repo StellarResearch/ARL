@@ -221,20 +221,25 @@ class ExperimentManager:
     def __init__(
         self,
         base_output_dir: Optional[Path] = None,
+        strict: bool = False,
     ) -> None:
         """Initialize the experiment manager.
 
         Args:
             base_output_dir: Root directory for all experiment artifacts.
                 Defaults to ``experiments/results`` relative to cwd.
+            strict: If True, re-raise execution exceptions instead of silently
+                capturing them as failed results. Useful for CI and development.
         """
         self.base_output_dir = base_output_dir or Path("experiments/results")
+        self.strict = strict
 
     def run_from_config(
         self,
         config_path: Path,
         timesteps_override: Optional[int] = None,
         seed_override: Optional[int] = None,
+        strict: Optional[bool] = None,
     ) -> ExperimentResult:
         """Run a complete experiment from a YAML configuration file.
 
@@ -242,10 +247,12 @@ class ExperimentManager:
             config_path: Path to the experiment YAML configuration.
             timesteps_override: Override training timesteps from config.
             seed_override: Override random seed from config.
+            strict: Override strict execution mode for this run.
 
         Returns:
             ExperimentResult containing all metadata, metrics, and artifacts.
         """
+        effective_strict = self.strict if strict is None else strict
 
         try:
             config = load_config(config_path)
@@ -265,6 +272,8 @@ class ExperimentManager:
             manifest.error_type = error_type
             manifest.error_traceback = error_tb
             manifest.notes = error_msg
+            if effective_strict:
+                raise
             return ExperimentResult(
                 experiment_id=experiment_id,
                 output_dir=self.base_output_dir / experiment_id,
@@ -280,7 +289,7 @@ class ExperimentManager:
         if seed_override is not None:
             config.seed = seed_override
 
-        return self.run(config=config, config_path=config_path)
+        return self.run(config=config, config_path=config_path, strict=effective_strict)
 
     def _resolve_unique_run(self, base_id: str) -> tuple[str, Path]:
         """Resolve an atomically unique, non-colliding experiment ID and artifact directory.
@@ -318,12 +327,14 @@ class ExperimentManager:
         self,
         config: ExperimentConfig,
         config_path: Optional[Path] = None,
+        strict: Optional[bool] = None,
     ) -> ExperimentResult:
         """Run a complete experiment from an already-loaded ExperimentConfig.
 
         Args:
             config: Validated experiment configuration.
             config_path: Optional original config file path (for manifest).
+            strict: Override strict execution mode for this run.
 
         Returns:
             ExperimentResult containing all metadata, metrics, and artifacts.
@@ -373,6 +384,12 @@ class ExperimentManager:
         manifest.artifact_paths["manifest"] = str(manifest_path)
         manifest.save(manifest_path)
         result.manifest = manifest
+
+        effective_strict = self.strict if strict is None else strict
+        if effective_strict and not result.success:
+            raise RuntimeError(
+                f"Experiment '{experiment_id}' failed in strict mode: {result.error_message}"
+            )
 
         return result
 
