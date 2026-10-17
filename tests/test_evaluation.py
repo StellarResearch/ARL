@@ -1,7 +1,12 @@
+"""Tests for agent evaluation and JSON report generation."""
+
 import csv
 import json
+import math
 from pathlib import Path
+from typing import Any
 
+import gymnasium as gym
 import numpy as np
 import pytest
 
@@ -10,10 +15,77 @@ from adaptive_rl.environments.drone import DroneNavigation3DEnv, ObstacleSphere3
 from adaptive_rl.evaluation.evaluator import (
     Evaluator,
     compare_policies,
+    compare_with_planner,
+    derive_episode_reset_seed,
+    evaluate_planner,
     evaluate_random_policy,
     run_obstacle_density_experiment,
 )
-from adaptive_rl.evaluation.metrics import compute_trajectory_metrics
+from adaptive_rl.evaluation.metrics import (
+    PlannerEvaluationMetrics,
+    StandardizedExperimentMetrics,
+    compute_trajectory_metrics,
+)
+from adaptive_rl.evaluation.statistics import (
+    student_t_critical_value,
+    summarize_descriptive_episodes,
+    summarize_seed_values,
+)
+
+
+class _SeedOutcomeEnv(gym.Env):
+    observation_space = gym.spaces.Box(-1000.0, 1000.0, shape=(1,), dtype=np.float32)
+    action_space = gym.spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32)
+
+    def __init__(self, *, include_outcomes: bool = True) -> None:
+        super().__init__()
+        self.include_outcomes = include_outcomes
+        self.current_seed = 0
+        self.position = np.zeros(2, dtype=np.float64)
+
+    def reset(
+        self, *, seed: int | None = None, options: dict | None = None
+    ) -> tuple[np.ndarray, dict]:
+        super().reset(seed=seed)
+        self.current_seed = 0 if seed is None else seed
+        self.position = np.array([float(self.current_seed), 0.0])
+        return np.zeros(1, dtype=np.float32), {"position": self.position.copy()}
+
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
+        self.position = self.position + np.array([1.0, 0.0])
+        info = {"position": self.position.copy()}
+        if self.include_outcomes:
+            outcome = self.current_seed % 3
+            info.update(
+                {
+                    "success": outcome == 0,
+                    "collision": outcome == 1,
+                }
+            )
+            return (
+                np.zeros(1, dtype=np.float32),
+                float(self.current_seed),
+                outcome != 2,
+                outcome == 2,
+                info,
+            )
+        return np.zeros(1, dtype=np.float32), float(self.current_seed), True, False, info
+
+
+class _ZeroPolicy:
+    def predict(
+        self, observation: np.ndarray, deterministic: bool = True
+    ) -> tuple[np.ndarray, None]:
+        return np.zeros(1, dtype=np.float32), None
+
+
+class _ZeroDronePolicy:
+    """Zero-action policy for the 3-D drone action space."""
+
+    def predict(
+        self, observation: np.ndarray, deterministic: bool = True
+    ) -> tuple[np.ndarray, None]:
+        return np.zeros(3, dtype=np.float32), None
 
 
 def test_evaluator_deterministic_evaluation(tmp_path: Path) -> None:
@@ -62,6 +134,254 @@ def test_evaluator_episode_records() -> None:
     assert isinstance(rec.success, bool)
     assert isinstance(rec.collision, bool)
     env.close()
+
+
+def test_student_t_statistics_match_analytical_values() -> None:
+    assert student_t_critical_value(0.95, 1) == pytest.approx(12.7062047364, rel=1e-9)
+    assert student_t_critical_value(0.95, 2) == pytest.approx(4.3026527297, rel=1e-9)
+    assert student_t_critical_value(0.95, 5) == pytest.approx(2.5705818356, rel=1e-9)
+    assert student_t_critical_value(0.95, 9) == pytest.approx(2.2621571627, rel=1e-9)
+    assert student_t_critical_value(0.95, 10) == pytest.approx(2.2281388520, rel=1e-9)
+    assert student_t_critical_value(0.95, 30) == pytest.approx(2.0422724563, rel=1e-9)
+    assert student_t_critical_value(0.99, 5) == pytest.approx(4.0321429836, rel=1e-9)
+    assert student_t_critical_value(0.95, 100) == pytest.approx(1.9839715184, rel=1e-9)
+    assert student_t_critical_value(0.95, 1000) == pytest.approx(1.9623390808, rel=1e-9)
+    assert student_t_critical_value(0.99, 5) > student_t_critical_value(0.95, 5)
+    assert student_t_critical_value(0.95, 5) > student_t_critical_value(0.95, 100)
+
+    stats = summarize_seed_values([1.0, 2.0, 3.0])
+    margin = 4.3026527297 / math.sqrt(3.0)
+    assert stats.mean == pytest.approx(2.0)
+    assert stats.std == pytest.approx(1.0)
+    assert stats.ci95_lower == pytest.approx(2.0 - margin)
+    assert stats.ci95_upper == pytest.approx(2.0 + margin)
+    assert stats.sample_count == 3
+
+
+def test_student_t_statistics_handle_small_and_constant_samples() -> None:
+    one = summarize_seed_values([7.0])
+    assert one.mean == 7.0
+    assert one.std is None
+    assert one.ci95_lower is None
+    assert one.ci95_upper is None
+
+    two = summarize_seed_values([0.0, 2.0])
+    assert two.mean == 1.0
+    assert two.std == pytest.approx(math.sqrt(2.0))
+    assert two.ci95_lower is not None and math.isfinite(two.ci95_lower)
+    assert two.ci95_upper is not None and math.isfinite(two.ci95_upper)
+
+    constant = summarize_seed_values([3.0, 3.0, 3.0])
+    assert constant.mean == 3.0
+    assert constant.std == 0.0
+    assert constant.ci95_lower == 3.0
+    assert constant.ci95_upper == 3.0
+
+    assert summarize_seed_values([None, None]).mean is None
+    with pytest.raises(ValueError, match="finite"):
+        summarize_seed_values([1.0, float("nan")])
+
+
+def test_evaluate_seeds_preserves_per_seed_records_and_metrics(tmp_path: Path) -> None:
+    env = _SeedOutcomeEnv()
+    evaluator = Evaluator(algorithm=_ZeroPolicy(), env=env)  # type: ignore[arg-type]
+    requested_seeds = [10, 20]
+    result = evaluator.evaluate_seeds(requested_seeds, episodes_per_seed=2)
+
+    assert result.seeds == [10, 20]
+    assert requested_seeds == [10, 20]
+    assert result.total_episodes == 4
+    assert [(record.seed, record.episode_index) for record in result.episodes] == [
+        (10, 0),
+        (10, 1),
+        (20, 0),
+        (20, 1),
+    ]
+    assert [record.episode_seed for record in result.episodes] == [55, 67, 210, 232]
+    assert all(record.path_length == 1.0 for record in result.episodes)
+    assert [summary.seed for summary in result.per_seed] == requested_seeds
+    assert [summary.episodes for summary in result.per_seed] == [2, 2]
+    assert [summary.mean_reward for summary in result.per_seed] == [61.0, 221.0]
+    assert result.per_seed[0].success_rate == pytest.approx(0.0)
+    assert result.per_seed[0].collision_rate == pytest.approx(1.0)
+    assert result.per_seed[0].truncation_rate == pytest.approx(0.0)
+    assert result.per_seed[0].mean_episode_length == 1.0
+    assert result.per_seed[0].path_length == 1.0
+    assert result.aggregate["mean_reward"].mean == pytest.approx(141.0)
+    assert result.aggregate["mean_reward"].std == pytest.approx(math.sqrt(12800.0))
+
+    json_path = tmp_path / "evaluation_multiseed.json"
+    csv_path = tmp_path / "evaluation_multiseed.csv"
+    saved_json, saved_csv = evaluator.save_multiseed_report(result, json_path, csv_path)
+    assert saved_json.is_file()
+    assert saved_csv.is_file()
+    document = json.loads(saved_json.read_text(encoding="utf-8"))
+    json.dumps(document, allow_nan=False)
+    assert document["metadata"] == {
+        "seeds": [10, 20],
+        "evaluation_group_seeds": [10, 20],
+        "seed_count": 2,
+        "seed_semantics": (
+            "seeds are evaluation group seeds (the statistical grouping unit); "
+            "episodes within a group use derived episode_reset_seed values"
+        ),
+        "episode_reset_seed_mapping": (
+            "custom: Cantor pairing ((group_seed + episode_index) * "
+            "(group_seed + episode_index + 1)) // 2 + episode_index; "
+            "configured split: SHA-256 of "
+            "'adaptive-rl-evaluation-reset-v1:<split>:<group_seed>:<episode_index>' "
+            "reduced into the finite split interval"
+        ),
+        "episodes_per_seed": 2,
+        "total_episodes": 4,
+        "deterministic": True,
+        "environment": "drone",
+        "confidence_interval": (
+            "two-sided 95% Student's t interval across seed summaries; "
+            "sample standard deviation; unavailable when fewer than two values exist"
+        ),
+        "duplicate_seed_policy": "rejected",
+    }
+    assert len(document["episodes"]) == 4
+    assert len(document["per_seed"]) == 2
+    assert document["aggregate"]["mean_reward"]["sample_count"] == 2
+    assert document["episodes"][0]["episode_seed"] == 55
+    assert document["episodes"][0]["path_length"] == 1.0
+
+    expected_headers = [
+        "metric",
+        "mean",
+        "std",
+        "ci95_lower",
+        "ci95_upper",
+        "sample_count",
+        "seed_count",
+        "episodes_per_seed",
+        "total_episodes",
+    ]
+    with saved_csv.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        assert reader.fieldnames == expected_headers
+    assert len(rows) == len(result.aggregate)
+    assert rows[0]["metric"] == "mean_reward"
+    assert float(rows[0]["mean"]) == pytest.approx(141.0)
+    assert rows[0]["seed_count"] == "2"
+    assert rows[0]["episodes_per_seed"] == "2"
+    assert rows[0]["total_episodes"] == "4"
+    evaluator.close()
+
+
+def test_evaluate_seeds_is_deterministic_and_rejects_invalid_inputs() -> None:
+    evaluator = Evaluator(algorithm=_ZeroPolicy(), env=_SeedOutcomeEnv())  # type: ignore[arg-type]
+    first = evaluator.evaluate_seeds([7, 13], episodes_per_seed=2, deterministic=True)
+    first_data = first.to_dict()
+    second = evaluator.evaluate_seeds([7, 13], episodes_per_seed=2, deterministic=True)
+    assert second.to_dict() == first_data
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        evaluator.evaluate_seeds([], episodes_per_seed=1)
+    with pytest.raises(ValueError, match="unique"):
+        evaluator.evaluate_seeds([7, 7], episodes_per_seed=1)
+    with pytest.raises(ValueError, match="positive"):
+        evaluator.evaluate_seeds([7], episodes_per_seed=0)
+    with pytest.raises(ValueError, match="non-negative"):
+        evaluator.evaluate_seeds([-1], episodes_per_seed=1)
+    evaluator.close()
+
+
+def test_evaluation_group_reset_seeds_are_independent_of_episode_count() -> None:
+    observed: dict[int, dict[int, list[int]]] = {}
+    for episodes_per_seed in (1, 5, 20, 100):
+        env = _SeedOutcomeEnv()
+        reset_seeds: list[int] = []
+        original_reset = env.reset
+
+        def record_reset(*, seed: int | None = None, options: dict | None = None):
+            reset_seeds.append(seed if seed is not None else -1)
+            return original_reset(seed=seed, options=options)
+
+        env.reset = record_reset  # type: ignore[method-assign]
+        evaluator = Evaluator(algorithm=_ZeroPolicy(), env=env)  # type: ignore[arg-type]
+        result = evaluator.evaluate_seeds([11, 13], episodes_per_seed=episodes_per_seed)
+        observed[episodes_per_seed] = {
+            group_seed: reset_seeds[index * episodes_per_seed : (index + 1) * episodes_per_seed]
+            for index, group_seed in enumerate((11, 13))
+        }
+
+        group_11_records = {
+            record.episode_index: record
+            for record in result.episodes
+            if record.evaluation_group_seed == 11
+        }
+        assert group_11_records[0].episode_reset_seed == derive_episode_reset_seed(11, 0)
+        if episodes_per_seed > 1:
+            assert group_11_records[1].episode_reset_seed == derive_episode_reset_seed(11, 1)
+        assert len(result.episodes) == 2 * episodes_per_seed
+        evaluator.close()
+
+    for group_seed in (11, 13):
+        reference = observed[100][group_seed]
+        for episode_count in observed:
+            assert (
+                observed[episode_count][group_seed][: min(episode_count, 5)]
+                == reference[: min(episode_count, 5)]
+            )
+    assert observed[1][11][0] == observed[5][11][0] == observed[20][11][0] == 66
+    assert observed[1][13][0] == observed[5][13][0] == observed[20][13][0]
+    assert observed[5][11][1] == observed[20][11][1] == observed[100][11][1] == 79
+
+    seeds_group_11 = {derive_episode_reset_seed(11, index) for index in range(100)}
+    seeds_group_13 = {derive_episode_reset_seed(13, index) for index in range(100)}
+    assert seeds_group_11.isdisjoint(seeds_group_13)
+
+
+def test_split_seed_mapping_is_stable_and_respects_partition() -> None:
+    train_seed = derive_episode_reset_seed(11, 3, split="train")
+    test_seed = derive_episode_reset_seed(1001, 3, split="test")
+    assert train_seed == derive_episode_reset_seed(11, 3, split="train")
+    assert 0 <= train_seed < 1000
+    assert 1000 <= test_seed < 1200
+
+
+def test_evaluate_seeds_preserves_unavailable_optional_metrics() -> None:
+    evaluator = Evaluator(
+        algorithm=_ZeroPolicy(),
+        env=_SeedOutcomeEnv(include_outcomes=False),  # type: ignore[arg-type]
+    )
+    result = evaluator.evaluate_seeds([2, 5], episodes_per_seed=1)
+    assert all(summary.success_rate is None for summary in result.per_seed)
+    assert all(summary.collision_rate is None for summary in result.per_seed)
+    assert result.aggregate["success_rate"].mean is None
+    evaluator.close()
+
+
+def test_evaluator_uses_truncated_signal_for_timeout_metrics() -> None:
+    terminating_env = _SeedOutcomeEnv(include_outcomes=False)
+    terminating_env.max_steps = 1
+    evaluator = Evaluator(
+        algorithm=_ZeroPolicy(),
+        env=terminating_env,  # type: ignore[arg-type]
+    )
+
+    terminated = evaluator.evaluate(num_episodes=1, base_seed=7)
+    assert terminated.timeout_rate == 0.0
+    assert terminated.truncation_rate == 0.0
+    assert evaluator.last_episode_records[0].truncated is False
+    assert evaluator.last_episode_records[0].timeout is False
+    evaluator.close()
+
+    truncating_env = _SeedOutcomeEnv(include_outcomes=True)
+    evaluator = Evaluator(
+        algorithm=_ZeroPolicy(),
+        env=truncating_env,  # type: ignore[arg-type]
+    )
+    truncated = evaluator.evaluate(num_episodes=1, base_seed=11)
+    assert truncated.timeout_rate == 1.0
+    assert truncated.truncation_rate == 1.0
+    assert evaluator.last_episode_records[0].truncated is True
+    assert evaluator.last_episode_records[0].timeout is True
+    evaluator.close()
 
 
 def test_evaluate_random_policy() -> None:
@@ -219,7 +539,7 @@ def test_obstacle_vs_boundary_collision_separation() -> None:
             self.episode = 0
             self.action_space = None
             self.observation_space = None
-            self.obstacles = []
+            self.obstacles: list[Any] = []
 
         def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict]:
             self.episode += 1
@@ -381,8 +701,6 @@ def test_same_test_seeds_produce_reproducible_layouts() -> None:
     for (c1, r1), (c2, r2) in zip(obstacles_run1, obstacles_run2):
         np.testing.assert_allclose(c1, c2, rtol=1e-6)
         assert r1 == pytest.approx(r2)
-
-    env.close()
 
 
 def test_train_and_test_representative_layouts_are_distinct() -> None:
@@ -607,3 +925,363 @@ def test_evaluate_generalization_workflow_and_json_export(tmp_path: Path) -> Non
     assert "reward" in data["generalization_gap"]
 
     env.close()
+
+
+def test_evaluate_planner_basic() -> None:
+    """Verify evaluate_planner generates valid benchmark metrics over procedural seeds."""
+    env = DroneNavigation3DEnv(bounds=(20.0, 20.0, 10.0), max_steps=20, num_obstacles=2)
+    planner_metrics = evaluate_planner(env=env, num_episodes=3, base_seed=42)
+
+    assert isinstance(planner_metrics, PlannerEvaluationMetrics)
+    assert planner_metrics.episodes == 3
+    assert 0.0 <= planner_metrics.success_rate <= 1.0
+    assert 0.0 <= planner_metrics.collision_rate <= 1.0
+    assert planner_metrics.mean_planning_time_ms >= 0.0
+    assert len(planner_metrics.episode_records) == 3
+
+    # Check conversion to StandardizedExperimentMetrics
+    std_metrics = StandardizedExperimentMetrics.from_planner_metrics(planner_metrics)
+    assert std_metrics.episodes == 3
+    assert std_metrics.planning_time == planner_metrics.mean_planning_time
+    assert std_metrics.success_rate == planner_metrics.success_rate
+    assert std_metrics.collision_rate == planner_metrics.collision_rate
+
+    env.close()
+
+
+def test_compare_with_planner_structure(tmp_path: Path) -> None:
+    """Verify compare_with_planner executes fair 3-way evaluation under identical seeds."""
+    env = DroneNavigation3DEnv(bounds=(20.0, 20.0, 10.0), max_steps=10, num_obstacles=1)
+    algo = PPOAlgorithm(env=env, n_steps=32, batch_size=16, seed=42)
+    report_target = tmp_path / "evaluation_planner_comparison.json"
+
+    comp_results = compare_with_planner(
+        ppo_algorithm=algo,
+        env=env,
+        num_episodes=2,
+        base_seed=100,
+        output_path=report_target,
+    )
+
+    assert "methodology_note" in comp_results
+    assert "evaluation_config" in comp_results
+    assert "planner_config" in comp_results
+    assert comp_results["planner_config"]["feasibility_type"] == "geometric"
+    assert "summary" in comp_results
+    assert "PPO" in comp_results["summary"]
+    assert comp_results["summary"]["PPO"]["feasibility_type"] == "dynamic"
+    assert "Classical Planner (A*)" in comp_results["summary"]
+    assert comp_results["summary"]["Classical Planner (A*)"]["feasibility_type"] == "geometric"
+    assert "feasibility_note" in comp_results["summary"]["Classical Planner (A*)"]
+    assert "Random Policy" in comp_results["summary"]
+    assert comp_results["summary"]["Random Policy"]["feasibility_type"] == "dynamic"
+
+    assert comp_results["evaluation_config"]["seeds"] == [100, 101]
+
+    # Verify JSON file structure
+    assert report_target.exists()
+    with open(report_target, "r", encoding="utf-8") as f:
+        saved_data = json.load(f)
+
+    assert "ppo_metrics" in saved_data
+    assert "planner_metrics" in saved_data
+    assert "random_policy_metrics" in saved_data
+    assert saved_data["summary"]["Classical Planner (A*)"]["mean_planning_time_ms"] is not None
+
+    env.close()
+
+
+def test_from_planner_metrics_preserves_straight_line_and_clearance() -> None:
+    """Verify StandardizedExperimentMetrics preserves all planner metrics including clearance and straight line dist."""
+    planner_m = PlannerEvaluationMetrics(
+        episodes=5,
+        success_rate=0.8,
+        collision_rate=0.0,
+        timeout_rate=0.2,
+        mean_planning_time_ms=12.5,
+        mean_path_length=24.5,
+        mean_path_efficiency=0.92,
+        mean_straight_line_distance=22.54,
+        mean_min_obstacle_clearance=1.75,
+        additional_metrics={
+            "straight_line_distance": 22.54,
+            "min_obstacle_clearance": 1.75,
+            "path_efficiency": 0.92,
+        },
+    )
+
+    std_m = StandardizedExperimentMetrics.from_planner_metrics(planner_m)
+
+    assert std_m.episodes == 5
+    assert std_m.success_rate == 0.8
+    assert std_m.collision_rate == 0.0
+    assert std_m.path_length == 24.5
+    assert std_m.path_efficiency == 0.92
+    assert std_m.straight_line_distance == 22.54
+    assert std_m.min_obstacle_clearance == 1.75
+    assert std_m.planning_time == planner_m.mean_planning_time
+
+
+def test_evaluate_planner_num_episodes_validation() -> None:
+    """Verify evaluate_planner validates num_episodes > 0 explicitly."""
+    env = DroneNavigation3DEnv(bounds=(20.0, 20.0, 10.0), max_steps=10, num_obstacles=1)
+
+    with pytest.raises(ValueError, match="num_episodes must be positive"):
+        evaluate_planner(env=env, num_episodes=0)
+
+    with pytest.raises(ValueError, match="num_episodes must be positive"):
+        evaluate_planner(env=env, num_episodes=-5)
+
+    env.close()
+
+
+def test_evaluate_planner_with_generalization_split() -> None:
+    """Verify evaluate_planner operates correctly under generalization train and test splits."""
+    env = DroneNavigation3DEnv(bounds=(20.0, 20.0, 10.0), max_steps=10, num_obstacles=1)
+
+    # Test split evaluation draws seeds from test range [1000, 1200)
+    test_metrics = evaluate_planner(env=env, num_episodes=2, split="test")
+    assert test_metrics.episodes == 2
+    assert [r["seed"] for r in test_metrics.episode_records] == [1000, 1001]
+
+    # Train split evaluation draws seeds from train range [0, 1000)
+    train_metrics = evaluate_planner(env=env, num_episodes=2, split="train")
+    assert train_metrics.episodes == 2
+    assert [r["seed"] for r in train_metrics.episode_records] == [0, 1]
+
+    env.close()
+
+
+def test_compare_with_planner_with_split(tmp_path: Path) -> None:
+    """Verify compare_with_planner respects dataset split and records split in JSON."""
+    env = DroneNavigation3DEnv(bounds=(20.0, 20.0, 10.0), max_steps=10, num_obstacles=1)
+    algo = PPOAlgorithm(env=env, n_steps=32, batch_size=16, seed=42)
+    report_target = tmp_path / "split_planner_comp.json"
+
+    comp_results = compare_with_planner(
+        ppo_algorithm=algo,
+        env=env,
+        num_episodes=2,
+        split="test",
+        output_path=report_target,
+    )
+
+    assert comp_results["evaluation_config"]["split"] == "test"
+    assert comp_results["evaluation_config"]["seeds"] == [1000, 1001]
+    assert report_target.exists()
+
+    env.close()
+
+
+def test_student_t_critical_value_validates_inputs() -> None:
+    for confidence in (0.0, 1.0, -0.5, 1.5):
+        with pytest.raises(ValueError, match="Confidence must be between 0 and 1"):
+            student_t_critical_value(confidence, 5)
+    for degrees_of_freedom in (0, -3):
+        with pytest.raises(ValueError, match="degrees of freedom must be positive"):
+            student_t_critical_value(0.95, degrees_of_freedom)
+    for confidence in (float("nan"), float("inf"), True):
+        with pytest.raises(ValueError):
+            student_t_critical_value(confidence, 5)
+    for degrees_of_freedom in (True, 1.5):
+        with pytest.raises(ValueError, match="degrees of freedom must be an integer"):
+            student_t_critical_value(0.95, degrees_of_freedom)  # type: ignore[arg-type]
+
+
+def test_summarize_descriptive_episodes_pools_every_episode() -> None:
+    metrics = summarize_descriptive_episodes(
+        rewards=[1.0, 2.0, 3.0],
+        episode_lengths=[4.0, 6.0, 8.0],
+        successes=[True, False, None],
+        collisions=[None, None, None],
+        truncations=[False, True, True],
+    )
+    assert metrics.episodes == 3
+    assert metrics.mean_reward == pytest.approx(2.0)
+    assert metrics.std_reward == pytest.approx(1.0)
+    assert metrics.mean_episode_length == pytest.approx(6.0)
+    # Success/collision rates exclude episodes without that outcome, and a
+    # rate with no observed outcomes is None, never 0.0.
+    assert metrics.success_rate == pytest.approx(0.5)
+    assert metrics.collision_rate is None
+    # The truncation flag is always available, so it uses every episode.
+    assert metrics.timeout_rate == pytest.approx(2.0 / 3.0)
+    assert metrics.to_dict()["episodes"] == 3
+
+    single = summarize_descriptive_episodes(
+        rewards=[5.0],
+        episode_lengths=[2.0],
+        successes=[True],
+        collisions=[False],
+        truncations=[False],
+    )
+    assert single.episodes == 1
+    assert single.std_reward is None
+
+
+def test_summarize_descriptive_episodes_validates_inputs() -> None:
+    with pytest.raises(ValueError, match="aligned"):
+        summarize_descriptive_episodes([1.0], [1.0, 2.0], [True], [False], [False])
+    with pytest.raises(ValueError, match="At least one episode"):
+        summarize_descriptive_episodes([], [], [], [], [])
+    for bad_reward in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="finite"):
+            summarize_descriptive_episodes([bad_reward], [1.0], [True], [False], [False])
+    for bad_length in (-1.0, float("nan"), float("inf"), "1"):
+        with pytest.raises(ValueError, match="Episode lengths"):
+            summarize_descriptive_episodes([1.0], [bad_length], [True], [False], [False])  # type: ignore[list-item]
+    for bad_flag in (1, "false"):
+        with pytest.raises(ValueError, match="successes values"):
+            summarize_descriptive_episodes([1.0], [1.0], [bad_flag], [False], [False])  # type: ignore[list-item]
+        with pytest.raises(ValueError, match="collisions values"):
+            summarize_descriptive_episodes([1.0], [1.0], [True], [bad_flag], [False])  # type: ignore[list-item]
+        with pytest.raises(ValueError, match="Truncation values"):
+            summarize_descriptive_episodes([1.0], [1.0], [True], [False], [bad_flag])  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="real numbers"):
+        summarize_descriptive_episodes([True], [1.0], [True], [False], [False])  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="real numbers"):
+        summarize_seed_values(["not-a-number"])  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="real numbers"):
+        summarize_seed_values([True])
+
+
+def test_pooled_and_seed_level_statistics_use_different_sample_units() -> None:
+    """Pooled episodes and seed summaries are different statistical layers."""
+    seed_zero = [1.0, 2.0]  # seed mean 1.5
+    seed_one = [10.0, 10.0, 10.0, 10.0]  # seed mean 10.0, four episodes
+
+    pooled = summarize_descriptive_episodes(
+        rewards=seed_zero + seed_one,
+        episode_lengths=[1.0] * 6,
+        successes=[True, False, True, True, True, True],
+        collisions=[False] * 6,
+        truncations=[False] * 6,
+    )
+    across_seeds = summarize_seed_values([1.5, 10.0])
+
+    assert pooled.episodes == 6
+    assert across_seeds.sample_count == 2
+    assert pooled.mean_reward == pytest.approx((1.0 + 2.0 + 40.0) / 6.0)
+    assert across_seeds.mean == pytest.approx(5.75)
+    # Unequal episode counts per seed make the two layers differ.
+    assert pooled.mean_reward != pytest.approx(across_seeds.mean)
+
+    # With equal episode counts the values coincide, but the layers are still
+    # computed independently with different sample units.
+    equal_pooled = summarize_descriptive_episodes(
+        rewards=[1.0, 2.0, 10.0, 20.0],
+        episode_lengths=[1.0] * 4,
+        successes=[True, False, True, True],
+        collisions=[False] * 4,
+        truncations=[False] * 4,
+    )
+    equal_across = summarize_seed_values([1.5, 15.0])
+    assert equal_pooled.episodes == 4
+    assert equal_across.sample_count == 2
+    assert equal_pooled.mean_reward == pytest.approx(equal_across.mean)
+
+
+def test_episode_records_expose_group_and_reset_seed_naming(tmp_path: Path) -> None:
+    evaluator = Evaluator(algorithm=_ZeroPolicy(), env=_SeedOutcomeEnv())  # type: ignore[arg-type]
+    result = evaluator.evaluate_seeds([10, 20], episodes_per_seed=2)
+    records = result.episodes
+
+    assert [record.evaluation_group_seed for record in records] == [10, 10, 20, 20]
+    assert [record.episode_reset_seed for record in records] == [55, 67, 210, 232]
+    # Legacy names keep their documented meanings: seed is the group seed and
+    # episode_seed is the per-episode reset seed.
+    assert [record.seed for record in records] == [10, 10, 20, 20]
+    assert [record.episode_seed for record in records] == [55, 67, 210, 232]
+
+    payload = records[0].to_dict()
+    assert payload["evaluation_group_seed"] == 10
+    assert payload["episode_reset_seed"] == 55
+    assert payload["seed"] == 10
+    assert payload["episode_seed"] == 55
+
+    assert [summary.evaluation_group_seed for summary in result.per_seed] == [10, 20]
+    assert [summary.seed for summary in result.per_seed] == [10, 20]
+
+    document = result.to_dict()
+    assert document["metadata"]["evaluation_group_seeds"] == [10, 20]
+    assert "evaluation group seeds" in document["metadata"]["seed_semantics"]
+
+    saved_json, saved_csv = evaluator.save_multiseed_report(
+        result,
+        tmp_path / "seed_naming.json",
+        tmp_path / "seed_naming.csv",
+    )
+    exported = json.loads(saved_json.read_text(encoding="utf-8"))
+    json.dumps(exported, allow_nan=False)
+    assert exported["episodes"][0]["evaluation_group_seed"] == 10
+    assert exported["episodes"][0]["episode_reset_seed"] == 55
+    assert saved_csv.is_file()
+    evaluator.close()
+
+
+def test_path_length_is_unavailable_without_position_telemetry() -> None:
+    class _NoPositionEnv(gym.Env):
+        observation_space = gym.spaces.Box(-1000.0, 1000.0, shape=(1,), dtype=np.float32)
+        action_space = gym.spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.current_seed = 0
+            self.steps = 0
+
+        def reset(
+            self, *, seed: int | None = None, options: dict | None = None
+        ) -> tuple[np.ndarray, dict]:
+            super().reset(seed=seed)
+            self.current_seed = 0 if seed is None else seed
+            self.steps = 0
+            return np.zeros(1, dtype=np.float32), {"success": True, "collision": False}
+
+        def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
+            self.steps += 1
+            info = {"success": True, "collision": False}
+            terminated = self.steps >= 2
+            return np.zeros(1, dtype=np.float32), 1.0, terminated, False, info
+
+    evaluator = Evaluator(algorithm=_ZeroPolicy(), env=_NoPositionEnv())  # type: ignore[arg-type]
+    result = evaluator.evaluate_seeds([5], episodes_per_seed=1)
+    record = result.episodes[0]
+
+    assert record.path_length is None
+    assert "path_length" not in record.to_dict()
+    assert result.per_seed[0].path_length is None
+    document = result.to_dict()
+    assert "path_length" not in document["episodes"][0]
+    evaluator.close()
+
+
+def test_evaluator_falls_back_to_private_obstacle_attribute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = DroneNavigation3DEnv(bounds=(20.0, 20.0, 10.0), max_steps=10, num_obstacles=2)
+    env.reset(seed=5)
+    monkeypatch.delattr(type(env), "obstacles")
+
+    evaluator = Evaluator(algorithm=_ZeroDronePolicy(), env=env)  # type: ignore[arg-type]
+    result = evaluator.evaluate_seeds([5], episodes_per_seed=1)
+    assert result.episodes[0].min_obstacle_clearance is not None
+    evaluator.close()
+
+
+def test_evaluator_reads_obstacle_geometry_from_public_interface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = DroneNavigation3DEnv(bounds=(20.0, 20.0, 10.0), max_steps=10, num_obstacles=2)
+    env.reset(seed=5)
+    public_obstacles = env.obstacles
+    assert public_obstacles
+
+    # Shadow the private attribute while the public interface keeps exposing
+    # the real geometry: the evaluator must use ``unwrapped.obstacles``.
+    monkeypatch.setattr(type(env), "obstacles", property(lambda self: list(public_obstacles)))
+    env._obstacles = []
+
+    evaluator = Evaluator(algorithm=_ZeroDronePolicy(), env=env)  # type: ignore[arg-type]
+    result = evaluator.evaluate_seeds([5], episodes_per_seed=1)
+    assert result.episodes[0].min_obstacle_clearance is not None
+    evaluator.close()

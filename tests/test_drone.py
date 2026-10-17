@@ -1,6 +1,7 @@
 """Comprehensive tests for 3D Drone Navigation, kinematics, 3D LiDAR, and continuous control."""
 
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -235,6 +236,9 @@ def test_drone_boundary_collision_termination() -> None:
 
     assert terminated is True
     assert info["collision"] is True
+    assert info["terminated"] is True
+    assert info["truncated"] is False
+    assert info["TimeLimit.truncated"] is False
     assert reward == env.collision_reward
     env.close()
 
@@ -258,7 +262,60 @@ def test_drone_truncation_at_max_steps() -> None:
     assert trunc is True
     assert term is False
     assert info["step"] == max_steps
+    assert info["terminated"] is False
+    assert info["truncated"] is True
+    assert info["TimeLimit.truncated"] is True
     env.close()
+
+
+def test_drone_step_outcome_metadata_matches_gymnasium_signals() -> None:
+    """Step metadata reflects final Gymnasium termination and truncation signals."""
+    successful_env = DroneNavigation3DEnv(
+        bounds=(20.0, 20.0, 10.0),
+        start_pos=np.array([10.0, 10.0, 5.0]),
+        goal_pos=np.array([10.5, 10.0, 5.0]),
+        target_radius=1.5,
+        max_steps=1,
+        num_obstacles=0,
+    )
+    successful_env.reset(seed=5)
+    transition = successful_env.step(np.zeros(3, dtype=np.float32))
+    assert len(transition) == 5
+    observation, reward, terminated, truncated, info = transition
+    assert successful_env.observation_space.contains(observation)
+    assert isinstance(reward, float)
+    assert terminated is True
+    assert truncated is False
+    assert info["terminated"] is terminated
+    assert info["truncated"] is truncated
+    assert info["TimeLimit.truncated"] is truncated
+    assert info["success"] is True
+    assert info["is_success"] is True
+    assert "position" in info
+    assert "distance_to_goal" in info
+    successful_env.close()
+
+    timeout_env = DroneNavigation3DEnv(
+        bounds=(30.0, 30.0, 15.0),
+        max_steps=1,
+        num_obstacles=0,
+    )
+    timeout_env.reset(seed=5)
+    observation, reward, terminated, truncated, info = timeout_env.step(
+        np.zeros(3, dtype=np.float32)
+    )
+    assert timeout_env.observation_space.contains(observation)
+    assert isinstance(reward, float)
+    assert terminated is False
+    assert truncated is True
+    assert info["terminated"] is terminated
+    assert info["truncated"] is truncated
+    assert info["TimeLimit.truncated"] is truncated
+    assert info["success"] is False
+    assert info["collision"] is False
+    assert "position" in info
+    assert "distance_to_goal" in info
+    timeout_env.close()
 
 
 def test_drone_render_modes() -> None:
@@ -366,4 +423,201 @@ def test_drone_random_rollout_lifecycle() -> None:
     assert step_count <= 30
     assert "position" in step_info
     assert "distance_to_goal" in step_info
+    env.close()
+
+
+def test_drone_exposes_public_obstacle_interface() -> None:
+    """The environment exposes obstacles through a public read-only interface."""
+    env = DroneNavigation3DEnv(bounds=(20.0, 20.0, 10.0), max_steps=10, num_obstacles=3)
+    env.reset(seed=11)
+
+    obstacles = env.obstacles
+    assert len(obstacles) == 3
+    assert obstacles == env._obstacles
+
+    # The public getter returns a snapshot, not the live backing list.
+    obstacles.clear()
+    assert len(env.obstacles) == 3
+    assert len(env._obstacles) == 3
+    env.close()
+
+
+def test_lidar_zero_noise_backwards_compatibility() -> None:
+    """Zero-noise mode preserves exact backwards compatibility with deterministic readings."""
+    env_default = DroneNavigation3DEnv(bounds=(30.0, 30.0, 15.0), num_obstacles=4)
+    env_explicit = DroneNavigation3DEnv(
+        bounds=(30.0, 30.0, 15.0),
+        num_obstacles=4,
+        lidar_noise_std=0.0,
+        lidar_dropout_prob=0.0,
+        lidar_min_range=0.0,
+    )
+
+    obs_def, info_def = env_default.reset(seed=42)
+    obs_exp, info_exp = env_explicit.reset(seed=42)
+
+    np.testing.assert_array_equal(obs_def, obs_exp)
+    np.testing.assert_array_equal(obs_def[13:29], obs_exp[13:29])
+    assert info_def["lidar_noise_std"] == 0.0
+    assert info_def["lidar_dropout_prob"] == 0.0
+    assert info_def["lidar_min_range"] == 0.0
+
+    env_default.close()
+    env_explicit.close()
+
+
+def test_lidar_invalid_parameter_rejection() -> None:
+    """Environment rejects invalid LiDAR noise, dropout, and min_range values."""
+    with pytest.raises(ValueError, match="lidar_noise_std cannot be negative"):
+        DroneNavigation3DEnv(lidar_noise_std=-0.1)
+
+    with pytest.raises(ValueError, match="lidar_dropout_prob must be between 0.0 and 1.0"):
+        DroneNavigation3DEnv(lidar_dropout_prob=1.5)
+
+    with pytest.raises(ValueError, match="lidar_dropout_prob must be between 0.0 and 1.0"):
+        DroneNavigation3DEnv(lidar_dropout_prob=-0.05)
+
+    with pytest.raises(ValueError, match="lidar_min_range must be >= 0.0 and < lidar_range"):
+        DroneNavigation3DEnv(lidar_min_range=-0.5, lidar_range=20.0)
+
+    with pytest.raises(ValueError, match="lidar_min_range must be >= 0.0 and < lidar_range"):
+        DroneNavigation3DEnv(lidar_min_range=25.0, lidar_range=20.0)
+
+
+def test_lidar_noise_statistics() -> None:
+    """Configured noise std adds empirical variance centered near zero."""
+    origin = np.array([15.0, 15.0, 7.5])
+    ray_dirs = generate_lidar_3d_ray_directions(16)
+    obstacles: list[ObstacleSphere3D] = []
+    bounds = (30.0, 30.0, 15.0)
+    max_range = 20.0
+    noise_std = 0.5
+
+    rng = np.random.default_rng(42)
+    noiseless = compute_lidar_3d_readings(
+        origin, ray_dirs, obstacles, bounds, max_range=max_range, noise_std=0.0
+    )
+
+    deltas: list[float] = []
+    for _ in range(500):
+        noisy = compute_lidar_3d_readings(
+            origin,
+            ray_dirs,
+            obstacles,
+            bounds,
+            max_range=max_range,
+            noise_std=noise_std,
+            rng=rng,
+        )
+        # Difference in physical meters
+        diff = (noisy - noiseless) * max_range
+        deltas.extend(diff.tolist())
+
+    delta_arr = np.array(deltas)
+    assert abs(float(np.mean(delta_arr))) < 0.1
+    assert math.isclose(float(np.std(delta_arr)), noise_std, rel_tol=0.15)
+
+
+def test_lidar_dropout_behavior() -> None:
+    """Dropout probability replaces beams with normalized max_range (1.0)."""
+    # In a 10x10x10 box with origin at center (5,5,5), all 16 rays exit within ~7.1m.
+    # With max_range=20.0, noiseless readings are always < 0.4, so 1.0 exclusively signals dropout.
+    origin = np.array([5.0, 5.0, 5.0])
+    ray_dirs = generate_lidar_3d_ray_directions(16)
+    obstacles: list[ObstacleSphere3D] = []
+    bounds = (10.0, 10.0, 10.0)
+    max_range = 20.0
+    dropout_prob = 0.25
+
+    rng = np.random.default_rng(99)
+    total_beams = 0
+    dropped_beams = 0
+
+    for _ in range(500):
+        readings = compute_lidar_3d_readings(
+            origin,
+            ray_dirs,
+            obstacles,
+            bounds,
+            max_range=max_range,
+            dropout_prob=dropout_prob,
+            rng=rng,
+        )
+        total_beams += len(readings)
+        dropped_beams += int(np.sum(readings == 1.0))
+
+    empirical_rate = dropped_beams / total_beams
+    assert math.isclose(empirical_rate, dropout_prob, abs_tol=0.03)
+
+
+def test_lidar_min_range_blind_zone() -> None:
+    """LiDAR readings below min_range are clamped to min_range / max_range."""
+    origin = np.array([1.0, 1.0, 1.0])
+    ray_dirs = generate_lidar_3d_ray_directions(16)
+    obstacles: list[ObstacleSphere3D] = []
+    bounds = (30.0, 30.0, 15.0)
+    max_range = 20.0
+    min_range = 2.0  # 2m blind zone
+
+    readings = compute_lidar_3d_readings(
+        origin,
+        ray_dirs,
+        obstacles,
+        bounds,
+        max_range=max_range,
+        min_range=min_range,
+    )
+    # Every reading must be at least min_range / max_range = 0.1
+    assert np.all(readings >= (min_range / max_range) - 1e-6)
+
+
+def test_lidar_deterministic_seeded_runs() -> None:
+    """Seeded noisy environments produce identical stochastic readings."""
+    env1 = DroneNavigation3DEnv(
+        bounds=(30.0, 30.0, 15.0),
+        lidar_noise_std=0.1,
+        lidar_dropout_prob=0.05,
+        lidar_min_range=0.2,
+    )
+    env2 = DroneNavigation3DEnv(
+        bounds=(30.0, 30.0, 15.0),
+        lidar_noise_std=0.1,
+        lidar_dropout_prob=0.05,
+        lidar_min_range=0.2,
+    )
+
+    obs1, _ = env1.reset(seed=777)
+    obs2, _ = env2.reset(seed=777)
+    np.testing.assert_array_equal(obs1, obs2)
+
+    act = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+    next_obs1, _, _, _, _ = env1.step(act)
+    next_obs2, _, _, _, _ = env2.step(act)
+    np.testing.assert_array_equal(next_obs1, next_obs2)
+
+    env1.close()
+    env2.close()
+
+
+def test_lidar_observation_bounds() -> None:
+    """Readings remain strictly within [0.0, 1.0] with large noise and high dropout."""
+    env = DroneNavigation3DEnv(
+        bounds=(30.0, 30.0, 15.0),
+        lidar_noise_std=10.0,  # extreme noise
+        lidar_dropout_prob=0.5,
+        lidar_min_range=1.0,
+    )
+    obs, info = env.reset(seed=42)
+    assert np.all(obs[13:29] >= 0.0)
+    assert np.all(obs[13:29] <= 1.0)
+    assert np.all(np.isfinite(obs))
+
+    for _ in range(50):
+        obs, reward, term, trunc, _ = env.step(env.action_space.sample())
+        assert np.all(obs[13:29] >= 0.0)
+        assert np.all(obs[13:29] <= 1.0)
+        assert np.all(np.isfinite(obs))
+        if term or trunc:
+            obs, _ = env.reset()
+
     env.close()

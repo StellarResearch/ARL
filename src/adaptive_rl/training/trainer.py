@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -14,7 +16,10 @@ import gymnasium as gym
 import numpy as np
 import torch
 
+from adaptive_rl.algorithms.base import BaseAlgorithm
 from adaptive_rl.algorithms.ppo import PPOAlgorithm
+from adaptive_rl.algorithms.registry import get_algorithm_factory
+from adaptive_rl.algorithms.sac import SACAlgorithm
 from adaptive_rl.config import ExperimentConfig
 from adaptive_rl.environments.registry import make_env
 from adaptive_rl.training.callbacks import (
@@ -25,10 +30,19 @@ from adaptive_rl.training.callbacks import (
 )
 from adaptive_rl.training.checkpointing import CheckpointManager
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class TrainingResult:
-    """Structured summary and artifacts resulting from a training run."""
+    """Structured summary and artifacts resulting from a training run.
+
+    ``training_time_seconds`` is the monotonic (``time.perf_counter``) elapsed
+    time of the ``algorithm.train(...)`` call only: it excludes model
+    serialization, metadata writing, and any evaluation. The legacy
+    ``duration_seconds`` value written into the training metadata JSON covers
+    the whole ``fit()`` lifecycle and is a different quantity.
+    """
 
     experiment_name: str
     total_timesteps: int
@@ -41,10 +55,12 @@ class TrainingResult:
     success_rate: Optional[float] = None
     collision_rate: Optional[float] = None
     metadata_path: Optional[Path] = None
+    manifest_path: Optional[Path] = None
+    training_time_seconds: float = 0.0
 
 
-class PPOTrainer:
-    """Trainer orchestrating PPO policy learning on the drone navigation environment."""
+class RLTrainer:
+    """Trainer orchestrating reinforcement learning policy learning on the drone navigation environment."""
 
     def __init__(
         self,
@@ -81,14 +97,37 @@ class PPOTrainer:
         gamma = algo_params.pop("gamma", self.config.algorithm.gamma)
         batch_size = algo_params.pop("batch_size", self.config.algorithm.batch_size)
         seed = algo_params.pop("seed", self.config.seed)
-        self.algorithm = PPOAlgorithm(
-            env=self.env,
-            learning_rate=lr,
-            gamma=gamma,
-            batch_size=batch_size,
-            seed=seed,
-            **algo_params,
-        )
+
+        algo_name = self.config.algorithm.name.lower()
+        self.algorithm: BaseAlgorithm
+        if algo_name == "ppo":
+            self.algorithm = PPOAlgorithm(
+                env=self.env,
+                learning_rate=lr,
+                gamma=gamma,
+                batch_size=batch_size,
+                seed=seed,
+                **algo_params,
+            )
+        elif algo_name == "sac":
+            self.algorithm = SACAlgorithm(
+                env=self.env,
+                learning_rate=lr,
+                gamma=gamma,
+                batch_size=batch_size,
+                seed=seed,
+                **algo_params,
+            )
+        else:
+            factory = get_algorithm_factory(algo_name)
+            self.algorithm = factory(
+                env=self.env,
+                learning_rate=lr,
+                gamma=gamma,
+                batch_size=batch_size,
+                seed=seed,
+                **algo_params,
+            )
 
     @staticmethod
     def _set_deterministic_seed(seed: int) -> None:
@@ -110,10 +149,14 @@ class PPOTrainer:
         )
 
         assert self.config.training is not None
+        training_started_at = time.perf_counter()
         self.algorithm.train(
             total_timesteps=self.config.training.total_timesteps,
             callback=adapter,
         )
+        training_time_seconds = time.perf_counter() - training_started_at
+        if not math.isfinite(training_time_seconds) or training_time_seconds < 0:
+            raise RuntimeError(f"Invalid training duration: {training_time_seconds}")
 
         # Save model artifact
         models_dir = self.config.output_dir / "models"
@@ -141,6 +184,7 @@ class PPOTrainer:
             "collision_rate": self.metric_logger.collision_rate,
             "final_model_path": str(final_model_path),
             "duration_seconds": round(duration, 2),
+            "training_time_seconds": training_time_seconds,
             "created_at": datetime.fromtimestamp(finished_at, tz=timezone.utc).isoformat(),
             "episode_rewards": [round(float(r), 2) for r in self.metric_logger.episode_rewards],
             "episode_lengths": [int(length) for length in self.metric_logger.episode_lengths],
@@ -148,6 +192,23 @@ class PPOTrainer:
         }
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(meta_dict, f, indent=2)
+
+        # Generate and save experiment manifest (Issue #248)
+        from adaptive_rl.manifest import create_manifest, save_manifest
+
+        manifest = create_manifest(
+            experiment_name=self.config.name,
+            config_dict=self.config.model_dump(),
+            started_at=started_at,
+            finished_at=finished_at,
+            training_time_seconds=training_time_seconds,
+            artifacts={
+                "model": final_model_path,
+                "metadata": metadata_path,
+            },
+        )
+        manifest_path = metadata_dir / f"{self.config.name}_manifest.json"
+        save_manifest(manifest, manifest_path)
 
         return TrainingResult(
             experiment_name=self.config.name,
@@ -161,21 +222,47 @@ class PPOTrainer:
             success_rate=self.metric_logger.success_rate,
             collision_rate=self.metric_logger.collision_rate,
             metadata_path=metadata_path,
+            manifest_path=manifest_path,
+            training_time_seconds=training_time_seconds,
         )
 
     def close(self) -> None:
-        """Clean up trainer resources."""
-        if hasattr(self, "env") and self.env is not None:
-            try:
-                self.env.close()
-            except Exception:
-                pass
+        """Release trainer resources without hiding cleanup failures.
+
+        Environments occasionally raise on close (for example when a render
+        backend is already gone). Those failures are logged at ERROR level
+        with context instead of being swallowed silently, and they do not
+        replace an in-flight exception from :meth:`fit`.
+        """
+        env = getattr(self, "env", None)
+        if env is None:
+            return
+        experiment_name = getattr(getattr(self, "config", None), "name", None)
+        try:
+            env.close()
+        except Exception:
+            logger.exception(
+                "Failed to close training environment %s for experiment %r",
+                type(env).__name__,
+                experiment_name,
+            )
+
+
+PPOTrainer = RLTrainer
 
 
 def get_trainer(
     config: ExperimentConfig,
     env: Optional[gym.Env] = None,
     callbacks: Optional[List[BaseCallback]] = None,
-) -> PPOTrainer:
+) -> RLTrainer:
     """Factory returning the trainer based on configuration."""
-    return PPOTrainer(config=config, env=env, callbacks=callbacks)
+    return RLTrainer(config=config, env=env, callbacks=callbacks)
+
+
+__all__ = [
+    "PPOTrainer",
+    "RLTrainer",
+    "TrainingResult",
+    "get_trainer",
+]

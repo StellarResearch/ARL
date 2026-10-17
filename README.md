@@ -1,4 +1,4 @@
-# AdaptiveRL
+# ARL (Adaptive Reinforcement Learning) 
 
 AdaptiveRL is an educational reinforcement-learning project in which a Proximal Policy Optimization (PPO) agent learns to navigate a simulated 3D drone through an obstacle-filled environment toward a target coordinate.
 
@@ -77,10 +77,11 @@ AdaptiveRL is an educational reinforcement-learning project in which a PPO agent
 - **Trajectory & Safety Metrics**: Rigorous trajectory evaluation including path length, straight-line distance, path efficiency, obstacle surface clearance, maximum velocity/acceleration, and separated obstacle vs. boundary collisions.
 - **Untrained Random Policy Baseline**: Built-in non-learning baseline to scientifically validate policy improvement.
 - **Obstacle-Density Experiment**: Controlled testing across 4, 6, and 8 obstacles to demonstrate environmental difficulty scaling.
-- **Command-Line Interface (CLI)**: Typer-based CLI for training, evaluation, environment inspection, and trajectory demonstration.
+- **PPO Learning-Curve Benchmark**: Train fresh PPO models across configurable timestep budgets and export evaluation metrics as JSON/CSV with optional Matplotlib plots (`--plot`, `--plot-x-axis`).
+- **Command-Line Interface (CLI)**: Typer-based CLI for training, evaluation, learning-curve benchmarking, environment inspection, and trajectory demonstration.
 - **Streamlit + Plotly 3D GUI**: Interactive browser-based presentation flight deck with a trajectory playback scrubber and live sensor visualization.
 - **Training Checkpoints**: Automatic model weight checkpointing (`.zip`) and JSON metadata export.
-- **Automated Test Suite**: 49 unit and integration tests verifying kinematics, environment spaces, training lifecycle, and GUI charts.
+- **Automated Test Suite**: Unit and integration tests verify kinematics, environment spaces, training lifecycle, benchmark outputs, and GUI charts.
 
 ---
 
@@ -290,7 +291,7 @@ python -m pip install -e ".[all]"
 ```
 
 - `-e` installs the repository in editable development mode, allowing local code modifications to take effect immediately without reinstallation.
-- `[all]` installs the complete stack: runtime requirements, reinforcement learning libraries (Gymnasium, PyTorch, Stable-Baselines3), GUI tools (Streamlit, Plotly), and developer utilities (pytest, ruff, mypy).
+- `[all]` installs the complete stack: runtime requirements, reinforcement learning libraries (Gymnasium, PyTorch, Stable-Baselines3), GUI tools (Streamlit, Plotly), plotting (Matplotlib), and developer utilities (pytest, ruff, mypy).
 
 ### Smaller Installation Options
 
@@ -307,6 +308,10 @@ If you only need specific components, smaller dependency sets are available:
 - **Browser GUI** (Streamlit, Plotly):
   ```bash
   python -m pip install -e ".[gui]"
+  ```
+- **Benchmark Plotting** (Matplotlib, for `adaptive-rl benchmark budgets --plot`):
+  ```bash
+  python -m pip install -e ".[plot]"
   ```
 - **Development & Testing** (pytest, ruff, mypy):
   ```bash
@@ -354,7 +359,7 @@ For detailed per-test execution traces:
 python -m pytest -v
 ```
 
-The repository includes **49 automated unit and integration tests** verifying:
+The repository includes automated unit and integration tests verifying:
 - 3D kinematics equations and aerodynamic drag
 - 29-dimensional observation space bounds
 - Analytical 16-ray LiDAR raycasts and obstacle clearance
@@ -397,7 +402,7 @@ When a training run completes, artifacts are automatically written to disk:
   *(e.g., `artifacts/models/drone_ppo_demo_final.zip`)*
 - **Training Metadata & Loss/Reward Log**:  
   `artifacts/metadata/{experiment_name}_training.json`  
-  *(contains total timesteps, duration in seconds, mean reward, and per-episode return lists)*
+  *(contains total timesteps, `training_time_seconds` for PPO optimization only, broader `duration_seconds` through model serialization, mean reward, and per-episode return lists)*
 - **Periodic Checkpoints** (if configured):  
   `artifacts/checkpoints/{experiment_name}/`
 
@@ -439,6 +444,34 @@ View all evaluation options:
 ```bash
 adaptive-rl evaluate --help
 ```
+
+### Run the PPO Learning-Curve Budget Benchmark
+
+Train a fresh PPO model at each timestep budget and evaluate every model under identical evaluation conditions (PPO only):
+
+```bash
+adaptive-rl benchmark budgets \
+  --config configs/drone_ppo_demo.yaml \
+  --budgets 5000,10000,25000 \
+  --training-seed 42 \
+  --eval-seeds 42,43,44,45,46 \
+  --episodes 20 \
+  --deterministic
+```
+
+Machine-readable results are written to `artifacts/benchmarks/learning_curve_budget.json` and `learning_curve_budget.csv`, with one saved model and a `budget_result.json` per completed budget. Each budget's artifacts are staged and published together only after training and evaluation complete. The run-level JSON reports `status`, `completed_budgets`, `failed_budget`, and `error`, so a partially completed run is never mistaken for a complete one; the command exits non-zero when a budget fails and keeps the artifacts of every budget that finished. Use a fresh output directory for each run; existing reports or requested budget artifacts are not overwritten.
+
+Each budget starts from the same configuration, training seed, and evaluation settings, but trains a fresh model and environment lifecycle. This is one training trajectory per budget, not an estimate of between-run training variance. Evaluation group seeds identify statistical groups; reset seeds for their episodes are derived independently of the requested episode count. JSON records the source commit and dirty-tree state when available, effective configuration fingerprint, evaluation split, environment-configuration fingerprint, seeds, and runtime/library versions. Repeatability is intended within a fixed software/hardware stack, but bit-for-bit training results are not guaranteed across devices, library versions, or nondeterministic accelerator kernels.
+
+Add `--plot` to render `learning_curve_budget.png`. Plotting uses the optional Matplotlib extra:
+
+```bash
+python -m pip install -e ".[plot]"
+```
+
+`--plot-x-axis trained` (the default) plots against the timesteps PPO actually collected, while `--plot-x-axis requested` plots against the requested budget; the two differ when a budget is not aligned to a rollout boundary (budget `65` trains to `128` with `n_steps: 64`).
+
+Metric semantics and the full JSON/CSV schema are documented in [`docs/EXPERIMENT.md`](docs/EXPERIMENT.md).
 
 ---
 
@@ -724,6 +757,8 @@ ARL/
 │   ├── __init__.py             # Package version declaration
 │   ├── cli.py                  # Typer CLI implementation
 │   ├── config.py               # Pydantic configuration schemas and YAML loader
+│   ├── benchmarking/
+│   │   └── learning_curve.py   # PPO budget sweep, evaluation, and JSON/CSV/plot exports
 │   ├── algorithms/
 │   │   ├── base.py             # BaseAlgorithm abstract interface
 │   │   ├── ppo.py              # Stable-Baselines3 PPO wrapper
@@ -742,12 +777,13 @@ ARL/
 │   └── training/
 │       ├── callbacks.py        # Episode metric logging and checkpoint callbacks
 │       └── trainer.py          # PPOTrainer training orchestrator
-└── tests/                      # 49 automated unit and integration tests
+└── tests/                      # Automated unit and integration tests
     ├── test_cli.py
     ├── test_configuration.py
     ├── test_drone.py
     ├── test_evaluation.py
     ├── test_gui.py
+    ├── test_learning_curve_benchmark.py
     └── test_training.py
 ```
 

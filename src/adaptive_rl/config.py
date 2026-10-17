@@ -9,10 +9,18 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 class ConfigError(Exception):
@@ -92,6 +100,56 @@ class EvaluationConfig(BaseModel):
         return data
 
 
+class BenchmarkConfig(BaseModel):
+    """Configuration for PPO learning-curve benchmarking across training budgets."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    budgets: list[StrictInt] = Field(
+        default_factory=lambda: [5000, 10000, 25000, 50000],
+        min_length=1,
+        description="Training budgets used for the learning-curve benchmark.",
+    )
+    training_seed: int = Field(42, ge=0, description="Seed used for all benchmark training runs")
+    evaluation_seeds: list[StrictInt] = Field(
+        default_factory=lambda: [42, 43, 44, 45, 46],
+        min_length=1,
+        description="Fixed seed sequence used for evaluation across all budgets.",
+    )
+    evaluation_episodes: int = Field(
+        20, gt=0, description="Episodes per seed for benchmark evaluation"
+    )
+    deterministic: bool = Field(
+        True,
+        description="Whether to evaluate using deterministic action selection for all budgets.",
+    )
+    evaluation_split: Literal["custom", "train", "test"] = Field(
+        "custom",
+        description=(
+            "Evaluation distribution: arbitrary derived seeds ('custom') or the configured "
+            "generalization protocol's train/test seed partition."
+        ),
+    )
+
+    @field_validator("budgets")
+    @classmethod
+    def _validate_budgets(cls, values: list[int]) -> list[int]:
+        if any(value <= 0 for value in values):
+            raise ValueError("Benchmark budgets must all be positive integers.")
+        if len(values) != len(set(values)):
+            raise ValueError("Benchmark budgets must not contain duplicates.")
+        return sorted(values)
+
+    @field_validator("evaluation_seeds")
+    @classmethod
+    def _validate_evaluation_seeds(cls, values: list[int]) -> list[int]:
+        if any(value < 0 for value in values):
+            raise ValueError("Evaluation seeds must be non-negative integers.")
+        if len(values) != len(set(values)):
+            raise ValueError("Evaluation seeds must not contain duplicates.")
+        return values
+
+
 class ExperimentConfig(BaseModel):
     """Top-level configuration schema for an AdaptiveRL experiment."""
 
@@ -110,6 +168,10 @@ class ExperimentConfig(BaseModel):
     log_dir: Path = Field(
         default_factory=lambda: Path("artifacts/logs"),
         description="Directory for logging and metrics",
+    )
+    benchmark: Optional[BenchmarkConfig] = Field(
+        default=None,
+        description="Optional benchmark settings for training-budget learning curves.",
     )
 
     @model_validator(mode="before")
