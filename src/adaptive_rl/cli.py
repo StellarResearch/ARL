@@ -548,6 +548,18 @@ def benchmark_adaptation(
     quick: bool = typer.Option(
         False, "--quick", help="Run in fast smoke test mode (2 replicates, short budget)"
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Validate protocol, config, seeds, and environments without training"
+    ),
+    resume: bool = typer.Option(
+        False, "--resume", help="Resume an existing run without repeating completed replicates"
+    ),
+    study: str = typer.Option(
+        "prereg-v1", "--study", help="Study identifier (default: prereg-v1)"
+    ),
+    run_id: Optional[str] = typer.Option(
+        None, "--run-id", help="Optional run ID directory name"
+    ),
     output_dir: Path = typer.Option(
         Path("artifacts/benchmarks"),
         "--output",
@@ -556,8 +568,11 @@ def benchmark_adaptation(
     ),
 ) -> None:
     """Run the preregistered online adaptation benchmark (Adaptive vs Fixed policy)."""
+    from adaptive_rl.environments.disturbed_drone import DroneDisturbed3DEnv
     from adaptive_rl.experiments.shift_runner import AdaptiveShiftRunner
-    from adaptive_rl.protocol.constants import TRAINING_SEEDS
+    from adaptive_rl.manifest import compute_sha256
+    from adaptive_rl.protocol.constants import PROTOCOL_VERSION, TRAINING_SEEDS
+    from adaptive_rl.protocol.seeds import build_schedule, schedule_fingerprint, validate_schedule
 
     training_seed_list: List[int]
     if seeds is not None:
@@ -567,13 +582,52 @@ def benchmark_adaptation(
     else:
         training_seed_list = list(TRAINING_SEEDS)
 
+    # Dry-run validation mode (zero training steps)
+    if dry_run:
+        config_path = Path("configs/drone_distribution_shift.yaml")
+        treatment_card_path = Path("docs/research/TREATMENT_CARD.md")
+        config_sha = compute_sha256(config_path) if config_path.exists() else "MISSING"
+        tc_sha = compute_sha256(treatment_card_path) if treatment_card_path.exists() else "MISSING"
+
+        sched = build_schedule(training_seed_list)
+        validate_schedule(sched, training_seed_list)
+        sched_fp = schedule_fingerprint(sched)
+
+        env_train = DroneDisturbed3DEnv(num_obstacles=8, wind_speed=0.5, gust_sigma=0.15)
+        env_train.reset(seed=training_seed_list[0])
+        env_train.close()
+
+        env_shift = DroneDisturbed3DEnv(num_obstacles=12, wind_speed=4.0, gust_sigma=0.6)
+        env_shift.reset(seed=training_seed_list[0])
+        env_shift.close()
+
+        console.print(
+            Panel.fit(
+                f"[bold green]✓ Protocol & Experiment Configuration Validated (Dry Run)[/bold green]\n\n"
+                f"• [bold]Protocol Version:[/bold] {PROTOCOL_VERSION}\n"
+                f"• [bold]Study Name:[/bold] {study}\n"
+                f"• [bold]Condition:[/bold] TEST-B (12 Obstacles, 4.0 m/s Steady Wind, 0.6 Gust Volatility)\n"
+                f"• [bold]Replicates Requested:[/bold] {len(training_seed_list)} (Seeds: {training_seed_list})\n"
+                f"• [bold]Schedule Fingerprint:[/bold] {sched_fp}\n"
+                f"• [bold]Config SHA-256:[/bold] {config_sha}\n"
+                f"• [bold]Treatment Card SHA-256:[/bold] {tc_sha}\n"
+                f"• [bold]Training Budget:[/bold] {timesteps:,} steps\n"
+                f"• [bold]Environment Verification:[/bold] Nominal & TEST-B drone environments verified OK",
+                title="Protocol Dry Run Passed",
+                border_style="green",
+            )
+        )
+        return
+
     console.print(
         Panel.fit(
-            f"[bold cyan]Running Online Adaptation Benchmark (Protocol v2.0)[/bold cyan]\n\n"
+            f"[bold cyan]Running Online Adaptation Benchmark (Protocol v{PROTOCOL_VERSION})[/bold cyan]\n\n"
+            f"• [bold]Study:[/bold] {study}\n"
             f"• [bold]Condition:[/bold] TEST-B (12 Obstacles, 4.0 m/s Steady Wind, 0.6 Gust Volatility)\n"
             f"• [bold]Replicates:[/bold] {len(training_seed_list)} (Seeds: {training_seed_list})\n"
             f"• [bold]Mode:[/bold] {'Quick Smoke Test' if quick else 'Full Protocol Run'}\n"
-            f"• [bold]Output Directory:[/bold] {output_dir}",
+            f"• [bold]Resume Mode:[/bold] {resume}\n"
+            f"• [bold]Output Directory:[/bold] {output_dir / run_id if run_id else output_dir}",
             title="AdaptiveRL Benchmark",
             border_style="cyan",
         )
@@ -584,6 +638,9 @@ def benchmark_adaptation(
         training_timesteps=timesteps,
         output_dir=str(output_dir),
         quick_test_mode=quick,
+        resume=resume,
+        study_name=study,
+        run_id=run_id,
     )
 
     with console.status("[bold green]Executing benchmark replicates...[/bold green]"):
@@ -603,49 +660,113 @@ def benchmark_adaptation(
     table.add_column("D_i (Diff)", justify="right", style="bold yellow")
     table.add_column("Fixed Status", justify="left")
     table.add_column("Adaptive Status", justify="left")
+    table.add_column("Status", justify="left")
 
     for r in reps:
-        d_val = r["d_i"]
-        table.add_row(
-            str(r["replicate_index"]),
-            str(r["training_seed"]),
-            f"{r['fixed_recovery']['p_pre']:.2f}",
-            f"{r['fixed_recovery']['p0']:.2f}",
-            str(r["fixed_recovery"]["truncated_recovery_time"]),
-            str(r["adaptive_recovery"]["truncated_recovery_time"]),
-            f"{d_val:+.1f}",
-            r["fixed_recovery"]["status"],
-            r["adaptive_recovery"]["status"],
-        )
+        if r.get("status") == "completed":
+            d_val = r["d_i"]
+            table.add_row(
+                str(r["replicate_index"]),
+                str(r["training_seed"]),
+                f"{r['fixed_recovery']['p_pre']:.2f}",
+                f"{r['fixed_recovery']['p0']:.2f}",
+                str(r["fixed_recovery"]["truncated_recovery_time"]),
+                str(r["adaptive_recovery"]["truncated_recovery_time"]),
+                f"{d_val:+.1f}",
+                r["fixed_recovery"]["status"],
+                r["adaptive_recovery"]["status"],
+                "[green]completed[/green]",
+            )
+        else:
+            table.add_row(
+                str(r["replicate_index"]),
+                str(r["training_seed"]),
+                "N/A",
+                "N/A",
+                "N/A",
+                "N/A",
+                "N/A",
+                "failed",
+                "failed",
+                f"[red]{r.get('error_message', 'failed')}[/red]",
+            )
 
     console.print(table)
 
-    # Statistical summary panel
-    ci = stats["confidence_interval_95"]
-    ci_str = f"[{ci[0]:.2f}, {ci[1]:.2f}]"
-    cohen_str = f"{stats['cohens_dz']:.3f}" if stats.get("cohens_dz") is not None else "N/A"
-    p_val = stats["p_value_onesided"]
+    target_dir = output_dir / run_id if run_id else output_dir
 
-    decision_style = "bold green" if p_val < 0.05 and stats["mean_d"] < 0 else "bold yellow"
+    if stats.get("evaluable", False):
+        ci = stats["confidence_interval_95"]
+        ci_str = f"[{ci[0]:.2f}, {ci[1]:.2f}]"
+        cohen_str = f"{stats['cohens_dz']:.3f}" if stats.get("cohens_dz") is not None else "N/A"
+        p_val = stats["p_value_onesided"]
 
-    console.print(
-        Panel.fit(
-            f"[{decision_style}]Statistical Analysis (One-Sided Paired t-test for H1: mu_D < 0)[/{decision_style}]\n\n"
-            f"• [bold]Mean Difference (D_mean):[/bold] {stats['mean_d']:+.3f} episodes\n"
-            f"• [bold]Sample Std Dev (s_D):[/bold] {stats['std_d']:.3f}\n"
-            f"• [bold]Standard Error (SE):[/bold] {stats['se_d']:.3f}\n"
-            f"• [bold]t-statistic:[/bold] {stats['t_statistic']:.3f}\n"
-            f"• [bold]p-value (one-sided):[/bold] {p_val:.4f}\n"
-            f"• [bold]95% Confidence Interval:[/bold] {ci_str}\n"
-            f"• [bold]Cohen's d_z:[/bold] {cohen_str}\n"
-            f"• [bold]Sign Test p-value:[/bold] {stats['sign_test_p']:.4f}\n"
-            f"• [bold]Wilcoxon Signed-Rank p-value:[/bold] {stats['wilcoxon_p']:.4f}\n\n"
-            f"• [bold]JSON Report:[/bold] {output_dir / 'adaptive_vs_fixed.json'}\n"
-            f"• [bold]CSV Summary:[/bold] {output_dir / 'adaptive_vs_fixed.csv'}",
-            title="Benchmark Outcome",
-            border_style="green" if p_val < 0.05 and stats["mean_d"] < 0 else "yellow",
+        decision_style = "bold green" if p_val < 0.05 and stats["mean_d"] < 0 else "bold yellow"
+
+        console.print(
+            Panel.fit(
+                f"[{decision_style}]Statistical Analysis (One-Sided Paired t-test for H1: mu_D < 0)[/{decision_style}]\n\n"
+                f"• [bold]Mean Difference (D_mean):[/bold] {stats['mean_d']:+.3f} episodes\n"
+                f"• [bold]Sample Std Dev (s_D):[/bold] {stats['std_d']:.3f}\n"
+                f"• [bold]Standard Error (SE):[/bold] {stats['se_d']:.3f}\n"
+                f"• [bold]t-statistic:[/bold] {stats['t_statistic']:.3f} (df={stats['df']})\n"
+                f"• [bold]p-value (one-sided):[/bold] {p_val:.4f}\n"
+                f"• [bold]95% Confidence Interval:[/bold] {ci_str}\n"
+                f"• [bold]Cohen's d_z:[/bold] {cohen_str}\n"
+                f"• [bold]Sign Test p-value:[/bold] {stats['sign_test_p']:.4f}\n"
+                f"• [bold]Wilcoxon Signed-Rank p-value:[/bold] {stats['wilcoxon_p']:.4f}\n\n"
+                f"• [bold]JSON Report:[/bold] {target_dir / 'adaptive_vs_fixed.json'}\n"
+                f"• [bold]CSV Summary:[/bold] {target_dir / 'adaptive_vs_fixed.csv'}\n"
+                f"• [bold]Manifest:[/bold] {target_dir / 'manifest.json'}",
+                title="Benchmark Outcome",
+                border_style="green" if p_val < 0.05 and stats["mean_d"] < 0 else "yellow",
+            )
         )
-    )
+    else:
+        console.print(
+            Panel.fit(
+                f"[bold red]Study Non-Evaluable[/bold red]\n\n"
+                f"• [bold]Reason:[/bold] {stats.get('reason', 'Unknown')}\n"
+                f"• [bold]Valid Replicates:[/bold] {stats.get('valid_n', 0)} / {stats.get('planned_n', 0)}\n\n"
+                f"• [bold]JSON Report:[/bold] {target_dir / 'adaptive_vs_fixed.json'}\n"
+                f"• [bold]Manifest:[/bold] {target_dir / 'manifest.json'}",
+                title="Non-Evaluable Benchmark",
+                border_style="red",
+            )
+        )
+
+
+@benchmark_app.command(name="verify")
+@inspect_app.command(name="study")
+def benchmark_verify(
+    path: Path = typer.Argument(..., help="Path to study artifact directory"),
+) -> None:
+    """Verify saved study artifacts, manifest checksums, and recompute statistics."""
+    from adaptive_rl.experiments.shift_runner import verify_study_artifacts
+
+    try:
+        res = verify_study_artifacts(path)
+        console.print(
+            Panel.fit(
+                f"[bold green]✓ All Study Artifacts & Manifest Hashes Verified![/bold green]\n\n"
+                f"• [bold]Artifact Directory:[/bold] {path}\n"
+                f"• [bold]Manifest SHA-256:[/bold] {res['manifest_sha256']}\n"
+                f"• [bold]Verified Artifacts Count:[/bold] {res['verified_artifacts_count']}\n"
+                f"• [bold]Replicates Checked:[/bold] {res['replicates_count']}\n"
+                f"• [bold]Recomputed Statistics:[/bold] {res['recomputed_statistics']}",
+                title="Study Artifact Verification",
+                border_style="green",
+            )
+        )
+    except Exception as err:
+        console.print(
+            Panel.fit(
+                f"[bold red]Verification failed:[/bold red]\n\n{err}",
+                title="Verification Error",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command(context_settings={"allow_extra_args": True})

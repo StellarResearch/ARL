@@ -58,7 +58,12 @@ import torch
 from adaptive_rl.algorithms.ppo import PPOAlgorithm
 from adaptive_rl.config import ExperimentConfig
 from adaptive_rl.environments.disturbed_drone import DroneDisturbed3DEnv
-from adaptive_rl.manifest import create_manifest
+from adaptive_rl.manifest import (
+    compute_sha256,
+    create_manifest,
+    load_manifest,
+    save_manifest,
+)
 from adaptive_rl.protocol.constants import (
     ALPHA,
     BOOTSTRAP_REPS,
@@ -75,13 +80,18 @@ from adaptive_rl.protocol.recovery import (
     compute_recovery,
 )
 from adaptive_rl.protocol.seeds import (
+    build_schedule,
     derive_seed,
+    frozen_schedule,
+    schedule_fingerprint,
+    validate_schedule,
 )
 from adaptive_rl.protocol.statistics import (
     bootstrap_percentile_ci,
     cohen_dz,
     exact_sign_test,
     exact_wilcoxon_signed_rank,
+    impute_differences,
     paired_t_interval,
     paired_t_test,
 )
@@ -244,7 +254,10 @@ def execute_ppo_adaptation_block(
 
     optimizer = getattr(policy, "optimizer", None)
     if optimizer is None:
-        optimizer = torch.optim.Adam(policy.parameters(), lr=lr)
+        optimizer = torch.optim.Adam(
+            policy.parameters(), lr=lr, betas=(0.9, 0.999), eps=1e-8
+        )
+        policy.optimizer = optimizer
 
     # Set adaptation learning rate
     for param_group in optimizer.param_groups:
@@ -254,6 +267,10 @@ def execute_ppo_adaptation_block(
     indices = np.arange(num_samples)
 
     rng = np.random.default_rng(derived_seed)
+    last_loss = 0.0
+    last_policy_loss = 0.0
+    last_value_loss = 0.0
+    last_entropy = 0.0
 
     for _ in range(n_epochs):
         rng.shuffle(indices)
@@ -284,6 +301,11 @@ def execute_ppo_adaptation_block(
             torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=max_grad_norm)
             optimizer.step()
 
+            last_loss = float(loss.item())
+            last_policy_loss = float(policy_loss.item())
+            last_value_loss = float(value_loss.item())
+            last_entropy = float(entropy.mean().item())
+
     fingerprint_after = policy_fingerprint(policy)
     state_after = policy.state_dict()
     delta_norm = parameter_delta_norm(state_before, state_after)
@@ -295,6 +317,10 @@ def execute_ppo_adaptation_block(
         "parameter_delta_norm": float(delta_norm),
         "fingerprint_before": fingerprint_before,
         "fingerprint_after": fingerprint_after,
+        "loss": last_loss,
+        "policy_loss": last_policy_loss,
+        "value_loss": last_value_loss,
+        "entropy": last_entropy,
     }
 
 
@@ -368,6 +394,19 @@ class ReplicateReport:
     adaptive_recovery: Dict[str, Any]
     d_i: float  # T_H(Adaptive) - T_H(Fixed)
     block_logs: List[Dict[str, Any]]
+    # Extended fields for full protocol audits & provenance:
+    status: str = "completed"
+    error_message: Optional[str] = None
+    fixed_end_fingerprint: str = ""
+    fixed_parameter_delta_l2: float = 0.0
+    adaptive_final_fingerprint: str = ""
+    adaptive_parameter_delta_l2: float = 0.0
+    checkpoint: Optional[Dict[str, Any]] = None
+    pre_shift_episodes: Optional[List[Dict[str, Any]]] = None
+    shock_episodes: Optional[List[Dict[str, Any]]] = None
+    fixed_post_episodes: Optional[List[Dict[str, Any]]] = None
+    adaptive_post_episodes: Optional[List[Dict[str, Any]]] = None
+    invariants: Optional[Dict[str, Any]] = None
 
 
 def run_adaptive_vs_fixed_replicate(
@@ -376,6 +415,7 @@ def run_adaptive_vs_fixed_replicate(
     config: Optional[ExperimentConfig] = None,
     training_timesteps: int = 60000,
     quick_test_mode: bool = False,
+    checkpoints_dir: Optional[Path] = None,
 ) -> ReplicateReport:
     """Execute Step 1 through Step 8 of the research protocol for one replicate.
 
@@ -385,6 +425,7 @@ def run_adaptive_vs_fixed_replicate(
         config: Optional base ExperimentConfig.
         training_timesteps: Total timesteps for nominal policy training.
         quick_test_mode: If True, uses small training steps and short episodes for fast testing.
+        checkpoints_dir: Optional directory to persist frozen policy checkpoint.
 
     Returns:
         ReplicateReport containing all pre/post returns, fingerprints, block logs, and recovery.
@@ -393,6 +434,10 @@ def run_adaptive_vs_fixed_replicate(
     pre_seeds = [derive_seed(training_seed, "pre", j) for j in range(1, K_PRE + 1)]
     post_seeds = [derive_seed(training_seed, "post", j) for j in range(1, N_POST + 1)]
     update_seeds = [derive_seed(training_seed, "update", b) for b in range(N_UPDATE)]
+
+    # Validate replicate seed schedule
+    rep_sched = {training_seed: {"pre": pre_seeds, "post": post_seeds, "update": update_seeds}}
+    validate_schedule(rep_sched, [training_seed])
 
     # 2. Step 1: Train nominal policy on nominal env (TRAIN parameters: 8 obstacles, low wind)
     nominal_max_steps = 50 if quick_test_mode else 300
@@ -423,6 +468,19 @@ def run_adaptive_vs_fixed_replicate(
     frozen_fingerprint = policy_fingerprint(ppo_algo)
     frozen_weights = copy.deepcopy(ppo_algo.model.policy.state_dict())
 
+    # Save frozen checkpoint if requested
+    checkpoint_info: Optional[Dict[str, Any]] = None
+    if checkpoints_dir is not None:
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_path = checkpoints_dir / f"replicate_{replicate_index}_seed_{training_seed}_frozen.zip"
+        ppo_algo.save(ckpt_path)
+        ckpt_sha = compute_sha256(ckpt_path)
+        checkpoint_info = {
+            "path": str(ckpt_path),
+            "sha256": ckpt_sha,
+            "size_bytes": ckpt_path.stat().st_size,
+        }
+
     # 4. Step 3: Shared pre-shift evaluation (K_pre = 15 episodes on nominal env)
     eval_nominal_env = DroneDisturbed3DEnv(
         num_obstacles=8,
@@ -434,9 +492,20 @@ def run_adaptive_vs_fixed_replicate(
     )
 
     pre_shift_returns: List[float] = []
+    pre_shift_episodes: List[Dict[str, Any]] = []
     for j, s in enumerate(pre_seeds, start=1):
-        ret, _, _, _ = evaluate_episode(eval_nominal_env, ppo_algo.model, seed=s)
+        ret, steps, success, collision = evaluate_episode(eval_nominal_env, ppo_algo.model, seed=s)
         pre_shift_returns.append(ret)
+        pre_shift_episodes.append(
+            {
+                "episode": j,
+                "seed": s,
+                "reward": ret,
+                "steps": steps,
+                "success": success,
+                "collision": collision,
+            }
+        )
     eval_nominal_env.close()
 
     # 5. Step 4 & 5: Shift introduction (TEST-B) & Shared shock window (episodes 1-5)
@@ -451,11 +520,12 @@ def run_adaptive_vs_fixed_replicate(
     )
 
     shock_returns: List[float] = []
+    shock_episodes: List[Dict[str, Any]] = []
     adaptive_buffer = TransitionBuffer()
 
     for j in range(1, WINDOW + 1):
         s = post_seeds[j - 1]
-        ret, _, _, _ = evaluate_episode(
+        ret, steps, success, collision = evaluate_episode(
             shifted_env,
             ppo_algo.model,
             seed=s,
@@ -464,15 +534,30 @@ def run_adaptive_vs_fixed_replicate(
             episode_index=j,
         )
         shock_returns.append(ret)
+        shock_episodes.append(
+            {
+                "episode": j,
+                "seed": s,
+                "reward": ret,
+                "steps": steps,
+                "success": success,
+                "collision": collision,
+            }
+        )
 
     # 6. Step 6: Fork into Fixed and Adaptive arms
     # Both start from identical frozen checkpoint
     fixed_post_returns: List[float] = list(shock_returns)
+    fixed_post_episodes: List[Dict[str, Any]] = [dict(ep) for ep in shock_episodes]
     adaptive_post_returns: List[float] = list(shock_returns)
+    adaptive_post_episodes: List[Dict[str, Any]] = [dict(ep) for ep in shock_episodes]
 
     # Fixed model remains completely frozen
     fixed_model = ppo_algo.model
     fixed_model.policy.load_state_dict(frozen_weights)
+    fixed_start_fp = policy_fingerprint(fixed_model)
+    if fixed_start_fp != frozen_fingerprint:
+        raise RuntimeError("Fixed model initial state does not match frozen checkpoint!")
 
     # Adaptive model starts from frozen checkpoint
     adaptive_algo = PPOAlgorithm(
@@ -485,6 +570,9 @@ def run_adaptive_vs_fixed_replicate(
     assert adaptive_algo.model is not None, "Adaptive PPO model was not initialized"
     adaptive_algo.model.policy.load_state_dict(copy.deepcopy(frozen_weights))
     adaptive_model = adaptive_algo.model
+    adapt_start_fp = policy_fingerprint(adaptive_model)
+    if adapt_start_fp != frozen_fingerprint:
+        raise RuntimeError("Adaptive model initial state does not match frozen checkpoint!")
 
     block_logs: List[Dict[str, Any]] = []
 
@@ -504,11 +592,23 @@ def run_adaptive_vs_fixed_replicate(
         s_eval = post_seeds[k - 1]
 
         # Fixed arm evaluation (frozen policy, identical seed)
-        fixed_ret, _, _, _ = evaluate_episode(shifted_env, fixed_model, seed=s_eval)
+        fixed_ret, fixed_steps, fixed_succ, fixed_coll = evaluate_episode(
+            shifted_env, fixed_model, seed=s_eval
+        )
         fixed_post_returns.append(fixed_ret)
+        fixed_post_episodes.append(
+            {
+                "episode": k,
+                "seed": s_eval,
+                "reward": fixed_ret,
+                "steps": fixed_steps,
+                "success": fixed_succ,
+                "collision": fixed_coll,
+            }
+        )
 
         # Adaptive arm evaluation (adapted policy, identical seed)
-        adapt_ret, _, _, _ = evaluate_episode(
+        adapt_ret, adapt_steps, adapt_succ, adapt_coll = evaluate_episode(
             shifted_env,
             adaptive_model,
             seed=s_eval,
@@ -517,6 +617,16 @@ def run_adaptive_vs_fixed_replicate(
             episode_index=k,
         )
         adaptive_post_returns.append(adapt_ret)
+        adaptive_post_episodes.append(
+            {
+                "episode": k,
+                "seed": s_eval,
+                "reward": adapt_ret,
+                "steps": adapt_steps,
+                "success": adapt_succ,
+                "collision": adapt_coll,
+            }
+        )
 
         # Execute Block B_k if k < N_POST
         if k < N_POST:
@@ -533,7 +643,44 @@ def run_adaptive_vs_fixed_replicate(
 
     shifted_env.close()
 
-    # 8. Step 8: Causal Recovery Analysis
+    # 8. Post-Evaluation Invariants Audit
+    fixed_end_fingerprint = policy_fingerprint(fixed_model)
+    fixed_parameter_delta_l2 = parameter_delta_norm(frozen_weights, fixed_model.policy.state_dict())
+    if fixed_end_fingerprint != frozen_fingerprint or fixed_parameter_delta_l2 != 0.0:
+        raise RuntimeError(
+            f"Fixed arm invariant violation: fingerprint changed from {frozen_fingerprint} "
+            f"to {fixed_end_fingerprint} (delta_norm={fixed_parameter_delta_l2})"
+        )
+
+    adaptive_final_fingerprint = policy_fingerprint(adaptive_model)
+    adaptive_parameter_delta_l2 = parameter_delta_norm(
+        frozen_weights, adaptive_model.policy.state_dict()
+    )
+
+    shared_shock_match = (
+        fixed_post_returns[:5] == shock_returns and adaptive_post_returns[:5] == shock_returns
+    )
+    blocks_count_match = len(block_logs) == 10
+    block_order_match = [b["block_id"] for b in block_logs] == [f"B{k}" for k in range(5, 15)]
+    fixed_preserved = (
+        fixed_end_fingerprint == frozen_fingerprint and fixed_parameter_delta_l2 == 0.0
+    )
+    all_passed = bool(
+        shared_shock_match and blocks_count_match and block_order_match and fixed_preserved
+    )
+    if not all_passed:
+        raise RuntimeError("Protocol invariant checks failed during replicate execution!")
+
+    invariants = {
+        "shared_shock_identical": shared_shock_match,
+        "fixed_fingerprint_preserved": fixed_end_fingerprint == frozen_fingerprint,
+        "fixed_parameter_delta_zero": fixed_parameter_delta_l2 == 0.0,
+        "adaptive_blocks_count": blocks_count_match,
+        "adaptive_block_order": block_order_match,
+        "all_passed": all_passed,
+    }
+
+    # 9. Step 8: Causal Recovery Analysis
     rec_fixed = compute_recovery(pre_shift_returns, fixed_post_returns)
     rec_adaptive = compute_recovery(pre_shift_returns, adaptive_post_returns)
 
@@ -555,6 +702,18 @@ def run_adaptive_vs_fixed_replicate(
         adaptive_recovery=asdict(rec_adaptive),
         d_i=d_i,
         block_logs=block_logs,
+        status="completed",
+        error_message=None,
+        fixed_end_fingerprint=fixed_end_fingerprint,
+        fixed_parameter_delta_l2=fixed_parameter_delta_l2,
+        adaptive_final_fingerprint=adaptive_final_fingerprint,
+        adaptive_parameter_delta_l2=adaptive_parameter_delta_l2,
+        checkpoint=checkpoint_info,
+        pre_shift_episodes=pre_shift_episodes,
+        shock_episodes=shock_episodes,
+        fixed_post_episodes=fixed_post_episodes,
+        adaptive_post_episodes=adaptive_post_episodes,
+        invariants=invariants,
     )
 
 
@@ -567,49 +726,183 @@ class AdaptiveShiftRunner:
         training_timesteps: int = 60000,
         output_dir: str = "artifacts/benchmarks",
         quick_test_mode: bool = False,
+        resume: bool = False,
+        study_name: str = "prereg-v1",
+        run_id: Optional[str] = None,
     ) -> None:
         self.training_seeds = [int(s) for s in training_seeds]
         self.training_timesteps = int(training_timesteps)
         self.output_dir = Path(output_dir)
+        if run_id is not None:
+            self.output_dir = self.output_dir / run_id
         self.quick_test_mode = bool(quick_test_mode)
+        self.resume = bool(resume)
+        self.study_name = str(study_name)
 
     def run(self) -> Dict[str, Any]:
         """Execute full benchmark across all specified training seeds."""
         start_time = time.time()
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        replicate_reports: List[ReplicateReport] = []
-        differences: List[float] = []
 
-        for idx, seed in enumerate(self.training_seeds, start=1):
-            rep = run_adaptive_vs_fixed_replicate(
-                replicate_index=idx,
-                training_seed=seed,
-                training_timesteps=self.training_timesteps,
-                quick_test_mode=self.quick_test_mode,
-            )
-            replicate_reports.append(rep)
-            differences.append(rep.d_i)
-
-        # Statistical analysis
-        min_n = min(2, len(differences)) if self.quick_test_mode else MIN_VALID_N
-        t_res = paired_t_test(differences, min_valid_n=min_n)
-        ci_res = paired_t_interval(differences, confidence=1.0 - ALPHA, min_valid_n=min_n)
-        cohen_d = cohen_dz(differences)
-        boot_ci = bootstrap_percentile_ci(
-            differences,
-            confidence=1.0 - ALPHA,
-            reps=BOOTSTRAP_REPS,
-            seed=BOOTSTRAP_SEED,
-            min_valid_n=min_n,
-        )
-        sign_res = exact_sign_test(differences, min_valid_n=min_n)
-        wilcox_res = exact_wilcoxon_signed_rank(differences, min_valid_n=min_n)
-
-        finish_time = time.time()
+        # Enforce immutable run directory policy
+        manifest_path = self.output_dir / "manifest.json"
         json_path = self.output_dir / "adaptive_vs_fixed.json"
         csv_path = self.output_dir / "adaptive_vs_fixed.csv"
+        checkpoints_dir = self.output_dir / "checkpoints"
 
-        # Export CSV summary first so it can be hashed in the manifest
+        if manifest_path.exists() and not self.resume:
+            raise FileExistsError(
+                f"Run directory '{self.output_dir}' already contains a completed manifest.json. "
+                "Silent overwrite of immutable study directories is prohibited. "
+                "Specify a new output directory or pass resume=True."
+            )
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
+        # Validate schedule and compute fingerprint
+        full_schedule = build_schedule(self.training_seeds)
+        validate_schedule(full_schedule, self.training_seeds)
+        sched_fingerprint = schedule_fingerprint(full_schedule)
+
+        replicate_reports: List[ReplicateReport] = []
+        completed_seeds: set[int] = set()
+
+        if self.resume and json_path.exists():
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    prev_data = json.load(f)
+                for r_dict in prev_data.get("replicates", []):
+                    if r_dict.get("status") == "completed":
+                        r_seed = r_dict["training_seed"]
+                        if r_seed in self.training_seeds:
+                            rep = ReplicateReport(**r_dict)
+                            replicate_reports.append(rep)
+                            completed_seeds.add(r_seed)
+            except Exception:
+                pass
+
+        for idx, seed in enumerate(self.training_seeds, start=1):
+            if seed in completed_seeds:
+                continue
+
+            try:
+                rep = run_adaptive_vs_fixed_replicate(
+                    replicate_index=idx,
+                    training_seed=seed,
+                    training_timesteps=self.training_timesteps,
+                    quick_test_mode=self.quick_test_mode,
+                    checkpoints_dir=checkpoints_dir,
+                )
+                replicate_reports.append(rep)
+            except Exception as err:
+                # Capture failure explicitly without faking numbers
+                failed_rep = ReplicateReport(
+                    replicate_index=idx,
+                    training_seed=seed,
+                    pre_shift_seeds=[derive_seed(seed, "pre", j) for j in range(1, K_PRE + 1)],
+                    post_shift_seeds=[derive_seed(seed, "post", j) for j in range(1, N_POST + 1)],
+                    update_seeds=[derive_seed(seed, "update", b) for b in range(N_UPDATE)],
+                    frozen_fingerprint="",
+                    pre_shift_returns=[],
+                    shock_returns=[],
+                    fixed_post_returns=[],
+                    adaptive_post_returns=[],
+                    fixed_recovery={},
+                    adaptive_recovery={},
+                    d_i=float("nan"),
+                    block_logs=[],
+                    status="failed",
+                    error_message=str(err),
+                )
+                replicate_reports.append(failed_rep)
+
+        # Sort replicate reports by replicate_index
+        replicate_reports.sort(key=lambda r: r.replicate_index)
+
+        # Statistical analysis on completed pairwise replicates
+        completed_reps = [r for r in replicate_reports if r.status == "completed"]
+        differences = [r.d_i for r in completed_reps]
+        planned_n = len(self.training_seeds)
+        valid_n = len(differences)
+        failed_n = planned_n - valid_n
+
+        min_n = min(2, planned_n) if self.quick_test_mode else MIN_VALID_N
+
+        stats: Dict[str, Any] = {
+            "planned_n": planned_n,
+            "valid_n": valid_n,
+            "failed_n": failed_n,
+        }
+
+        if valid_n >= min_n:
+            t_res = paired_t_test(differences, min_valid_n=min_n)
+            ci_res = paired_t_interval(differences, confidence=1.0 - ALPHA, min_valid_n=min_n)
+            cohen_d = cohen_dz(differences)
+            boot_ci = bootstrap_percentile_ci(
+                differences,
+                confidence=1.0 - ALPHA,
+                reps=BOOTSTRAP_REPS,
+                seed=BOOTSTRAP_SEED,
+                min_valid_n=min_n,
+            )
+            sign_res = exact_sign_test(differences, min_valid_n=min_n)
+            wilcox_res = exact_wilcoxon_signed_rank(differences, min_valid_n=min_n)
+
+            stats.update(
+                {
+                    "evaluable": True,
+                    "mean_d": float(t_res.mean),
+                    "std_d": float(t_res.std_dev),
+                    "se_d": float(t_res.standard_error),
+                    "t_statistic": float(t_res.t_statistic),
+                    "df": int(t_res.degrees_of_freedom),
+                    "degrees_of_freedom": int(t_res.degrees_of_freedom),
+                    "p_value_onesided": float(t_res.p_value),
+                    "confidence_interval_95": [float(ci_res[0]), float(ci_res[1])],
+                    "cohens_dz": float(cohen_d) if cohen_d is not None else None,
+                    "bootstrap_ci_95": [float(boot_ci[0]), float(boot_ci[1])],
+                    "sign_test_p": float(sign_res.p_value),
+                    "wilcoxon_p": float(wilcox_res.p_value),
+                }
+            )
+        else:
+            stats.update(
+                {
+                    "evaluable": False,
+                    "reason": f"valid_n ({valid_n}) < min_valid_n ({min_n})",
+                }
+            )
+
+        # Imputation bounds if any replicates failed
+        if failed_n > 0:
+            fixed_ths: List[Optional[float]] = [
+                float(r.fixed_recovery["truncated_recovery_time"])
+                if r.status == "completed" and "truncated_recovery_time" in r.fixed_recovery
+                else None
+                for r in replicate_reports
+            ]
+            adaptive_ths: List[Optional[float]] = [
+                float(r.adaptive_recovery["truncated_recovery_time"])
+                if r.status == "completed" and "truncated_recovery_time" in r.adaptive_recovery
+                else None
+                for r in replicate_reports
+            ]
+            worst_diffs = impute_differences(
+                fixed_ths, adaptive_ths, horizon=15.0, direction="worst_for_adaptive"
+            )
+            best_diffs = impute_differences(
+                fixed_ths, adaptive_ths, horizon=15.0, direction="best_for_adaptive"
+            )
+            stats["imputation_bounds"] = {
+                "worst_for_adaptive_mean": float(np.mean(worst_diffs)),
+                "best_for_adaptive_mean": float(np.mean(best_diffs)),
+                "worst_diffs": worst_diffs,
+                "best_diffs": best_diffs,
+            }
+
+        finish_time = time.time()
+
+        # Export CSV summary
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(
@@ -623,65 +916,220 @@ class AdaptiveShiftRunner:
                     "adaptive_t_h",
                     "adaptive_status",
                     "d_i",
+                    "status",
+                    "fixed_delta_l2",
+                    "adaptive_delta_l2",
                 ]
             )
             for r in replicate_reports:
-                writer.writerow(
-                    [
-                        r.replicate_index,
-                        r.training_seed,
-                        f"{r.fixed_recovery['p_pre']:.4f}",
-                        f"{r.fixed_recovery['p0']:.4f}",
-                        r.fixed_recovery["truncated_recovery_time"],
-                        r.fixed_recovery["status"],
-                        r.adaptive_recovery["truncated_recovery_time"],
-                        r.adaptive_recovery["status"],
-                        r.d_i,
-                    ]
-                )
+                if r.status == "completed":
+                    writer.writerow(
+                        [
+                            r.replicate_index,
+                            r.training_seed,
+                            f"{r.fixed_recovery['p_pre']:.4f}",
+                            f"{r.fixed_recovery['p0']:.4f}",
+                            r.fixed_recovery["truncated_recovery_time"],
+                            r.fixed_recovery["status"],
+                            r.adaptive_recovery["truncated_recovery_time"],
+                            r.adaptive_recovery["status"],
+                            r.d_i,
+                            r.status,
+                            f"{r.fixed_parameter_delta_l2:.6f}",
+                            f"{r.adaptive_parameter_delta_l2:.6f}",
+                        ]
+                    )
+                else:
+                    writer.writerow(
+                        [
+                            r.replicate_index,
+                            r.training_seed,
+                            "N/A",
+                            "N/A",
+                            "N/A",
+                            "failed",
+                            "N/A",
+                            "failed",
+                            "N/A",
+                            r.status,
+                            "N/A",
+                            "N/A",
+                        ]
+                    )
+
+        # Hashes of frozen reference files
+        config_path = Path("configs/drone_distribution_shift.yaml")
+        treatment_card_path = Path("docs/research/TREATMENT_CARD.md")
+        config_sha = compute_sha256(config_path) if config_path.exists() else "unknown"
+        tc_sha = compute_sha256(treatment_card_path) if treatment_card_path.exists() else "unknown"
+
+        report_dict: Dict[str, Any] = {
+            "protocol_version": PROTOCOL_VERSION,
+            "experiment": "online_adaptation_vs_fixed_shift",
+            "study_name": self.study_name,
+            "condition": "TEST-B",
+            "environment": "drone_disturbed",
+            "algorithm": "ppo",
+            "quick_test_mode": self.quick_test_mode,
+            "config_sha256": config_sha,
+            "treatment_card_sha256": tc_sha,
+            "schedule_fingerprint": sched_fingerprint,
+            "num_replicates": len(replicate_reports),
+            "differences": differences,
+            "statistics": stats,
+            "replicates": [asdict(r) for r in replicate_reports],
+        }
+
+        # Export preliminary JSON report
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(report_dict, f, indent=2)
+
+        # Build manifest capturing all generated artifacts
+        artifact_files: Dict[str, Path] = {
+            "csv_summary": csv_path,
+            "json_report": json_path,
+        }
+        for rep in replicate_reports:
+            if rep.checkpoint and "path" in rep.checkpoint:
+                p = Path(rep.checkpoint["path"])
+                if p.is_file():
+                    artifact_files[f"checkpoint_seed_{rep.training_seed}"] = p
 
         manifest = create_manifest(
-            experiment_name="adaptive_vs_fixed_shift",
+            experiment_name=f"adaptive_vs_fixed_{self.study_name}",
             config_dict={
                 "environment": "drone_disturbed",
                 "condition": "TEST-B",
                 "algorithm": "ppo",
                 "training_seeds": self.training_seeds,
                 "protocol_version": PROTOCOL_VERSION,
+                "study_name": self.study_name,
+                "config_sha256": config_sha,
+                "treatment_card_sha256": tc_sha,
+                "schedule_fingerprint": sched_fingerprint,
+                "training_timesteps": self.training_timesteps,
             },
             started_at=start_time,
             finished_at=finish_time,
             training_time_seconds=finish_time - start_time,
-            artifacts={"csv_summary": csv_path},
+            artifacts=artifact_files,
         )
 
-        report_dict: Dict[str, Any] = {
-            "protocol_version": PROTOCOL_VERSION,
-            "experiment": "online_adaptation_vs_fixed_shift",
-            "condition": "TEST-B",
-            "num_replicates": len(replicate_reports),
-            "differences": differences,
-            "statistics": {
-                "mean_d": float(t_res.mean),
-                "std_d": float(t_res.std_dev),
-                "se_d": float(t_res.standard_error),
-                "t_statistic": float(t_res.t_statistic),
-                "p_value_onesided": float(t_res.p_value),
-                "confidence_interval_95": [float(ci_res[0]), float(ci_res[1])],
-                "cohens_dz": float(cohen_d) if cohen_d is not None else None,
-                "bootstrap_ci_95": [float(boot_ci[0]), float(boot_ci[1])],
-                "sign_test_p": float(sign_res.p_value),
-                "wilcoxon_p": float(wilcox_res.p_value),
-            },
-            "replicates": [asdict(r) for r in replicate_reports],
-            "manifest": manifest.model_dump(),
-        }
+        save_manifest(manifest, manifest_path)
+        manifest_sha = compute_sha256(manifest_path)
 
-        # Export JSON artifact
+        # Update JSON report with manifest metadata and re-save
+        report_dict["manifest"] = manifest.model_dump()
+        report_dict["manifest_sha256"] = manifest_sha
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(report_dict, f, indent=2)
 
         return report_dict
+
+
+def verify_study_artifacts(output_dir: Path | str) -> Dict[str, Any]:
+    """Verify saved study artifacts against disk bytes and recompute statistics.
+
+    Performs complete independent audit without inspecting live model instances:
+    1. Loads and validates manifest.json.
+    2. Validates cryptographic SHA-256 for all artifact entries against disk bytes.
+    3. Verifies schedule fingerprint and frozen invariants.
+    4. Recomputes statistical tests strictly from saved differences.
+    """
+    out_dir = Path(output_dir)
+    manifest_path = out_dir / "manifest.json"
+    json_path = out_dir / "adaptive_vs_fixed.json"
+    csv_path = out_dir / "adaptive_vs_fixed.csv"
+
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Missing manifest.json in {output_dir}")
+    if not json_path.is_file():
+        raise FileNotFoundError(f"Missing adaptive_vs_fixed.json in {output_dir}")
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"Missing adaptive_vs_fixed.csv in {output_dir}")
+
+    manifest = load_manifest(manifest_path)
+    verified_artifacts: Dict[str, str] = {}
+    for name, art in manifest.artifacts.items():
+        actual_hash = compute_sha256(art.path)
+        if actual_hash != art.sha256:
+            raise ValueError(
+                f"Checksum mismatch for artifact '{name}' ({art.path}): "
+                f"expected {art.sha256}, got {actual_hash}"
+            )
+        verified_artifacts[name] = actual_hash
+
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    reps = data.get("replicates", [])
+    if len(reps) == 10:
+        expected_fp = "65939167572731c99599c382ac50cf3fddbba3cf758305764392f13b2e4efa67"
+        actual_fp = data.get("schedule_fingerprint")
+        if actual_fp != expected_fp:
+            raise ValueError(
+                f"Schedule fingerprint mismatch for 10-replicate study: "
+                f"expected {expected_fp}, got {actual_fp}"
+            )
+
+    for r in reps:
+        if r.get("status") == "completed":
+            inv = r.get("invariants", {})
+            if not inv.get("all_passed", False):
+                raise ValueError(
+                    f"Replicate {r.get('replicate_index')} reported failed invariants: {inv}"
+                )
+            if r.get("fixed_parameter_delta_l2", 1.0) != 0.0:
+                raise ValueError(
+                    f"Replicate {r.get('replicate_index')} has non-zero fixed parameter delta"
+                )
+            if r.get("fixed_end_fingerprint") != r.get("frozen_fingerprint"):
+                raise ValueError(
+                    f"Replicate {r.get('replicate_index')} fixed fingerprint mutated"
+                )
+
+    differences = data.get("differences", [])
+    min_n = min(2, len(differences)) if data.get("quick_test_mode", False) else MIN_VALID_N
+    recomputed_stats: Dict[str, Any] = {}
+
+    if len(differences) >= min_n:
+        t_res = paired_t_test(differences, min_valid_n=min_n)
+        ci_res = paired_t_interval(differences, confidence=1.0 - ALPHA, min_valid_n=min_n)
+        cohen_d = cohen_dz(differences)
+        sign_res = exact_sign_test(differences, min_valid_n=min_n)
+        wilcox_res = exact_wilcoxon_signed_rank(differences, min_valid_n=min_n)
+
+        saved_stats = data.get("statistics", {})
+        if not math.isclose(t_res.mean, saved_stats.get("mean_d", 0.0), rel_tol=1e-5, abs_tol=1e-5):
+            raise ValueError(
+                f"Independent analysis mean difference mismatch: "
+                f"recomputed {t_res.mean} vs saved {saved_stats.get('mean_d')}"
+            )
+        if not math.isclose(
+            t_res.p_value, saved_stats.get("p_value_onesided", 0.0), rel_tol=1e-5, abs_tol=1e-5
+        ):
+            raise ValueError(
+                f"Independent analysis p-value mismatch: "
+                f"recomputed {t_res.p_value} vs saved {saved_stats.get('p_value_onesided')}"
+            )
+
+        recomputed_stats = {
+            "mean_d": float(t_res.mean),
+            "p_value_onesided": float(t_res.p_value),
+            "t_statistic": float(t_res.t_statistic),
+            "ci_95": [float(ci_res[0]), float(ci_res[1])],
+            "cohens_dz": float(cohen_d) if cohen_d is not None else None,
+            "sign_test_p": float(sign_res.p_value),
+            "wilcoxon_p": float(wilcox_res.p_value),
+        }
+
+    return {
+        "all_verified": True,
+        "manifest_sha256": compute_sha256(manifest_path),
+        "verified_artifacts_count": len(verified_artifacts),
+        "replicates_count": len(reps),
+        "recomputed_statistics": recomputed_stats,
+    }
 
 
 # Convenience API
@@ -697,4 +1145,5 @@ __all__ = [
     "policy_fingerprint",
     "run_adaptive_vs_fixed_experiment",
     "run_adaptive_vs_fixed_replicate",
+    "verify_study_artifacts",
 ]

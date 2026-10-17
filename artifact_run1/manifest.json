@@ -1,0 +1,134 @@
+{
+  "manifest_version": "1.0",
+  "experiment_name": "adaptive_vs_fixed_prereg-v1",
+  "git": {
+    "git_commit": "b9fcfdb785b273c93177f473645e697de0d9f3b2",
+    "git_branch": "research/issue-271-adaptive-vs-fixed-10rep",
+    "git_dirty": true
+  },
+  "host": {
+    "os_name": "Linux",
+    "os_version": "7.1.13-2-MANJARO",
+    "python_version": "3.12.14",
+    "architecture": "x86_64"
+  },
+  "packages": {
+    "adaptive_rl": "0.1.0",
+    "torch": "2.14.1",
+    "stable_baselines3": "2.9.0",
+    "gymnasium": "1.3.0",
+    "numpy": "2.5.3",
+    "typer": "0.27.2",
+    "pydantic": "2.13.5"
+  },
+  "hardware": {
+    "device": "cpu",
+    "gpu_name": null,
+    "gpu_count": 0,
+    "cpu_count": 4
+  },
+  "execution": {
+    "started_at": "2026-09-30T20:54:02.912144+00:00",
+    "finished_at": "2026-09-30T21:13:51.140255+00:00",
+    "duration_seconds": 1188.228,
+    "training_time_seconds": 1188.228,
+    "command": [
+      ".venv/bin/adaptive-rl",
+      "benchmark",
+      "adaptation",
+      "--seeds",
+      "31001,31002,31003,31004,31005,31006,31007,31008,31009,31010",
+      "--timesteps",
+      "60000",
+      "--output",
+      "./artifact_run1",
+      "--study",
+      "prereg-v1"
+    ]
+  },
+  "config": {
+    "environment": "drone_disturbed",
+    "condition": "TEST-B",
+    "algorithm": "ppo",
+    "training_seeds": [
+      31001,
+      31002,
+      31003,
+      31004,
+      31005,
+      31006,
+      31007,
+      31008,
+      31009,
+      31010
+    ],
+    "protocol_version": "2.0",
+    "study_name": "prereg-v1",
+    "config_sha256": "93d93b1c9f67b4824ec26b11877ea5dbff14dbde81e54da9d3004545437c8d8b",
+    "treatment_card_sha256": "3ad9c9b39e9ce8fa991195d90d0930f85604b8ae418dfd30e1f1f7ff04e2e254",
+    "schedule_fingerprint": "65939167572731c99599c382ac50cf3fddbba3cf758305764392f13b2e4efa67",
+    "training_timesteps": 60000
+  },
+  "artifacts": {
+    "csv_summary": {
+      "path": "artifact_run1/adaptive_vs_fixed.csv",
+      "sha256": "e622ec973c40795727c10ee1e051ad87229308a863b415f79e5c89953e2ac913",
+      "size_bytes": 1133
+    },
+    "json_report": {
+      "path": "artifact_run1/adaptive_vs_fixed.json",
+      "sha256": "2983876c4e7da6ef847651cf048aba7b916297d645549c7e5edb6157caf942f6",
+      "size_bytes": 223100
+    },
+    "checkpoint_seed_31001": {
+      "path": "artifact_run1/checkpoints/replicate_1_seed_31001_frozen.zip",
+      "sha256": "47345326cb52f1149ddc5c9c47fa5774bcd297f835ca400791d2eae1ac2ee368",
+      "size_bytes": 182903
+    },
+    "checkpoint_seed_31002": {
+      "path": "artifact_run1/checkpoints/replicate_2_seed_31002_frozen.zip",
+      "sha256": "6288a242eda75c97ff3f17c55ae6ceac77926b3e700ba37fa17a84f5c3860eed",
+      "size_bytes": 182947
+    },
+    "checkpoint_seed_31003": {
+      "path": "artifact_run1/checkpoints/replicate_3_seed_31003_frozen.zip",
+      "sha256": "f2d2c2cdcc70112a6929993d75a73cdfdc66c08817b4a964694402c25235c119",
+      "size_bytes": 182895
+    },
+    "checkpoint_seed_31004": {
+      "path": "artifact_run1/checkpoints/replicate_4_seed_31004_frozen.zip",
+      "sha256": "2dab2ab97de449a5c4a9f9453ec10bd93fd429455766a72154ded28e123b7c99",
+      "size_bytes": 182899
+    },
+    "checkpoint_seed_31005": {
+      "path": "artifact_run1/checkpoints/replicate_5_seed_31005_frozen.zip",
+      "sha256": "557db6dcb6904c2949729d14e2cc472152b3c3aff775a8f7762005ab4964d55c",
+      "size_bytes": 182915
+    },
+    "checkpoint_seed_31006": {
+      "path": "artifact_run1/checkpoints/replicate_6_seed_31006_frozen.zip",
+      "sha256": "38e46572a239649121a9f1d5ad7ddeb9ac49ebe377c5edad9edb95205a546817",
+      "size_bytes": 182967
+    },
+    "checkpoint_seed_31007": {
+      "path": "artifact_run1/checkpoints/replicate_7_seed_31007_frozen.zip",
+      "sha256": "1cbd7dbe41447b4fa100110456443fe8afe74f378fe5a16bee38f34a9f7e73c9",
+      "size_bytes": 182863
+    },
+    "checkpoint_seed_31008": {
+      "path": "artifact_run1/checkpoints/replicate_8_seed_31008_frozen.zip",
+      "sha256": "4a03d371f9fa59de97be623c3828d47147f2951bfc6673713516d741bb97b4e5",
+      "size_bytes": 182927
+    },
+    "checkpoint_seed_31009": {
+      "path": "artifact_run1/checkpoints/replicate_9_seed_31009_frozen.zip",
+      "sha256": "c9774cea7dae6ca6e19269a6a6f298547d1766d688b4c843ed5e6f4afac46afd",
+      "size_bytes": 182863
+    },
+    "checkpoint_seed_31010": {
+      "path": "artifact_run1/checkpoints/replicate_10_seed_31010_frozen.zip",
+      "sha256": "aa0dd7a7fdbd54cd15cd7c689b6bf2d1ff8ff46fbe8b37ba51edbe101586f5f3",
+      "size_bytes": 182915
+    }
+  }
+}

@@ -327,6 +327,11 @@ class Evaluator:
         if num_episodes <= 0:
             raise ValueError(f"num_episodes must be positive, got {num_episodes}")
 
+        if base_seed is not None:
+            raise ValueError(
+                "The 'base_seed' argument is deprecated. Provide explicit 'seeds' derived from the official schedule or use a split to obtain deterministic seeds."
+            )
+
         self.last_episode_records = []
         rewards: List[float] = []
         lengths: List[int] = []

@@ -1,0 +1,11 @@
+replicate,training_seed,p_pre_mean,p0_mean,fixed_t_h,fixed_status,adaptive_t_h,adaptive_status,d_i,status,fixed_delta_l2,adaptive_delta_l2
+1,31001,76.1744,89.8152,0,no_degradation,0,no_degradation,0.0,completed,0.000000,1.776468
+2,31002,90.7047,91.9587,0,no_degradation,0,no_degradation,0.0,completed,0.000000,1.374827
+3,31003,157.1991,29.9873,12,recovered,10,recovered,-2.0,completed,0.000000,2.050598
+4,31004,166.7014,159.6798,0,degradation_below_resolution,0,degradation_below_resolution,0.0,completed,0.000000,2.566002
+5,31005,62.0321,77.7351,0,no_degradation,0,no_degradation,0.0,completed,0.000000,1.081245
+6,31006,70.8207,27.6518,0,degradation_below_resolution,0,degradation_below_resolution,0.0,completed,0.000000,1.506797
+7,31007,-15.8396,-13.9566,0,no_degradation,0,no_degradation,0.0,completed,0.000000,1.188111
+8,31008,56.1142,89.3289,0,no_degradation,0,no_degradation,0.0,completed,0.000000,1.444585
+9,31009,87.6562,84.8239,0,degradation_below_resolution,0,degradation_below_resolution,0.0,completed,0.000000,1.512873
+10,31010,55.8349,87.3952,0,no_degradation,0,no_degradation,0.0,completed,0.000000,2.918241
