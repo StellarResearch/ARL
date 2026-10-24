@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any, Optional, Tuple, Union
 
 import gymnasium as gym
-from stable_baselines3 import SAC
+
+try:
+    from stable_baselines3 import SAC
+except ImportError:  # pragma: no cover
+    SAC = None  # type: ignore
 
 from adaptive_rl.algorithms.base import BaseAlgorithm
 
@@ -73,7 +77,7 @@ class SACAlgorithm(BaseAlgorithm):
             **kwargs,
         }
 
-        self.model: Optional[SAC] = None
+        self.model: Optional[Any] = None
         if self.env is not None:
             self._init_model()
 
@@ -81,6 +85,11 @@ class SACAlgorithm(BaseAlgorithm):
         """Instantiate the underlying Stable-Baselines3 SAC model."""
         if self.env is None:
             raise ValueError("Cannot initialize SAC model without a valid environment.")
+        if SAC is None:
+            raise ImportError(
+                "Stable-Baselines3 is required to initialize SACAlgorithm. "
+                "Install with: pip install 'adaptive-rl[rl]'"
+            )
         self.model = SAC(
             policy=self.policy_name,
             env=self.env,
@@ -152,6 +161,11 @@ class SACAlgorithm(BaseAlgorithm):
             else:
                 raise FileNotFoundError(f"Model file not found at: {path}")
 
+        if SAC is None:
+            raise ImportError(
+                "Stable-Baselines3 is required to load SACAlgorithm. "
+                "Install with: pip install 'adaptive-rl[rl]'"
+            )
         target_env = env if env is not None else self.env
         self.model = SAC.load(str(load_path), env=target_env)
         if env is not None:

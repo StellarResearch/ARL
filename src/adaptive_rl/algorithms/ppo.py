@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 import gymnasium as gym
-from stable_baselines3 import PPO
+try:
+    from stable_baselines3 import PPO
+except ImportError:  # pragma: no cover
+    PPO = None  # type: ignore
+
 
 from adaptive_rl.algorithms.base import BaseAlgorithm
 
@@ -84,6 +88,11 @@ class PPOAlgorithm(BaseAlgorithm):
         """Instantiate the underlying Stable-Baselines3 PPO model."""
         if self.env is None:
             raise ValueError("Cannot initialize PPO model without a valid environment.")
+        if PPO is None:
+            raise ImportError(
+                "Stable-Baselines3 is required to initialize PPOAlgorithm. "
+                "Install with: pip install 'adaptive-rl[rl]'"
+            )
         self.model = PPO(
             policy=self.policy_name,
             env=self.env,
@@ -156,6 +165,11 @@ class PPOAlgorithm(BaseAlgorithm):
             else:
                 raise FileNotFoundError(f"Model file not found at: {path}")
 
+        if PPO is None:
+            raise ImportError(
+                "Stable-Baselines3 is required to load PPOAlgorithm. "
+                "Install with: pip install 'adaptive-rl[rl]'"
+            )
         target_env = env if env is not None else self.env
         self.model = PPO.load(str(load_path), env=target_env)
         if env is not None:
