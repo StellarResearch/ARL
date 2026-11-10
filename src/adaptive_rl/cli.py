@@ -1815,5 +1815,90 @@ def gui(
         console.print("\n[yellow]GUI server stopped.[/yellow]")
 
 
+@benchmark_app.command(name="lidar")
+def benchmark_lidar(
+    model: Path = typer.Option(..., "--model", "-m", help="Trained PPO checkpoint (.zip)"),
+    config: Path = typer.Option(
+        Path("configs/drone_ppo.yaml"),
+        "--config",
+        "-c",
+        help="Nominal drone environment configuration",
+    ),
+    episodes: int = typer.Option(
+        30,
+        "--episodes",
+        "-e",
+        min=1,
+        help="Evaluation episodes per LiDAR condition",
+    ),
+    seed: int = typer.Option(1000, "--seed", min=0, help="First evaluation episode seed"),
+    output_dir: Path = typer.Option(
+        Path("artifacts/benchmarks"),
+        "--output-dir",
+        "-o",
+        help="Directory for benchmark artifacts",
+    ),
+) -> None:
+    """Evaluate a frozen PPO policy under five LiDAR conditions."""
+    import hashlib
+
+    from adaptive_rl.algorithms.registry import load_algorithm_from_pretrained
+    from adaptive_rl.benchmarking.lidar_benchmark import (
+        export_lidar_benchmark,
+        run_lidar_benchmark,
+    )
+
+    if not model.is_file():
+        console.print(f"[red]Model file not found: {model}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        experiment = load_config(config)
+        if experiment.environment.name not in ("drone", "drone_3d"):
+            raise ValueError("The LiDAR benchmark requires the 3D drone environment.")
+
+        environment_options = dict(experiment.environment.parameters)
+        environment_options.setdefault("max_steps", experiment.environment.max_steps)
+
+        algorithm = load_algorithm_from_pretrained(model, algorithm_name="ppo")
+
+        result = run_lidar_benchmark(
+            algorithm,
+            num_episodes=episodes,
+            base_seed=seed,
+            env_kwargs=environment_options,
+        )
+        result["metadata"]["model"] = str(model)
+        result["metadata"]["model_sha256"] = hashlib.sha256(model.read_bytes()).hexdigest()
+        result["metadata"]["config"] = str(config)
+
+        paths = export_lidar_benchmark(result, output_dir=str(output_dir))
+    except Exception as error:
+        console.print(f"[red]LiDAR benchmark failed: {error}[/red]")
+        raise typer.Exit(code=1) from error
+
+    table = Table(title="LiDAR Robustness Results")
+    table.add_column("Condition")
+    table.add_column("Success", justify="right")
+    table.add_column("Collision", justify="right")
+    table.add_column("Timeout", justify="right")
+
+    for row in result["conditions"]:
+
+        def rate(value: float | None) -> str:
+            return "N/A" if value is None else f"{value:.1%}"
+
+        table.add_row(
+            row["condition"],
+            rate(row["success_rate"]),
+            rate(row["collision_rate"]),
+            rate(row["timeout_rate"]),
+        )
+
+    console.print(table)
+    for kind, location in paths.items():
+        console.print(f"{kind}: {location}")
+
+
 if __name__ == "__main__":
     app()
