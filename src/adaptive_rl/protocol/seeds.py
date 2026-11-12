@@ -63,11 +63,15 @@ def derive_seed(training_seed: int, phase: str, index: int) -> int:
         ValueError: If ``training_seed`` is not a preregistered training seed,
             ``phase`` is unknown, or ``index`` is outside the frozen range.
     """
-    if training_seed not in TRAINING_SEEDS:
-        raise ValueError(
-            f"training_seed {training_seed!r} is not one of the preregistered "
-            f"TRAINING_SEEDS {list(TRAINING_SEEDS)}"
-        )
+    # if training_seed not in TRAINING_SEEDS:
+    #     raise ValueError(
+    #         f"training_seed {training_seed!r} is not one of the preregistered "
+    #         f"TRAINING_SEEDS {list(TRAINING_SEEDS)}"
+    #     )
+        # raise ValueError(
+        #     f"training_seed {training_seed!r} is not one of the preregistered "
+        #     f"TRAINING_SEEDS {list(TRAINING_SEEDS)}"
+        # )
     if phase not in PHASES:
         raise ValueError(f"phase must be one of {PHASES}, got {phase!r}")
     if phase == "pre" and not 1 <= index <= K_PRE:

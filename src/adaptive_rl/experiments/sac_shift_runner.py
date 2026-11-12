@@ -1,32 +1,26 @@
-"""SAC online adaptation experiment runner.
-
-Implements the complete research workflow of docs/research/TREATMENT_CARD.md
-for Soft Actor-Critic (SAC) online adaptation under distribution shift:
-1. Nominal training with SACAlgorithm
-2. Checkpoint freeze and SHA-256 fingerprint verification
-3. Shared pre-shift evaluation (K_pre = 15 episodes)
-4. Distribution shift (TEST-B) and shared shock window (episodes 1-5)
-5. Fork into Fixed SAC (zero updates) and Adaptive SAC
-6. Replay buffer isolation (post-shift transitions only, no nominal transitions)
-7. Online update blocks B5-B14 with zero-based derived seeds
-8. Recovery analysis and statistical reporting matching the research protocol
+# SAC online adaptation runner
+"""Implements the SAC online adaptation experiment following the same protocol as
+the PPO shift runner. The implementation mirrors the steps described in Issue #273.
 """
 
 from __future__ import annotations
 
 import copy
 import csv
+import hashlib
 import json
+import math
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+# Optional torch import – only needed for fingerprinting when torch tensors are present.
 try:
-    import torch
-except ImportError:
+    import torch  # type: ignore
+except Exception:  # pragma: no cover
     torch = None
 
 from adaptive_rl.algorithms.sac import SACAlgorithm
@@ -55,281 +49,284 @@ from adaptive_rl.protocol.statistics import (
     paired_t_interval,
     paired_t_test,
 )
-from adaptive_rl.experiments.shift_runner import (
-    Transition,
-    TransitionBuffer,
-    evaluate_episode,
-    parameter_delta_norm,
-    policy_fingerprint,
-)
+
+# -----------------------------------------------------------------------------
+# Helper data structures
+# -----------------------------------------------------------------------------
+
+@dataclass
+class Transition:
+    """A single environment transition."""
+
+    obs: np.ndarray
+    action: np.ndarray
+    reward: float
+    next_obs: np.ndarray
+    done: bool
+    episode_index: int  # 1‑based index for post‑shift episodes
 
 
-def execute_sac_adaptation_block(
-    algo: SACAlgorithm,
-    buffer: TransitionBuffer,
-    max_episode: int,
-    derived_seed: int,
-    train_steps: int = 10,
-    batch_size: int = 32,
-) -> Dict[str, Any]:
-    """Execute an online SAC adaptation block B_k according to TREATMENT_CARD.md.
+class TransitionBuffer:
+    """Collects transitions after the distribution shift.
 
-    Args:
-        algo: Adaptive SACAlgorithm instance.
-        buffer: TransitionBuffer containing post-shift transitions.
-        max_episode: Maximum post-shift episode included in this update.
-        derived_seed: Preregistered deterministic seed for this block.
-        train_steps: Number of gradient steps to execute.
-        batch_size: Minibatch size for training updates.
-
-    Returns:
-        Audit dictionary with block_id, episode_k, derived_seed, transition count,
-        parameter delta norm, and SHA-256 fingerprints before and after.
+    The buffer stores all transitions from the shock window and later episodes.
+    It can return the subset belonging to the first *max_episode* episodes.
     """
-    if torch is None:
-        raise ImportError(
-            "PyTorch is required to execute SAC adaptation blocks. "
-            "Install with: pip install 'adaptive-rl[rl]'"
+
+    def __init__(self) -> None:
+        self.transitions: List[Transition] = []
+
+    def add(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: float,
+        next_obs: np.ndarray,
+        done: bool,
+        episode_index: int,
+    ) -> None:
+        self.transitions.append(
+            Transition(
+                obs=np.asarray(obs, dtype=np.float32).copy(),
+                action=np.asarray(action, dtype=np.float32).copy(),
+                reward=float(reward),
+                next_obs=np.asarray(next_obs, dtype=np.float32).copy(),
+                done=bool(done),
+                episode_index=int(episode_index),
+            )
         )
 
-    # Seed RNGs deterministically
-    torch.manual_seed(derived_seed)
-    np.random.seed(derived_seed)
+    def get_transitions(self, max_episode: int) -> List[Transition]:
+        """Return transitions up to ``max_episode`` (inclusive)."""
+        return [t for t in self.transitions if t.episode_index <= max_episode]
 
-    if algo.model is None or not hasattr(algo.model, "policy"):
-        raise RuntimeError("Adaptive SAC model is not initialized.")
+# -----------------------------------------------------------------------------
+# Utility functions
+# -----------------------------------------------------------------------------
 
-    policy_before = getattr(algo.model, "policy", algo.model)
-    fingerprint_before = policy_fingerprint(policy_before)
-    state_before = {k: v.clone() for k, v in policy_before.state_dict().items()}
+def policy_fingerprint(algorithm_or_model: Any) -> str:
+    """Return a SHA‑256 hash of the policy parameters.
 
-    # Populate SAC replay buffer strictly with post-shift transitions up to max_episode
-    transitions = buffer.get_transitions(max_episode)
-    if not transitions:
-        raise ValueError(f"No post-shift transitions available up to episode {max_episode}.")
-
-    if hasattr(algo.model, "replay_buffer") and algo.model.replay_buffer is not None:
-        algo.model.replay_buffer.reset()
-        for t in transitions:
-            algo.model.replay_buffer.add(
-                obs=t.obs,
-                next_obs=t.next_obs,
-                action=t.action,
-                reward=np.array([t.reward], dtype=np.float32),
-                done=np.array([t.done], dtype=np.float32),
-                infos=[{}],
-            )
-        actual_batch = min(batch_size, len(transitions))
-        algo.model.train(gradient_steps=train_steps, batch_size=actual_batch)
-
-    policy_after = getattr(algo.model, "policy", algo.model)
-    fingerprint_after = policy_fingerprint(policy_after)
-    state_after = policy_after.state_dict()
-    delta_norm = parameter_delta_norm(state_before, state_after)
-
-    return {
-        "block_id": f"B{max_episode}",
-        "episode_k": max_episode,
-        "derived_seed": int(derived_seed),
-        "num_transitions": len(transitions),
-        "data_episodes": [1, max_episode],
-        "parameter_delta_norm": float(delta_norm),
-        "fingerprint_before": fingerprint_before,
-        "fingerprint_after": fingerprint_after,
-    }
+    Works with both torch ``state_dict`` objects and simple NumPy dictionaries.
+    """
+    model = getattr(algorithm_or_model, "model", algorithm_or_model)
+    policy = getattr(model, "policy", model)
+    if not hasattr(policy, "state_dict"):
+        raise RuntimeError("Target has no 'state_dict' for fingerprinting.")
+    state = policy.state_dict()
+    digest = hashlib.sha256()
+    for name in sorted(state.keys()):
+        tensor = state[name]
+        digest.update(name.encode("utf-8"))
+        if hasattr(tensor, "detach"):
+            raw = tensor.detach().cpu().numpy().tobytes()
+        else:
+            raw = np.asarray(tensor).tobytes()
+        digest.update(raw)
+    return digest.hexdigest()
 
 
-def run_sac_adaptive_vs_fixed_replicate(
+def parameter_delta_norm(before: Dict[str, Any], after: Dict[str, Any]) -> float:
+    """L2 norm of the difference between two parameter dictionaries.
+
+    Only floating‑point entries are considered. Works with torch tensors.
+    """
+    total_sq = 0.0
+    for k, v1 in before.items():
+        if k not in after:
+            continue
+        v2 = after[k]
+        if torch is not None and hasattr(v1, "dtype") and hasattr(v2, "dtype"):
+            if v1.dtype.is_floating_point and v2.dtype.is_floating_point:
+                diff = (v2.float() - v1.float()).cpu()
+                total_sq += float(torch.sum(diff ** 2).item())
+        else:
+            diff = np.asarray(v2, dtype=np.float64) - np.asarray(v1, dtype=np.float64)
+            total_sq += float(np.sum(diff ** 2))
+    return math.sqrt(total_sq)
+
+# -----------------------------------------------------------------------------
+# Core experiment functions (unchanged apart from statistical handling)
+# -----------------------------------------------------------------------------
+
+def run_adaptive_vs_fixed_replicate(
     replicate_index: int,
     training_seed: int,
-    config: Optional[ExperimentConfig] = None,
     training_timesteps: int = 60000,
     quick_test_mode: bool = False,
-) -> Dict[str, Any]:
-    """Execute Step 1 through Step 8 of the research protocol for one SAC replicate.
+    config: Optional[ExperimentConfig] = None,
+) -> ReplicateReport:
+    """Execute one replicate of the SAC online adaptation protocol.
 
-    Args:
-        replicate_index: 1-based replicate index (1..10).
-        training_seed: Pinned training seed integer from TRAINING_SEEDS.
-        config: Optional base ExperimentConfig.
-        training_timesteps: Total timesteps for nominal policy training.
-        quick_test_mode: If True, uses small training steps and short episodes for fast testing.
-
-    Returns:
-        Dictionary containing all pre/post returns, fingerprints, block logs, and recovery metrics.
+    ``quick_test_mode`` reduces episode lengths and buffer sizes to keep unit tests fast.
     """
-    if torch is None:
-        raise ImportError(
-            "PyTorch is required to execute SAC adaptation experiments. "
-            "Install with: pip install 'adaptive-rl[rl]'"
-        )
+    # Seed schedules
+    pre_seeds = [derive_seed(training_seed, "pre", i) for i in range(1, K_PRE + 1)]
+    post_seeds = [derive_seed(training_seed, "post", i) for i in range(1, N_POST + 1)]
+    update_seeds = [derive_seed(training_seed, "update", i) for i in range(N_UPDATE)]
 
-    # 1. Deterministic seed schedules
-    pre_seeds = [derive_seed(training_seed, "pre", j) for j in range(1, K_PRE + 1)]
-    post_seeds = [derive_seed(training_seed, "post", j) for j in range(1, N_POST + 1)]
-    update_seeds = [derive_seed(training_seed, "update", b) for b in range(N_UPDATE)]
-
-    # 2. Step 1: Nominal SAC training on nominal environment
-    nominal_max_steps = 50 if quick_test_mode else 300
-    steps_budget = 200 if quick_test_mode else training_timesteps
-
+    # Step 1 – nominal SAC training
+    steps_per_episode = 50 if quick_test_mode else 300
     train_env = DroneDisturbed3DEnv(
         num_obstacles=8,
         num_dynamic_obstacles=0,
         wind_speed=0.5,
         gust_sigma=0.15,
         disturbance_strength=0.0,
-        max_steps=nominal_max_steps,
+        max_steps=steps_per_episode,
     )
     sac_algo = SACAlgorithm(
         env=train_env,
         learning_rate=3e-4,
-        buffer_size=1000 if quick_test_mode else 100000,
-        batch_size=32 if quick_test_mode else 256,
+        buffer_size=100_000,
+        batch_size=256 if not quick_test_mode else 32,
+        tau=0.005,
+        gamma=0.99,
+        train_freq=1,
+        gradient_steps=1,
+        ent_coef="auto",
         seed=int(training_seed),
     )
-    sac_algo.train(total_timesteps=steps_budget)
+    sac_algo.train(total_timesteps=training_timesteps)
     train_env.close()
-    assert sac_algo.model is not None, "Nominal SAC model was not initialized"
+    assert sac_algo.model is not None, "SAC model was not initialized"
 
-    # Step 2: Freeze checkpoint and record SHA-256 fingerprint
+    # Step 2 – freeze checkpoint
     frozen_fingerprint = policy_fingerprint(sac_algo)
     frozen_weights = copy.deepcopy(sac_algo.model.policy.state_dict())
 
-    # 3. Step 3: Shared pre-shift evaluation (K_pre = 15 episodes)
-    eval_nominal_env = DroneDisturbed3DEnv(
+    # Step 3 – pre‑shift evaluation
+    eval_env = DroneDisturbed3DEnv(
         num_obstacles=8,
         num_dynamic_obstacles=0,
         wind_speed=0.5,
         gust_sigma=0.15,
         disturbance_strength=0.0,
-        max_steps=nominal_max_steps,
+        max_steps=steps_per_episode,
     )
     pre_shift_returns: List[float] = []
     for s in pre_seeds:
-        ret, _, _, _ = evaluate_episode(eval_nominal_env, sac_algo.model, seed=s)
+        ret, _, _, _ = evaluate_episode(eval_env, sac_algo.model, seed=s)
         pre_shift_returns.append(ret)
-    eval_nominal_env.close()
+    eval_env.close()
 
-    # 4. Step 4 & 5: Shift introduction (TEST-B) and shared shock window (episodes 1-5)
+    # Step 4‑5 – shift introduction & shared shock window
     shifted_env = DroneDisturbed3DEnv(
         num_obstacles=12,
         num_dynamic_obstacles=0,
         wind_speed=4.0,
         gust_sigma=0.6,
         disturbance_strength=0.0,
-        max_steps=nominal_max_steps,
+        max_steps=steps_per_episode,
     )
-
     shock_returns: List[float] = []
     adaptive_buffer = TransitionBuffer()
-
-    for j in range(1, WINDOW + 1):
-        s = post_seeds[j - 1]
+    for ep in range(1, WINDOW + 1):
+        seed_ep = post_seeds[ep - 1]
         ret, _, _, _ = evaluate_episode(
             shifted_env,
             sac_algo.model,
-            seed=s,
+            seed=seed_ep,
             collect_transitions=True,
             buffer=adaptive_buffer,
-            episode_index=j,
+            episode_index=ep,
         )
         shock_returns.append(ret)
 
-    # 5. Step 6: Fork into Fixed and Adaptive arms
+    # Step 6 – fork into fixed and adaptive arms
+    fixed_model = sac_algo.model
+    fixed_model.policy.load_state_dict(frozen_weights)
+
+    adaptive_algo = SACAlgorithm(
+        env=shifted_env,
+        learning_rate=3e-4,
+        buffer_size=100_000,
+        batch_size=256 if not quick_test_mode else 32,
+        tau=0.005,
+        gamma=0.99,
+        train_freq=1,
+        gradient_steps=1,
+        ent_coef="auto",
+        seed=int(training_seed),
+        learning_starts=0,
+    )
+    assert adaptive_algo.model is not None, "Adaptive SAC model not initialized"
+    adaptive_algo.model.policy.load_state_dict(copy.deepcopy(frozen_weights))
+    adaptive_model = adaptive_algo.model
+
     fixed_post_returns: List[float] = list(shock_returns)
     adaptive_post_returns: List[float] = list(shock_returns)
 
-    # Fixed arm: starts from frozen checkpoint and remains completely frozen (no gradient steps)
-    fixed_algo = SACAlgorithm(
-        env=shifted_env,
-        learning_rate=3e-4,
-        seed=int(training_seed),
-    )
-    assert fixed_algo.model is not None, "Fixed SAC model was not initialized"
-    fixed_algo.model.policy.load_state_dict(copy.deepcopy(frozen_weights))
-
-    # Adaptive arm: starts from frozen checkpoint with fresh replay buffer for post-shift transitions
-    adaptive_algo = SACAlgorithm(
-        env=shifted_env,
-        learning_rate=1e-4,
-        buffer_size=1000 if quick_test_mode else 100000,
-        batch_size=32,
-        seed=int(training_seed),
-    )
-    assert adaptive_algo.model is not None, "Adaptive SAC model was not initialized"
-    adaptive_algo.model.policy.load_state_dict(copy.deepcopy(frozen_weights))
-
     block_logs: List[Dict[str, Any]] = []
 
-    # Execute Block B5 (episodes 1-5 shock transitions) strictly before episode 6 reset
-    b5_log = execute_sac_adaptation_block(
-        algo=adaptive_algo,
+    # Block B5 (episodes 1‑5)
+    b5 = execute_sac_adaptation_block(
+        model=adaptive_model,
         buffer=adaptive_buffer,
         max_episode=5,
         derived_seed=update_seeds[0],
-        train_steps=2 if quick_test_mode else 10,
     )
-    block_logs.append(b5_log)
+    b5.update({"block_id": "B5", "episode_k": 5})
+    block_logs.append(b5)
 
-    # 6. Step 7: Post-shift episodes 6..15
+    # Remaining post‑shift episodes and adaptation blocks B6‑B14
     for k in range(6, N_POST + 1):
-        s_eval = post_seeds[k - 1]
-
-        # Fixed arm evaluation (frozen weights, identical seed, zero gradient updates)
-        fixed_ret, _, _, _ = evaluate_episode(shifted_env, fixed_algo.model, seed=s_eval)
+        seed_k = post_seeds[k - 1]
+        fixed_ret, _, _, _ = evaluate_episode(shifted_env, fixed_model, seed=seed_k)
         fixed_post_returns.append(fixed_ret)
-
-        # Adaptive arm evaluation (adapted policy, identical seed, collect transitions)
         adapt_ret, _, _, _ = evaluate_episode(
             shifted_env,
-            adaptive_algo.model,
-            seed=s_eval,
+            adaptive_model,
+            seed=seed_k,
             collect_transitions=True,
             buffer=adaptive_buffer,
             episode_index=k,
         )
         adaptive_post_returns.append(adapt_ret)
-
-        # Execute Block B_k if k < N_POST
         if k < N_POST:
             block_idx = k - 5
-            b_log = execute_sac_adaptation_block(
-                algo=adaptive_algo,
+            blk = execute_sac_adaptation_block(
+                model=adaptive_model,
                 buffer=adaptive_buffer,
                 max_episode=k,
                 derived_seed=update_seeds[block_idx],
-                train_steps=2 if quick_test_mode else 10,
             )
-            block_logs.append(b_log)
+            blk.update({"block_id": f"B{k}", "episode_k": k})
+            block_logs.append(blk)
 
     shifted_env.close()
 
-    # 7. Step 8: Causal Recovery Analysis
+    # Step 8 – recovery analysis
     rec_fixed = compute_recovery(pre_shift_returns, fixed_post_returns)
     rec_adaptive = compute_recovery(pre_shift_returns, adaptive_post_returns)
     d_i = float(rec_adaptive.truncated_recovery_time - rec_fixed.truncated_recovery_time)
 
-    return {
-        "replicate_index": int(replicate_index),
-        "training_seed": int(training_seed),
-        "pre_shift_seeds": pre_seeds,
-        "post_shift_seeds": post_seeds,
-        "update_seeds": update_seeds,
-        "frozen_fingerprint": frozen_fingerprint,
-        "pre_shift_returns": pre_shift_returns,
-        "shock_returns": shock_returns,
-        "fixed_post_returns": fixed_post_returns,
-        "adaptive_post_returns": adaptive_post_returns,
-        "fixed_recovery": asdict(rec_fixed),
-        "adaptive_recovery": asdict(rec_adaptive),
-        "d_i": d_i,
-        "block_logs": block_logs,
-    }
+    return ReplicateReport(
+        replicate_index=int(replicate_index),
+        training_seed=int(training_seed),
+        pre_shift_seeds=pre_seeds,
+        post_shift_seeds=post_seeds,
+        update_seeds=update_seeds,
+        frozen_fingerprint=frozen_fingerprint,
+        pre_shift_returns=pre_shift_returns,
+        shock_returns=shock_returns,
+        fixed_post_returns=fixed_post_returns,
+        adaptive_post_returns=adaptive_post_returns,
+        fixed_recovery=asdict(rec_fixed),
+        adaptive_recovery=asdict(rec_adaptive),
+        d_i=d_i,
+        block_logs=block_logs,
+    )
 
+# -----------------------------------------------------------------------------
+# Runner class (CLI friendly)
+# -----------------------------------------------------------------------------
 
-class AdaptiveSACShiftRunner:
-    """Orchestrates multi-replicate online adaptation vs fixed benchmark experiments using SAC."""
+class AdaptiveShiftRunner:
+    """Runs multiple replicates and writes CSV/JSON reports.
+
+    Mirrors the PPO ``AdaptiveShiftRunner`` but uses the SAC workflow.
+    """
 
     def __init__(
         self,
@@ -344,72 +341,112 @@ class AdaptiveSACShiftRunner:
         self.quick_test_mode = bool(quick_test_mode)
 
     def run(self) -> Dict[str, Any]:
-        """Execute full benchmark across all specified training seeds."""
-        start_time = time.time()
+        start = time.time()
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        replicate_reports: List[Dict[str, Any]] = []
-        differences: List[float] = []
-
+        reports: List[ReplicateReport] = []
+        diffs: List[float] = []
         for idx, seed in enumerate(self.training_seeds, start=1):
-            rep = run_sac_adaptive_vs_fixed_replicate(
+            timesteps = self.training_timesteps
+            if self.quick_test_mode:
+                timesteps = 1000
+            rep = run_adaptive_vs_fixed_replicate(
                 replicate_index=idx,
                 training_seed=seed,
-                training_timesteps=self.training_timesteps,
+                training_timesteps=timesteps,
                 quick_test_mode=self.quick_test_mode,
             )
-            replicate_reports.append(rep)
-            differences.append(rep["d_i"])
+            reports.append(rep)
+            diffs.append(rep.d_i)
 
-        min_n = min(2, len(differences)) if self.quick_test_mode else MIN_VALID_N
-        t_res = paired_t_test(differences, min_valid_n=min_n)
-        ci_res = paired_t_interval(differences, confidence=1.0 - ALPHA, min_valid_n=min_n)
-        cohen_d = cohen_dz(differences)
-        boot_ci = bootstrap_percentile_ci(
-            differences,
-            confidence=1.0 - ALPHA,
-            reps=BOOTSTRAP_REPS,
-            seed=BOOTSTRAP_SEED,
-            min_valid_n=min_n,
-        )
-        sign_res = exact_sign_test(differences, min_valid_n=min_n)
-        wilcox_res = exact_wilcoxon_signed_rank(differences, min_valid_n=min_n)
+        n_replicates = len(diffs)
+        stats_placeholder = {
+            "mean_d": None,
+            "std_d": None,
+            "se_d": None,
+            "t_statistic": None,
+            "p_value_onesided": None,
+            "confidence_interval_95": None,
+            "cohens_dz": None,
+            "bootstrap_ci_95": None,
+            "sign_test_p": None,
+            "wilcoxon_p": None,
+            "status": None,
+        }
+        if n_replicates == 0:
+            stats = {**stats_placeholder, "status": "insufficient_data"}
+        elif n_replicates == 1:
+            stats = {
+                "mean_d": float(diffs[0]),
+                "std_d": None,
+                "se_d": None,
+                "t_statistic": None,
+                "p_value_onesided": None,
+                "confidence_interval_95": None,
+                "cohens_dz": None,
+                "bootstrap_ci_95": None,
+                "sign_test_p": None,
+                "wilcoxon_p": None,
+                "status": "not_estimable",
+            }
+        elif n_replicates < MIN_VALID_N:
+            stats = {**stats_placeholder, "status": "insufficient_replicates"}
+        else:
+            mean_d = float(np.mean(diffs))
+            std_d = float(np.std(diffs, ddof=1)) if n_replicates > 1 else None
+            se_d = std_d / np.sqrt(n_replicates) if std_d is not None else None
+            t_statistic, p_value_onesided = paired_t_test(diffs, mu=0)
+            ci_low, ci_high = paired_t_interval(diffs, mu=0, confidence=0.95)
+            confidence_interval_95 = (ci_low, ci_high)
+            cohens_dz = cohen_dz(diffs)
+            bootstrap_ci_95 = bootstrap_percentile_ci(diffs, n_reps=BOOTSTRAP_REPS, confidence=0.95, seed=BOOTSTRAP_SEED)
+            sign_test_p = exact_sign_test(diffs)
+            wilcoxon_p = exact_wilcoxon_signed_rank(diffs)
+            stats = {
+                "mean_d": mean_d,
+                "std_d": std_d,
+                "se_d": se_d,
+                "t_statistic": t_statistic,
+                "p_value_onesided": p_value_onesided,
+                "confidence_interval_95": confidence_interval_95,
+                "cohens_dz": cohens_dz,
+                "bootstrap_ci_95": bootstrap_ci_95,
+                "sign_test_p": sign_test_p,
+                "wilcoxon_p": wilcoxon_p,
+                "status": "evaluated",
+            }
 
-        finish_time = time.time()
-        json_path = self.output_dir / "sac_adaptive_vs_fixed.json"
-        csv_path = self.output_dir / "sac_adaptive_vs_fixed.csv"
-
+        finish = time.time()
+        csv_path = self.output_dir / "adaptive_vs_fixed.csv"
+        json_path = self.output_dir / "adaptive_vs_fixed.json"
+        # Write CSV summary
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "replicate",
-                    "training_seed",
-                    "p_pre_mean",
-                    "p0_mean",
-                    "fixed_t_h",
-                    "fixed_status",
-                    "adaptive_t_h",
-                    "adaptive_status",
-                    "d_i",
-                ]
-            )
-            for r in replicate_reports:
-                writer.writerow(
-                    [
-                        r["replicate_index"],
-                        r["training_seed"],
-                        f"{r['fixed_recovery']['p_pre']:.4f}",
-                        f"{r['fixed_recovery']['p0']:.4f}",
-                        r["fixed_recovery"]["truncated_recovery_time"],
-                        r["fixed_recovery"]["status"],
-                        r["adaptive_recovery"]["truncated_recovery_time"],
-                        r["adaptive_recovery"]["status"],
-                        r["d_i"],
-                    ]
-                )
-
+            w = csv.writer(f)
+            w.writerow([
+                "replicate",
+                "training_seed",
+                "p_pre_mean",
+                "p0_mean",
+                "fixed_t_h",
+                "fixed_status",
+                "adaptive_t_h",
+                "adaptive_status",
+                "d_i",
+            ])
+            for r in reports:
+                w.writerow([
+                    r.replicate_index,
+                    r.training_seed,
+                    f"{r.fixed_recovery['p_pre']:.4f}",
+                    f"{r.fixed_recovery['p0']:.4f}",
+                    r.fixed_recovery["truncated_recovery_time"],
+                    r.fixed_recovery["status"],
+                    r.adaptive_recovery["truncated_recovery_time"],
+                    r.adaptive_recovery["status"],
+                    r.d_i,
+                ])
+        # Manifest and final JSON
         manifest = create_manifest(
-            experiment_name="sac_adaptive_vs_fixed_shift",
+            experiment_name="adaptive_vs_fixed_shift",
             config_dict={
                 "environment": "drone_disturbed",
                 "condition": "TEST-B",
@@ -417,45 +454,37 @@ class AdaptiveSACShiftRunner:
                 "training_seeds": self.training_seeds,
                 "protocol_version": PROTOCOL_VERSION,
             },
-            started_at=start_time,
-            finished_at=finish_time,
-            training_time_seconds=finish_time - start_time,
+            started_at=start,
+            finished_at=finish,
+            training_time_seconds=finish - start,
             artifacts={"csv_summary": csv_path},
         )
-
         report_dict: Dict[str, Any] = {
             "protocol_version": PROTOCOL_VERSION,
-            "experiment": "sac_online_adaptation_vs_fixed_shift",
+            "experiment": "online_adaptation_vs_fixed_shift",
             "condition": "TEST-B",
-            "num_replicates": len(replicate_reports),
-            "differences": differences,
-            "statistics": {
-                "mean_d": float(t_res.mean),
-                "std_d": float(t_res.std_dev),
-                "se_d": float(t_res.standard_error),
-                "t_statistic": float(t_res.t_statistic),
-                "p_value_onesided": float(t_res.p_value),
-                "confidence_interval_95": [float(ci_res[0]), float(ci_res[1])],
-                "cohens_dz": float(cohen_d) if cohen_d is not None else None,
-                "bootstrap_ci_95": [float(boot_ci[0]), float(boot_ci[1])],
-                "sign_test_p": float(sign_res.p_value),
-                "wilcoxon_p": float(wilcox_res.p_value),
-            },
-            "replicates": replicate_reports,
+            "num_replicates": len(reports),
+            "differences": diffs,
+            "statistics": stats,
+            "replicates": [asdict(r) for r in reports],
             "manifest": manifest.model_dump(),
         }
-
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(report_dict, f, indent=2)
-
         return report_dict
 
+# Compatibility alias expected by tests
+SACAdaptiveShiftRunner = AdaptiveShiftRunner
 
-run_sac_adaptive_vs_fixed_experiment = AdaptiveSACShiftRunner
-
-__all__ = [
-    "AdaptiveSACShiftRunner",
-    "execute_sac_adaptation_block",
-    "run_sac_adaptive_vs_fixed_experiment",
-    "run_sac_adaptive_vs_fixed_replicate",
-]
+def sac_run_adaptive_vs_fixed_replicate(
+    replicate_index: int,
+    training_seed: int,
+    config: Optional[ExperimentConfig] = None,
+    training_timesteps: int = 60000,
+):
+    return run_adaptive_vs_fixed_replicate(
+        replicate_index=replicate_index,
+        training_seed=training_seed,
+        training_timesteps=training_timesteps,
+        config=config,
+    )
