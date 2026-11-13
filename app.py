@@ -7,16 +7,19 @@ random baseline comparison, obstacle-density experiments, and system architectur
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import numpy as np
 import streamlit as st
 from stable_baselines3 import PPO
 
 from adaptive_rl.algorithms.ppo import PPOAlgorithm
 from adaptive_rl.config import AlgorithmConfig, EnvironmentConfig, ExperimentConfig, TrainingConfig
 from adaptive_rl.environments.drone import DroneNavigation3DEnv
+from adaptive_rl.environments.drone_6dof import Drone6DOFEnv, quaternion_to_euler_angles
 from adaptive_rl.evaluation.evaluator import (
     Evaluator,
     evaluate_ppo_policy,
@@ -68,15 +71,30 @@ def main() -> None:
     # TAB 1: LIVE 3D DEMO
     # ==========================================
     with tabs[0]:
-        st.subheader("Live 3D Drone Navigation Simulation")
+        st.subheader("Interactive 3D Drone Simulation Playback")
         st.caption(
-            "Observe the drone navigate from its launch position toward the green target diamond "
-            "while avoiding spherical obstacles using continuous 3D acceleration actions."
+            "Observe the simulated drone navigate toward the target waypoint while avoiding spherical "
+            "obstacles in a 3D arena. Playback telemetry visualizes rigid-body dynamics, attitude, and LiDAR."
         )
 
-        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([2, 1, 1, 1])
+        st.info(
+            "ℹ️ **Simulation Playback Mode:** You are viewing recorded step playback from numerical "
+            "physics integration (RK4). This is an educational theoretical flight simulation, not "
+            "live hardware telemetry or real-time physical control.",
+            icon="ℹ️",
+        )
+
+        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([1.5, 2, 1, 1, 1])
 
         with ctrl_col1:
+            env_choice = st.selectbox(
+                "Dynamics Model:",
+                options=["6-DOF Quadrotor", "3-DOF Kinematic Drone"],
+                index=0,
+                help="Choose 6-DOF rigid-body dynamics (quaternion attitude & 4 rotors) or fast 3-DOF point-mass kinematics.",
+            )
+
+        with ctrl_col2:
             policy_options = ["Random Action Baseline"]
             if model_names:
                 policy_options = [f"Trained PPO: {m}" for m in model_names] + policy_options
@@ -85,10 +103,10 @@ def main() -> None:
                 "Select Policy:",
                 options=policy_options,
                 index=0,
-                help="Choose a trained PPO model checkpoint or test an untrained random baseline.",
+                help="Choose a trained model checkpoint or test an untrained random baseline.",
             )
 
-        with ctrl_col2:
+        with ctrl_col3:
             demo_seed = st.number_input(
                 "Environment Seed:",
                 min_value=0,
@@ -98,7 +116,7 @@ def main() -> None:
                 help="Locks procedural obstacle placement and target location for reproducible evaluation.",
             )
 
-        with ctrl_col3:
+        with ctrl_col4:
             num_obs = st.slider(
                 "Obstacles:",
                 min_value=0,
@@ -108,7 +126,7 @@ def main() -> None:
                 help="Number of procedural spherical obstacles generated in the arena.",
             )
 
-        with ctrl_col4:
+        with ctrl_col5:
             show_lidar_rays = st.checkbox("Show 16-Ray LiDAR", value=True)
 
         run_col1, _ = st.columns([1, 4])
@@ -117,9 +135,16 @@ def main() -> None:
                 "🚀 Run Flight Simulation", type="primary", use_container_width=True
             )
 
-        if launch_clicked or "flight_data" not in st.session_state:
-            with st.spinner("Executing simulation dynamics..."):
-                env = DroneNavigation3DEnv(num_obstacles=int(num_obs))
+        is_6dof = "6-DOF" in env_choice
+        sim_key = f"flight_data_{'6dof' if is_6dof else '3dof'}"
+
+        if launch_clicked or sim_key not in st.session_state:
+            with st.spinner(f"Executing {env_choice} simulation dynamics..."):
+                if is_6dof:
+                    env = Drone6DOFEnv(num_obstacles=int(num_obs))
+                else:
+                    env = DroneNavigation3DEnv(num_obstacles=int(num_obs))
+
                 model_to_use: Optional[PPO] = None
 
                 if selected_policy.startswith("Trained PPO:") and available_models:
@@ -127,18 +152,30 @@ def main() -> None:
                     matching = [p for p in available_models if p.name == raw_name]
                     if matching:
                         try:
-                            model_to_use = PPO.load(str(matching[0]))
+                            loaded_m = PPO.load(str(matching[0]))
+                            # Check observation space compatibility
+                            if (
+                                hasattr(loaded_m, "observation_space")
+                                and loaded_m.observation_space.shape != env.observation_space.shape
+                            ):
+                                st.warning(
+                                    f"Model '{raw_name}' expects observation shape "
+                                    f"{loaded_m.observation_space.shape}, but environment has "
+                                    f"{env.observation_space.shape}. Falling back to Random Baseline."
+                                )
+                            else:
+                                model_to_use = loaded_m
                         except Exception as exc:
                             st.warning(f"Could not load checkpoint ({exc}); using random actions.")
 
-                st.session_state["flight_data"] = run_drone_simulation_episode(
+                st.session_state[sim_key] = run_drone_simulation_episode(
                     env=env,
                     model=model_to_use,
                     seed=int(demo_seed),
                 )
                 env.close()
 
-        flight_data = st.session_state["flight_data"]
+        flight_data = st.session_state[sim_key]
         steps = flight_data["steps"]
         total_steps = len(steps) - 1
 
@@ -147,7 +184,7 @@ def main() -> None:
         st.markdown(
             f"""
             <div style="background-color: {outcome_color}22; border-left: 5px solid {outcome_color}; padding: 12px 16px; border-radius: 4px; margin-bottom: 12px;">
-                <h4 style="margin: 0; color: {outcome_color};">Flight Outcome: {flight_data["outcome"]}</h4>
+                <h4 style="margin: 0; color: {outcome_color};">Flight Outcome: {flight_data["outcome"]} ({env_choice})</h4>
                 <p style="margin: 4px 0 0 0; color: #cbd5e0; font-size: 14px;">
                     Completed in <b>{flight_data["total_steps"]}</b> timesteps with cumulative reward <b>{flight_data["total_reward"]:.2f}</b> (Seed: {flight_data["seed"]}).
                 </p>
@@ -165,13 +202,14 @@ def main() -> None:
                 max_value=total_steps,
                 value=total_steps,
                 step=1,
-                help="Scrub through flight time to inspect position, speed, and sensor range.",
+                help="Scrub through recorded flight time to inspect 3D drone attitude, position, speed, and sensor range.",
             )
 
         step_info = steps[selected_step]
         cur_pos = step_info["position"]
         cur_vel = step_info["velocity"]
         cur_lidar = step_info["lidar_ranges"]
+        cur_quat = step_info.get("quaternion")
 
         # Build Interactive 3D Plotly Arena
         fig = build_arena_3d_figure(
@@ -182,22 +220,42 @@ def main() -> None:
             trajectory=[s["position"] for s in steps[: selected_step + 1]],
             current_pos=cur_pos,
             current_vel=cur_vel,
+            attitude_quaternion=cur_quat,
             lidar_rays=flight_data["lidar_rays"],
             lidar_ranges=cur_lidar,
             show_lidar=show_lidar_rays,
-            title=f"3D Flight Arena — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
+            title=f"3D Flight Arena ({env_choice}) — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
         )
 
         st.plotly_chart(fig, use_container_width=True)
 
-        # Step Metrics Row
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
-        m1.metric("Altitude (Z)", f"{cur_pos[2]:.2f} m")
-        m2.metric("Ground Speed", f"{step_info['speed']:.2f} m/s")
-        m3.metric("Range to Goal", f"{step_info['distance_to_goal']:.2f} m")
-        m4.metric("Nearest Obstacle", f"{step_info['min_obstacle_distance']:.2f} m")
-        m5.metric("Step Reward", f"{step_info['reward']:+.2f}")
-        m6.metric("Cumulative Reward", f"{step_info['cumulative_reward']:+.2f}")
+        # Telemetry Metrics Rows
+        if cur_quat is not None and len(cur_quat) == 4:
+            roll_rad, pitch_rad, yaw_rad = quaternion_to_euler_angles(np.asarray(cur_quat))
+            roll_deg = math.degrees(roll_rad)
+            pitch_deg = math.degrees(pitch_rad)
+            yaw_deg = math.degrees(yaw_rad)
+        else:
+            roll_deg, pitch_deg, yaw_deg = 0.0, 0.0, 0.0
+
+        omega_mag = step_info.get("angular_speed", 0.0)
+
+        # Attitude & Velocity Telemetry
+        st.markdown("##### 📡 Flight Deck Telemetry")
+        t1, t2, t3, t4, t5, t6 = st.columns(6)
+        t1.metric("Altitude (Z)", f"{cur_pos[2]:.2f} m")
+        t2.metric("Linear Speed", f"{step_info['speed']:.2f} m/s")
+        t3.metric("Roll (φ)", f"{roll_deg:+.1f}°")
+        t4.metric("Pitch (θ)", f"{pitch_deg:+.1f}°")
+        t5.metric("Yaw (ψ)", f"{yaw_deg:+.1f}°")
+        t6.metric("Angular Speed", f"{omega_mag:.2f} rad/s")
+
+        # Navigation & Rewards Telemetry
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Range to Goal", f"{step_info['distance_to_goal']:.2f} m")
+        m2.metric("Nearest Obstacle", f"{step_info['min_obstacle_distance']:.2f} m")
+        m3.metric("Step Reward", f"{step_info['reward']:+.2f}")
+        m4.metric("Cumulative Reward", f"{step_info['cumulative_reward']:+.2f}")
 
     # ==========================================
     # TAB 2: TRAIN PPO

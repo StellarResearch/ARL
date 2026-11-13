@@ -1,5 +1,6 @@
 """Plotly-based 3D visual arena and sensor visualizer for AdaptiveRL."""
 
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -7,6 +8,100 @@ import numpy as np
 import plotly.graph_objects as go
 
 from adaptive_rl.environments.drone import ObstacleSphere3D
+from adaptive_rl.environments.drone_6dof import (
+    quaternion_to_rotation_matrix,
+)
+
+
+def compute_quadrotor_3d_geometry(
+    center_pos: np.ndarray | Sequence[float],
+    quaternion: Optional[np.ndarray | Sequence[float]] = None,
+    arm_span: float = 1.2,
+    rotor_radius: float = 0.28,
+    n_propeller_points: int = 16,
+) -> Dict[str, Any]:
+    """Compute 3D world-coordinate geometry for an X-configuration quadrotor.
+
+    Geometry components:
+    - Central body fuselage and forward heading nose pointer (+X_B direction)
+    - Front arms (connecting center to Rotor 1 [FR] and Rotor 2 [FL])
+    - Rear arms (connecting center to Rotor 3 [RL] and Rotor 4 [RR])
+    - 4 rotor hubs (R1: Front-Right, R2: Front-Left, R3: Rear-Left, R4: Rear-Right)
+    - 4 circular propeller blade paths
+
+    Transformation:
+      P_W = center_pos + R(q) @ P_B
+    """
+    c_pos = np.asarray(center_pos, dtype=np.float64)
+    if c_pos.shape != (3,):
+        raise ValueError(f"center_pos must have shape (3,), got {c_pos.shape}")
+    if not np.all(np.isfinite(c_pos)):
+        raise ValueError(f"center_pos must have finite coordinates, got {center_pos}")
+
+    if quaternion is not None:
+        q_arr = np.asarray(quaternion, dtype=np.float64)
+        if q_arr.shape != (4,):
+            raise ValueError(f"quaternion must have shape (4,), got {q_arr.shape}")
+        if not np.all(np.isfinite(q_arr)):
+            raise ValueError(f"quaternion must have finite coordinates, got {quaternion}")
+        rot_mat = quaternion_to_rotation_matrix(q_arr)
+    else:
+        rot_mat = np.eye(3, dtype=np.float64)
+
+    # Arm offset in local body frame (+X forward, +Y left, +Z up)
+    # Rotor 1: (+d, -d, 0) [Front-Right]
+    # Rotor 2: (+d, +d, 0) [Front-Left]
+    # Rotor 3: (-d, +d, 0) [Rear-Left]
+    # Rotor 4: (-d, -d, 0) [Rear-Right]
+    d = float(arm_span) / (2.0 * math.sqrt(2.0))
+
+    body_rotors = [
+        np.array([d, -d, 0.0], dtype=np.float64),  # R1 Front-Right
+        np.array([d, d, 0.0], dtype=np.float64),  # R2 Front-Left
+        np.array([-d, d, 0.0], dtype=np.float64),  # R3 Rear-Left
+        np.array([-d, -d, 0.0], dtype=np.float64),  # R4 Rear-Right
+    ]
+
+    # Transform rotors to world coordinates
+    world_rotors = [c_pos + rot_mat @ r_b for r_b in body_rotors]
+
+    # Forward heading indicator: nose pointer along +X_B
+    nose_body = np.array([d * 0.95, 0.0, 0.0], dtype=np.float64)
+    nose_world = c_pos + rot_mat @ nose_body
+
+    # Central fuselage ring / diamond in body frame
+    fuselage_pts_b = [
+        np.array([d * 0.35, 0.0, 0.0], dtype=np.float64),
+        np.array([0.0, d * 0.35, 0.0], dtype=np.float64),
+        np.array([-d * 0.35, 0.0, 0.0], dtype=np.float64),
+        np.array([0.0, -d * 0.35, 0.0], dtype=np.float64),
+        np.array([d * 0.35, 0.0, 0.0], dtype=np.float64),
+    ]
+    fuselage_pts_w = [c_pos + rot_mat @ p for p in fuselage_pts_b]
+
+    # Propeller rings in body frame (circles in XY plane at z = +0.03)
+    theta = np.linspace(0.0, 2.0 * math.pi, n_propeller_points)
+    propellers_w: List[np.ndarray] = []
+    for r_b in body_rotors:
+        ring_pts_b = np.column_stack(
+            [
+                r_b[0] + rotor_radius * np.cos(theta),
+                r_b[1] + rotor_radius * np.sin(theta),
+                np.full_like(theta, r_b[2] + 0.03),
+            ]
+        )
+        ring_pts_w = np.array([c_pos + rot_mat @ pt for pt in ring_pts_b])
+        propellers_w.append(ring_pts_w)
+
+    return {
+        "center": c_pos,
+        "rotors": world_rotors,
+        "nose": nose_world,
+        "fuselage": fuselage_pts_w,
+        "propellers": propellers_w,
+        "front_arms": (world_rotors[0], c_pos, world_rotors[1]),
+        "rear_arms": (world_rotors[2], c_pos, world_rotors[3]),
+    }
 
 
 def _generate_sphere_surface(
@@ -86,6 +181,8 @@ def build_arena_3d_figure(
     lidar_ranges: Optional[Sequence[float] | np.ndarray] = None,
     show_lidar: bool = True,
     title: str = "3D Drone Flight Arena",
+    arm_span: float = 1.2,
+    rotor_radius: float = 0.28,
 ) -> go.Figure:
     """Build an interactive 3D Plotly flight arena visualizer.
 
@@ -226,8 +323,121 @@ def build_arena_3d_figure(
             )
         )
 
-    # 7. Current Drone Position & Velocity
+    # 7. Current Drone Quadrotor Geometry, Attitude & Velocity
     if current_pos is not None:
+        geom = compute_quadrotor_3d_geometry(
+            current_pos,
+            quaternion=attitude_quaternion,
+            arm_span=arm_span,
+            rotor_radius=rotor_radius,
+        )
+
+        # Front Arms (connecting Center to R1 and R2 in X configuration)
+        fa = geom["front_arms"]
+        fig.add_trace(
+            go.Scatter3d(
+                x=[fa[0][0], fa[1][0], fa[2][0]],
+                y=[fa[0][1], fa[1][1], fa[2][1]],
+                z=[fa[0][2], fa[1][2], fa[2][2]],
+                mode="lines",
+                line=dict(color="#ef4444", width=6),
+                name="Front Arms",
+                hoverinfo="skip",
+            )
+        )
+
+        # Rear Arms (connecting Center to R3 and R4 in X configuration)
+        ra = geom["rear_arms"]
+        fig.add_trace(
+            go.Scatter3d(
+                x=[ra[0][0], ra[1][0], ra[2][0]],
+                y=[ra[0][1], ra[1][1], ra[2][1]],
+                z=[ra[0][2], ra[1][2], ra[2][2]],
+                mode="lines",
+                line=dict(color="#3b82f6", width=6),
+                name="Rear Arms",
+                hoverinfo="skip",
+            )
+        )
+
+        # Front Propellers (R1 and R2 circular blade paths)
+        p1, p2 = geom["propellers"][0], geom["propellers"][1]
+        fig.add_trace(
+            go.Scatter3d(
+                x=list(p1[:, 0]) + [None] + list(p2[:, 0]),
+                y=list(p1[:, 1]) + [None] + list(p2[:, 1]),
+                z=list(p1[:, 2]) + [None] + list(p2[:, 2]),
+                mode="lines",
+                line=dict(color="#f87171", width=3),
+                name="Front Propellers",
+                hoverinfo="skip",
+            )
+        )
+
+        # Rear Propellers (R3 and R4 circular blade paths)
+        p3, p4 = geom["propellers"][2], geom["propellers"][3]
+        fig.add_trace(
+            go.Scatter3d(
+                x=list(p3[:, 0]) + [None] + list(p4[:, 0]),
+                y=list(p3[:, 1]) + [None] + list(p4[:, 1]),
+                z=list(p3[:, 2]) + [None] + list(p4[:, 2]),
+                mode="lines",
+                line=dict(color="#60a5fa", width=3),
+                name="Rear Propellers",
+                hoverinfo="skip",
+            )
+        )
+
+        # 4 Rotor Hub Assemblies
+        rotors = geom["rotors"]
+        fig.add_trace(
+            go.Scatter3d(
+                x=[r[0] for r in rotors],
+                y=[r[1] for r in rotors],
+                z=[r[2] for r in rotors],
+                mode="markers",
+                marker=dict(
+                    symbol="circle",
+                    size=6,
+                    color=["#ef4444", "#ef4444", "#3b82f6", "#3b82f6"],
+                ),
+                name="Rotor Assemblies",
+                hoverinfo="text",
+                text=["R1 (Front-Right)", "R2 (Front-Left)", "R3 (Rear-Left)", "R4 (Rear-Right)"],
+            )
+        )
+
+        # Forward Heading Nose Pointer (+X_B)
+        c_pt = geom["center"]
+        n_pt = geom["nose"]
+        fig.add_trace(
+            go.Scatter3d(
+                x=[c_pt[0], n_pt[0]],
+                y=[c_pt[1], n_pt[1]],
+                z=[c_pt[2], n_pt[2]],
+                mode="lines+markers",
+                line=dict(color="#fbbf24", width=5),
+                marker=dict(size=[0, 6], color="#fbbf24"),
+                name="Forward Heading (+X_B)",
+                hoverinfo="text",
+                text=["Center", "Forward Heading (+X_B)"],
+            )
+        )
+
+        # Central Body Fuselage & Center Marker
+        fuse = geom["fuselage"]
+        fig.add_trace(
+            go.Scatter3d(
+                x=[p[0] for p in fuse],
+                y=[p[1] for p in fuse],
+                z=[p[2] for p in fuse],
+                mode="lines",
+                line=dict(color="#cbd5e0", width=3),
+                name="Fuselage",
+                hoverinfo="skip",
+            )
+        )
+
         fig.add_trace(
             go.Scatter3d(
                 x=[current_pos[0]],
@@ -235,7 +445,7 @@ def build_arena_3d_figure(
                 z=[current_pos[2]],
                 mode="markers+text",
                 marker=dict(
-                    symbol="cross",
+                    symbol="diamond",
                     size=10,
                     color="#ed8936",
                     line=dict(color="#ffffff", width=2),
@@ -391,22 +601,36 @@ def run_drone_simulation_episode(
     truncated = False
     step_count = 0
 
+    num_rays = int(getattr(env, "num_lidar_rays", 16))
+    lidar_range = float(getattr(env, "lidar_range", 20.0))
+    act_shape = env.action_space.shape if hasattr(env, "action_space") else (3,)
+
+    raw_lidar_init = obs[-num_rays:] if len(obs) >= num_rays else np.zeros(num_rays)
+    lidar_ranges_init = (raw_lidar_init * lidar_range).copy()
+
     steps_data.append(
         {
             "step": 0,
             "position": info["position"].copy(),
             "velocity": info["velocity"].copy(),
             "speed": float(info.get("speed", 0.0)),
+            "angular_velocity": (
+                info["angular_velocity"].copy() if "angular_velocity" in info else None
+            ),
+            "angular_speed": float(info.get("angular_speed", 0.0)),
+            "altitude": float(info.get("altitude", info["position"][2])),
             "distance_to_goal": float(info.get("distance_to_goal", 0.0)),
             "min_obstacle_distance": float(info.get("min_obstacle_distance", 0.0)),
             "reward": 0.0,
             "cumulative_reward": 0.0,
-            "lidar_ranges": (obs[13 : 13 + env.num_lidar_rays] * env.lidar_range).copy(),
-            "action": np.zeros(3, dtype=np.float32),
+            "lidar_ranges": lidar_ranges_init,
+            "action": np.zeros(act_shape, dtype=np.float32),
             "collision": False,
+            "collision_type": "none",
             "is_success": False,
-            "quaternion": info.get("quaternion"),
+            "quaternion": info.get("quaternion").copy() if "quaternion" in info else None,
             "wind_vector": info.get("wind_vector"),
+            "reward_components": info.get("reward_components"),
         }
     )
 
@@ -424,8 +648,8 @@ def run_drone_simulation_episode(
         vel = info["velocity"].copy()
         trajectory.append(pos)
 
-        raw_lidar_norm = obs[13 : 13 + env.num_lidar_rays]
-        lidar_ranges = (raw_lidar_norm * env.lidar_range).copy()
+        raw_lidar_norm = obs[-num_rays:] if len(obs) >= num_rays else np.zeros(num_rays)
+        lidar_ranges = (raw_lidar_norm * lidar_range).copy()
 
         steps_data.append(
             {
@@ -433,6 +657,11 @@ def run_drone_simulation_episode(
                 "position": pos,
                 "velocity": vel,
                 "speed": float(info.get("speed", 0.0)),
+                "angular_velocity": (
+                    info["angular_velocity"].copy() if "angular_velocity" in info else None
+                ),
+                "angular_speed": float(info.get("angular_speed", 0.0)),
+                "altitude": float(info.get("altitude", pos[2])),
                 "distance_to_goal": float(info.get("distance_to_goal", 0.0)),
                 "min_obstacle_distance": float(info.get("min_obstacle_distance", 0.0)),
                 "reward": float(reward),
@@ -440,9 +669,11 @@ def run_drone_simulation_episode(
                 "lidar_ranges": lidar_ranges,
                 "action": np.asarray(action, dtype=np.float32).copy(),
                 "collision": bool(info.get("collision", False)),
+                "collision_type": str(info.get("collision_type", "none")),
                 "is_success": bool(info.get("is_success", False) or info.get("success", False)),
-                "quaternion": info.get("quaternion"),
+                "quaternion": info.get("quaternion").copy() if "quaternion" in info else None,
                 "wind_vector": info.get("wind_vector"),
+                "reward_components": info.get("reward_components"),
             }
         )
 

@@ -110,6 +110,45 @@ def quaternion_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
     )
 
 
+def quaternion_to_euler_angles(q: np.ndarray) -> Tuple[float, float, float]:
+    """Convert a unit quaternion [qw, qx, qy, qz] to Euler angles (roll, pitch, yaw) in radians.
+
+    Conventions:
+    - Roll (phi): rotation about body +X (East/Forward)
+    - Pitch (theta): rotation about body +Y (North/Left)
+    - Yaw (psi): rotation about body +Z (Upward)
+
+    Returns:
+        (roll, pitch, yaw) in radians
+    """
+    qw, qx, qy, qz = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+    norm = math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+    if norm > 1e-12:
+        qw /= norm
+        qx /= norm
+        qy /= norm
+        qz /= norm
+    else:
+        qw, qx, qy, qz = 1.0, 0.0, 0.0, 0.0
+
+    # Roll (x-axis rotation)
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    # Pitch (y-axis rotation)
+    sinp = 2.0 * (qw * qy - qz * qx)
+    sinp = max(-1.0, min(1.0, sinp))
+    pitch = math.asin(sinp)
+
+    # Yaw (z-axis rotation)
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return roll, pitch, yaw
+
+
 def quaternion_derivative(q: np.ndarray, omega: np.ndarray) -> np.ndarray:
     """Compute time derivative of quaternion given body angular velocity omega [p, q, r]."""
     qw, qx, qy, qz = float(q[0]), float(q[1]), float(q[2]), float(q[3])
@@ -162,14 +201,24 @@ class DroneDynamics6DOF:
         dt: float = 0.05,
         substeps: int = 5,
     ) -> None:
-        if mass <= 0.0:
-            raise ValueError(f"Mass must be positive, got {mass}")
-        if arm_length <= 0.0:
-            raise ValueError(f"Arm length must be positive, got {arm_length}")
-        if max_thrust_per_motor <= 0.0:
-            raise ValueError(f"max_thrust_per_motor must be positive, got {max_thrust_per_motor}")
-        if dt <= 0.0:
-            raise ValueError(f"dt must be positive, got {dt}")
+        for name, val in [
+            ("mass", mass),
+            ("arm_length", arm_length),
+            ("max_thrust_per_motor", max_thrust_per_motor),
+            ("dt", dt),
+        ]:
+            if not math.isfinite(val) or val <= 0.0:
+                raise ValueError(f"{name} must be a positive finite float, got {val}")
+
+        for name, val in [
+            ("gravity", gravity),
+            ("torque_to_thrust_ratio", torque_to_thrust_ratio),
+            ("linear_damping", linear_damping),
+            ("angular_damping", angular_damping),
+        ]:
+            if not math.isfinite(val) or val < 0.0:
+                raise ValueError(f"{name} must be a non-negative finite float, got {val}")
+
         if substeps < 1:
             raise ValueError(f"substeps must be >= 1, got {substeps}")
 
@@ -192,8 +241,12 @@ class DroneDynamics6DOF:
             self.inertia_diag = np.array(
                 [float(inertia[0]), float(inertia[1]), float(inertia[2])], dtype=np.float64
             )
-            if any(val <= 0.0 for val in self.inertia_diag):
-                raise ValueError(f"Inertia components must be strictly positive, got {inertia}")
+            if not np.all(np.isfinite(self.inertia_diag)) or any(
+                val <= 0.0 for val in self.inertia_diag
+            ):
+                raise ValueError(
+                    f"Inertia components must be strictly positive and finite, got {inertia}"
+                )
 
         self.inv_inertia = 1.0 / self.inertia_diag
         self.hover_thrust_per_motor = (self.mass * self.gravity) / 4.0
@@ -213,30 +266,42 @@ class DroneDynamics6DOF:
         angular_velocity: Optional[np.ndarray] = None,
     ) -> None:
         """Reset the internal physical state."""
-        self.state.position = (
-            np.asarray(position, dtype=np.float64).copy()
-            if position is not None
-            else np.zeros(3, dtype=np.float64)
-        )
-        self.state.velocity = (
-            np.asarray(velocity, dtype=np.float64).copy()
-            if velocity is not None
-            else np.zeros(3, dtype=np.float64)
-        )
+        if position is not None:
+            pos = np.asarray(position, dtype=np.float64)
+            if pos.shape != (3,) or not np.all(np.isfinite(pos)):
+                raise ValueError(f"Position must be a finite 3-element vector, got {position}")
+            self.state.position = pos.copy()
+        else:
+            self.state.position = np.zeros(3, dtype=np.float64)
+
+        if velocity is not None:
+            vel = np.asarray(velocity, dtype=np.float64)
+            if vel.shape != (3,) or not np.all(np.isfinite(vel)):
+                raise ValueError(f"Velocity must be a finite 3-element vector, got {velocity}")
+            self.state.velocity = vel.copy()
+        else:
+            self.state.velocity = np.zeros(3, dtype=np.float64)
+
         if quaternion is not None:
             q = np.asarray(quaternion, dtype=np.float64)
-            q_norm = np.linalg.norm(q)
-            self.state.quaternion = (
-                (q / q_norm).copy() if q_norm > 1e-12 else np.array([1.0, 0.0, 0.0, 0.0])
-            )
+            if q.shape != (4,) or not np.all(np.isfinite(q)):
+                raise ValueError(f"Quaternion must be a finite 4-element vector, got {quaternion}")
+            q_norm = float(np.linalg.norm(q))
+            if q_norm < 1e-12:
+                raise ValueError("Quaternion cannot have zero norm")
+            self.state.quaternion = (q / q_norm).copy()
         else:
             self.state.quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
-        self.state.angular_velocity = (
-            np.asarray(angular_velocity, dtype=np.float64).copy()
-            if angular_velocity is not None
-            else np.zeros(3, dtype=np.float64)
-        )
+        if angular_velocity is not None:
+            omega = np.asarray(angular_velocity, dtype=np.float64)
+            if omega.shape != (3,) or not np.all(np.isfinite(omega)):
+                raise ValueError(
+                    f"Angular velocity must be a finite 3-element vector, got {angular_velocity}"
+                )
+            self.state.angular_velocity = omega.copy()
+        else:
+            self.state.angular_velocity = np.zeros(3, dtype=np.float64)
 
     def compute_forces_and_torques(self, motor_thrusts: np.ndarray) -> Tuple[float, np.ndarray]:
         """Compute collective thrust and body torques from 4 individual rotor thrusts.
@@ -250,7 +315,12 @@ class DroneDynamics6DOF:
         Returns:
             (total_thrust, torques_vector [tau_x, tau_y, tau_z])
         """
-        f = np.clip(np.asarray(motor_thrusts, dtype=np.float64), 0.0, self.max_thrust_per_motor)
+        f_arr = np.asarray(motor_thrusts, dtype=np.float64)
+        if f_arr.shape != (4,):
+            raise ValueError(f"Motor thrusts must have exactly 4 elements, got shape {f_arr.shape}")
+        # Sanitize non-finite values safely
+        f_sanitized = np.nan_to_num(f_arr, nan=0.0, posinf=self.max_thrust_per_motor, neginf=0.0)
+        f = np.clip(f_sanitized, 0.0, self.max_thrust_per_motor)
         f1, f2, f3, f4 = f[0], f[1], f[2], f[3]
 
         total_thrust = float(f1 + f2 + f3 + f4)
@@ -563,19 +633,54 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         )
         return np.asarray(np.clip(raw, -1.0, 1.0), dtype=np.float32)
 
-    def _check_collision(self, pos: np.ndarray) -> Tuple[bool, str]:
+    def _check_collision(
+        self, pos: np.ndarray, prev_pos: Optional[np.ndarray] = None
+    ) -> Tuple[bool, str]:
         r = self.collision_radius
         bx, by, bz = self.bounds
 
-        if pos[0] - r <= 0.0 or pos[0] + r >= bx:
+        if prev_pos is None:
+            if pos[0] - r <= 0.0 or pos[0] + r >= bx:
+                return True, "boundary_x"
+            if pos[1] - r <= 0.0 or pos[1] + r >= by:
+                return True, "boundary_y"
+            if pos[2] - r <= 0.0 or pos[2] + r >= bz:
+                return True, "boundary_z"
+
+            for obs in self._obstacles:
+                if obs.collides_with(pos, r):
+                    return True, "obstacle"
+            return False, "none"
+
+        # Continuous swept collision check between prev_pos and pos
+        p0 = np.asarray(prev_pos, dtype=np.float64)
+        p1 = np.asarray(pos, dtype=np.float64)
+
+        # 1. Swept boundary check
+        min_p = np.minimum(p0, p1)
+        max_p = np.maximum(p0, p1)
+        if min_p[0] - r <= 0.0 or max_p[0] + r >= bx:
             return True, "boundary_x"
-        if pos[1] - r <= 0.0 or pos[1] + r >= by:
+        if min_p[1] - r <= 0.0 or max_p[1] + r >= by:
             return True, "boundary_y"
-        if pos[2] - r <= 0.0 or pos[2] + r >= bz:
+        if min_p[2] - r <= 0.0 or max_p[2] + r >= bz:
             return True, "boundary_z"
 
+        # 2. Swept obstacle spheres check
+        seg = p1 - p0
+        seg_len_sq = float(np.dot(seg, seg))
+
         for obs in self._obstacles:
-            if obs.collides_with(pos, r):
+            c = obs.center
+            threshold = obs.radius + r
+            if seg_len_sq < 1e-12:
+                dist = float(np.linalg.norm(p0 - c))
+            else:
+                t = float(np.dot(c - p0, seg) / seg_len_sq)
+                t_clamped = max(0.0, min(1.0, t))
+                closest_point = p0 + t_clamped * seg
+                dist = float(np.linalg.norm(closest_point - c))
+            if dist <= threshold:
                 return True, "obstacle"
 
         return False, "none"
@@ -723,20 +828,25 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         action: np.ndarray,
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         act_arr = np.asarray(action, dtype=np.float32)
+        if act_arr.shape != (4,):
+            raise ValueError(f"Action must have shape (4,), got {act_arr.shape}")
+        if not np.all(np.isfinite(act_arr)):
+            act_arr = np.nan_to_num(act_arr, nan=0.0, posinf=1.0, neginf=-1.0)
         if not self.action_space.contains(act_arr):
             act_arr = np.clip(act_arr, -1.0, 1.0)
 
         self._current_step += 1
+        old_pos = self._position.copy()
 
         thrusts = self._action_to_motor_thrusts(act_arr)
         new_state = self.dynamics.step_rk4(thrusts)
-        self._position = new_state.position
+        self._position = new_state.position.copy()
 
         curr_distance = float(np.linalg.norm(self._goal - self._position))
         dist_delta = self._prev_distance_to_goal - curr_distance
         self._prev_distance_to_goal = curr_distance
 
-        is_collision, collision_type = self._check_collision(self._position)
+        is_collision, collision_type = self._check_collision(self._position, prev_pos=old_pos)
         is_success = curr_distance <= self.target_radius
 
         terminated = False
@@ -751,12 +861,38 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
             reward = self.collision_reward
             info["success"] = False
             info["is_success"] = False
+            info["reward_components"] = {
+                "progress_reward": 0.0,
+                "step_penalty": 0.0,
+                "effort_penalty": 0.0,
+                "rate_penalty": 0.0,
+                "tilt_penalty": 0.0,
+                "terminal_reward": self.collision_reward,
+            }
+            info["progress_reward"] = 0.0
+            info["effort_penalty"] = 0.0
+            info["rate_penalty"] = 0.0
+            info["tilt_penalty"] = 0.0
+            info["terminal_reward"] = self.collision_reward
             if self.terminate_on_collision:
                 terminated = True
         elif is_success:
             reward = self.goal_reward
             info["success"] = True
             info["is_success"] = True
+            info["reward_components"] = {
+                "progress_reward": 0.0,
+                "step_penalty": 0.0,
+                "effort_penalty": 0.0,
+                "rate_penalty": 0.0,
+                "tilt_penalty": 0.0,
+                "terminal_reward": self.goal_reward,
+            }
+            info["progress_reward"] = 0.0
+            info["effort_penalty"] = 0.0
+            info["rate_penalty"] = 0.0
+            info["tilt_penalty"] = 0.0
+            info["terminal_reward"] = self.goal_reward
             terminated = True
         else:
             action_effort = float(np.sum(np.square(act_arr)))
@@ -775,6 +911,19 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
             reward = float(
                 progress_reward + self.step_penalty - effort_penalty - rate_penalty - tilt_pen
             )
+            info["reward_components"] = {
+                "progress_reward": progress_reward,
+                "step_penalty": self.step_penalty,
+                "effort_penalty": -effort_penalty,
+                "rate_penalty": -rate_penalty,
+                "tilt_penalty": -tilt_pen,
+                "terminal_reward": 0.0,
+            }
+            info["progress_reward"] = progress_reward
+            info["effort_penalty"] = effort_penalty
+            info["rate_penalty"] = rate_penalty
+            info["tilt_penalty"] = tilt_pen
+            info["terminal_reward"] = 0.0
 
         if self._current_step >= self.max_steps and not terminated:
             truncated = True

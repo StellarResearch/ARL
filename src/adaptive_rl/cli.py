@@ -1681,71 +1681,94 @@ def demo_drone(
         console.print(f"[bold red]Model file not found:[/bold red] {model}")
         raise typer.Exit(code=1)
 
+    env_name = "drone"
     env_kwargs = {}
+    cfg = None
     if config is not None and config.exists():
         cfg = load_config(config)
         env_kwargs = cfg.environment.parameters
+        if hasattr(cfg.environment, "name") and cfg.environment.name:
+            env_name = cfg.environment.name
 
     from adaptive_rl.algorithms.registry import load_algorithm_from_pretrained
 
-    env = make_env("drone", **env_kwargs)
-    algo_hint = cfg.algorithm.name if "cfg" in locals() and cfg is not None else None
-    algo = load_algorithm_from_pretrained(model, env=env, algorithm_name=algo_hint)
+    env = make_env(env_name, **env_kwargs)
+    try:
+        algo_hint = cfg.algorithm.name if cfg is not None else None
+        algo = load_algorithm_from_pretrained(model, env=env, algorithm_name=algo_hint)
 
-    obs, info = env.reset(seed=seed)
-    console.print(
-        Panel.fit(
-            f"[bold green]Starting Autonomous Drone 3D Navigation Demo[/bold green]\n\n"
-            f"• [bold]Model:[/bold] {model}\n"
-            f"• [bold]Seed:[/bold] {seed}\n"
-            f"• [bold]Start Position:[/bold] {info.get('position')}\n"
-            f"• [bold]Target Waypoint:[/bold] {info.get('goal')}\n"
-            f"• [bold]Obstacles in Arena:[/bold] {info.get('num_obstacles')}\n"
-            f"• [bold]Initial Distance to Goal:[/bold] {info.get('distance_to_goal', 0):.2f}m",
-            title="Demonstration Flight",
-            border_style="cyan",
-        )
-    )
+        # Verify model compatibility with environment spaces
+        if hasattr(algo, "model") and algo.model is not None:
+            m = algo.model
+            if hasattr(m, "observation_space") and m.observation_space is not None:
+                if m.observation_space.shape != env.observation_space.shape:
+                    console.print(
+                        f"[bold red]Model observation space mismatch:[/bold red] "
+                        f"model expects {m.observation_space.shape}, environment has {env.observation_space.shape}"
+                    )
+                    raise typer.Exit(code=1)
+            if hasattr(m, "action_space") and m.action_space is not None:
+                if m.action_space.shape != env.action_space.shape:
+                    console.print(
+                        f"[bold red]Model action space mismatch:[/bold red] "
+                        f"model expects {m.action_space.shape}, environment has {env.action_space.shape}"
+                    )
+                    raise typer.Exit(code=1)
 
-    if hasattr(env, "render"):
-        rendered = env.render()
-        if rendered:
-            console.print(rendered)
-
-    total_reward = 0.0
-    outcome = "UNKNOWN"
-    step_num = 0
-
-    for step_num in range(1, max_steps + 1):
-        action, _ = algo.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, step_info = env.step(action)
-        total_reward += float(reward)
-
-        if step_num % 10 == 0 or terminated or truncated:
-            dist = step_info.get("distance_to_goal", 0.0)
-            alt = step_info.get("altitude", 0.0)
-            spd = step_info.get("speed", 0.0)
-            min_obs = step_info.get("min_obstacle_distance", 0.0)
-            console.print(
-                f"Step {step_num:03d} | Alt: {alt:4.1f}m | Spd: {spd:4.1f}m/s | "
-                f"Dist: {dist:5.1f}m | Min Obs: {min_obs:4.1f}m | Reward: {reward:+6.2f}"
+        obs, info = env.reset(seed=seed)
+        console.print(
+            Panel.fit(
+                f"[bold green]Starting Autonomous Drone 3D Navigation Demo ({env_name})[/bold green]\n\n"
+                f"• [bold]Model:[/bold] {model}\n"
+                f"• [bold]Seed:[/bold] {seed}\n"
+                f"• [bold]Start Position:[/bold] {info.get('position')}\n"
+                f"• [bold]Target Waypoint:[/bold] {info.get('goal')}\n"
+                f"• [bold]Obstacles in Arena:[/bold] {info.get('num_obstacles')}\n"
+                f"• [bold]Initial Distance to Goal:[/bold] {info.get('distance_to_goal', 0):.2f}m",
+                title="Demonstration Flight",
+                border_style="cyan",
             )
+        )
 
-        if terminated or truncated:
-            if step_info.get("success"):
-                outcome = "SUCCESS"
-            elif step_info.get("collision"):
-                outcome = f"FAILED / COLLISION ({step_info.get('collision_type', 'obstacle')})"
-            else:
-                outcome = "FAILED / MAX STEPS REACHED"
-            break
+        if hasattr(env, "render"):
+            rendered = env.render()
+            if rendered:
+                console.print(rendered)
 
-    if hasattr(env, "render"):
-        rendered = env.render()
-        if rendered:
-            console.print(rendered)
+        total_reward = 0.0
+        outcome = "UNKNOWN"
+        step_num = 0
 
-    env.close()
+        for step_num in range(1, max_steps + 1):
+            action, _ = algo.predict(obs, deterministic=True)
+            obs, reward, terminated, truncated, step_info = env.step(action)
+            total_reward += float(reward)
+
+            if step_num % 10 == 0 or terminated or truncated:
+                dist = step_info.get("distance_to_goal", 0.0)
+                alt = step_info.get("altitude", 0.0)
+                spd = step_info.get("speed", 0.0)
+                min_obs = step_info.get("min_obstacle_distance", 0.0)
+                console.print(
+                    f"Step {step_num:03d} | Alt: {alt:4.1f}m | Spd: {spd:4.1f}m/s | "
+                    f"Dist: {dist:5.1f}m | Min Obs: {min_obs:4.1f}m | Reward: {reward:+6.2f}"
+                )
+
+            if terminated or truncated:
+                if step_info.get("success"):
+                    outcome = "SUCCESS"
+                elif step_info.get("collision"):
+                    outcome = f"FAILED / COLLISION ({step_info.get('collision_type', 'obstacle')})"
+                else:
+                    outcome = "FAILED / MAX STEPS REACHED"
+                break
+
+        if hasattr(env, "render"):
+            rendered = env.render()
+            if rendered:
+                console.print(rendered)
+    finally:
+        env.close()
 
     style = "bold green" if outcome == "SUCCESS" else "bold red"
     console.print(
