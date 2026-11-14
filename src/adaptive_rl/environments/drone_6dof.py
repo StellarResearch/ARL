@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from gymnasium import spaces
@@ -75,18 +75,21 @@ from adaptive_rl.environments.drone import (
 )
 
 
-def quaternion_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
+def quaternion_to_rotation_matrix(q: np.ndarray | Sequence[float]) -> np.ndarray:
     """Convert a unit quaternion [qw, qx, qy, qz] to a 3x3 rotation matrix (body to world)."""
-    qw, qx, qy, qz = float(q[0]), float(q[1]), float(q[2]), float(q[3])
-    # Normalize for safety
+    q_arr = np.asarray(q, dtype=np.float64)
+    if q_arr.shape != (4,):
+        raise ValueError(f"quaternion must have shape (4,), got {q_arr.shape}")
+    if not np.all(np.isfinite(q_arr)):
+        raise ValueError(f"quaternion must have finite coordinates, got {q}")
+    qw, qx, qy, qz = float(q_arr[0]), float(q_arr[1]), float(q_arr[2]), float(q_arr[3])
     norm = math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
-    if norm > 1e-12:
-        qw /= norm
-        qx /= norm
-        qy /= norm
-        qz /= norm
-    else:
-        qw, qx, qy, qz = 1.0, 0.0, 0.0, 0.0
+    if norm < 1e-12:
+        raise ValueError("quaternion cannot have zero norm")
+    qw /= norm
+    qx /= norm
+    qy /= norm
+    qz /= norm
 
     return np.array(
         [
@@ -108,6 +111,45 @@ def quaternion_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
         ],
         dtype=np.float64,
     )
+
+
+def quaternion_to_euler_angles(q: np.ndarray) -> Tuple[float, float, float]:
+    """Convert a unit quaternion [qw, qx, qy, qz] to Euler angles (roll, pitch, yaw) in radians.
+
+    Conventions:
+    - Roll (phi): rotation about body +X (East/Forward)
+    - Pitch (theta): rotation about body +Y (North/Left)
+    - Yaw (psi): rotation about body +Z (Upward)
+
+    Returns:
+        (roll, pitch, yaw) in radians
+    """
+    qw, qx, qy, qz = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+    norm = math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+    if norm > 1e-12:
+        qw /= norm
+        qx /= norm
+        qy /= norm
+        qz /= norm
+    else:
+        qw, qx, qy, qz = 1.0, 0.0, 0.0, 0.0
+
+    # Roll (x-axis rotation)
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    # Pitch (y-axis rotation)
+    sinp = 2.0 * (qw * qy - qz * qx)
+    sinp = max(-1.0, min(1.0, sinp))
+    pitch = math.asin(sinp)
+
+    # Yaw (z-axis rotation)
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return roll, pitch, yaw
 
 
 def quaternion_derivative(q: np.ndarray, omega: np.ndarray) -> np.ndarray:
@@ -162,14 +204,24 @@ class DroneDynamics6DOF:
         dt: float = 0.05,
         substeps: int = 5,
     ) -> None:
-        if mass <= 0.0:
-            raise ValueError(f"Mass must be positive, got {mass}")
-        if arm_length <= 0.0:
-            raise ValueError(f"Arm length must be positive, got {arm_length}")
-        if max_thrust_per_motor <= 0.0:
-            raise ValueError(f"max_thrust_per_motor must be positive, got {max_thrust_per_motor}")
-        if dt <= 0.0:
-            raise ValueError(f"dt must be positive, got {dt}")
+        for name, val in [
+            ("mass", mass),
+            ("arm_length", arm_length),
+            ("max_thrust_per_motor", max_thrust_per_motor),
+            ("dt", dt),
+        ]:
+            if not math.isfinite(val) or val <= 0.0:
+                raise ValueError(f"{name} must be a positive finite float, got {val}")
+
+        for name, val in [
+            ("gravity", gravity),
+            ("torque_to_thrust_ratio", torque_to_thrust_ratio),
+            ("linear_damping", linear_damping),
+            ("angular_damping", angular_damping),
+        ]:
+            if not math.isfinite(val) or val < 0.0:
+                raise ValueError(f"{name} must be a non-negative finite float, got {val}")
+
         if substeps < 1:
             raise ValueError(f"substeps must be >= 1, got {substeps}")
 
@@ -189,11 +241,17 @@ class DroneDynamics6DOF:
         if inertia is None:
             self.inertia_diag = np.array([0.01, 0.01, 0.02], dtype=np.float64)
         else:
+            if not isinstance(inertia, (tuple, list, np.ndarray)) or len(inertia) != 3:
+                raise ValueError(f"Inertia must have exactly three components, got {inertia}")
             self.inertia_diag = np.array(
                 [float(inertia[0]), float(inertia[1]), float(inertia[2])], dtype=np.float64
             )
-            if any(val <= 0.0 for val in self.inertia_diag):
-                raise ValueError(f"Inertia components must be strictly positive, got {inertia}")
+            if not np.all(np.isfinite(self.inertia_diag)) or any(
+                val <= 0.0 for val in self.inertia_diag
+            ):
+                raise ValueError(
+                    f"Inertia components must be strictly positive and finite, got {inertia}"
+                )
 
         self.inv_inertia = 1.0 / self.inertia_diag
         self.hover_thrust_per_motor = (self.mass * self.gravity) / 4.0
@@ -213,30 +271,42 @@ class DroneDynamics6DOF:
         angular_velocity: Optional[np.ndarray] = None,
     ) -> None:
         """Reset the internal physical state."""
-        self.state.position = (
-            np.asarray(position, dtype=np.float64).copy()
-            if position is not None
-            else np.zeros(3, dtype=np.float64)
-        )
-        self.state.velocity = (
-            np.asarray(velocity, dtype=np.float64).copy()
-            if velocity is not None
-            else np.zeros(3, dtype=np.float64)
-        )
+        if position is not None:
+            pos = np.asarray(position, dtype=np.float64)
+            if pos.shape != (3,) or not np.all(np.isfinite(pos)):
+                raise ValueError(f"Position must be a finite 3-element vector, got {position}")
+            self.state.position = pos.copy()
+        else:
+            self.state.position = np.zeros(3, dtype=np.float64)
+
+        if velocity is not None:
+            vel = np.asarray(velocity, dtype=np.float64)
+            if vel.shape != (3,) or not np.all(np.isfinite(vel)):
+                raise ValueError(f"Velocity must be a finite 3-element vector, got {velocity}")
+            self.state.velocity = vel.copy()
+        else:
+            self.state.velocity = np.zeros(3, dtype=np.float64)
+
         if quaternion is not None:
             q = np.asarray(quaternion, dtype=np.float64)
-            q_norm = np.linalg.norm(q)
-            self.state.quaternion = (
-                (q / q_norm).copy() if q_norm > 1e-12 else np.array([1.0, 0.0, 0.0, 0.0])
-            )
+            if q.shape != (4,) or not np.all(np.isfinite(q)):
+                raise ValueError(f"Quaternion must be a finite 4-element vector, got {quaternion}")
+            q_norm = float(np.linalg.norm(q))
+            if q_norm < 1e-12:
+                raise ValueError("Quaternion cannot have zero norm")
+            self.state.quaternion = (q / q_norm).copy()
         else:
             self.state.quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
-        self.state.angular_velocity = (
-            np.asarray(angular_velocity, dtype=np.float64).copy()
-            if angular_velocity is not None
-            else np.zeros(3, dtype=np.float64)
-        )
+        if angular_velocity is not None:
+            omega = np.asarray(angular_velocity, dtype=np.float64)
+            if omega.shape != (3,) or not np.all(np.isfinite(omega)):
+                raise ValueError(
+                    f"Angular velocity must be a finite 3-element vector, got {angular_velocity}"
+                )
+            self.state.angular_velocity = omega.copy()
+        else:
+            self.state.angular_velocity = np.zeros(3, dtype=np.float64)
 
     def compute_forces_and_torques(self, motor_thrusts: np.ndarray) -> Tuple[float, np.ndarray]:
         """Compute collective thrust and body torques from 4 individual rotor thrusts.
@@ -250,7 +320,12 @@ class DroneDynamics6DOF:
         Returns:
             (total_thrust, torques_vector [tau_x, tau_y, tau_z])
         """
-        f = np.clip(np.asarray(motor_thrusts, dtype=np.float64), 0.0, self.max_thrust_per_motor)
+        f_arr = np.asarray(motor_thrusts, dtype=np.float64)
+        if f_arr.shape != (4,):
+            raise ValueError(f"Motor thrusts must have exactly 4 elements, got shape {f_arr.shape}")
+        # Sanitize non-finite values safely
+        f_sanitized = np.nan_to_num(f_arr, nan=0.0, posinf=self.max_thrust_per_motor, neginf=0.0)
+        f = np.clip(f_sanitized, 0.0, self.max_thrust_per_motor)
         f1, f2, f3, f4 = f[0], f[1], f[2], f[3]
 
         total_thrust = float(f1 + f2 + f3 + f4)
@@ -407,39 +482,112 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
     ) -> None:
         super().__init__()
 
-        if any(b <= 0.0 for b in bounds):
-            raise ValueError(f"Bounds must be strictly positive, got {bounds}")
-        if max_steps < 1:
-            raise ValueError(f"max_steps must be >= 1, got {max_steps}")
-        if target_radius <= 0.0:
-            raise ValueError(f"target_radius must be positive, got {target_radius}")
-        if collision_radius <= 0.0:
-            raise ValueError(f"collision_radius must be positive, got {collision_radius}")
-        if lidar_noise_std < 0.0:
-            raise ValueError(f"lidar_noise_std cannot be negative, got {lidar_noise_std}")
-        if not (0.0 <= lidar_dropout_prob <= 1.0):
+        # Bounds: three finite positive dimensions
+        if (
+            not isinstance(bounds, (tuple, list, np.ndarray))
+            or len(bounds) != 3
+            or not all(math.isfinite(float(b)) and float(b) > 0.0 for b in bounds)
+        ):
+            raise ValueError(f"Bounds must be three finite positive numbers, got {bounds}")
+        self.bounds = (float(bounds[0]), float(bounds[1]), float(bounds[2]))
+
+        # Start and Goal positions: three finite coordinates inside valid arena limits
+        if start_pos is not None:
+            s_arr = np.asarray(start_pos, dtype=np.float64)
+            if s_arr.shape != (3,) or not np.all(np.isfinite(s_arr)):
+                raise ValueError(f"start_pos must be a finite 3-element vector, got {start_pos}")
+            if any(s_arr[i] < 0.0 or s_arr[i] > self.bounds[i] for i in range(3)):
+                raise ValueError(f"start_pos {s_arr} is outside valid arena bounds {self.bounds}")
+            self.default_start = s_arr
+        else:
+            self.default_start = np.array([5.0, 5.0, 5.0], dtype=np.float64)
+
+        if goal_pos is not None:
+            g_arr = np.asarray(goal_pos, dtype=np.float64)
+            if g_arr.shape != (3,) or not np.all(np.isfinite(g_arr)):
+                raise ValueError(f"goal_pos must be a finite 3-element vector, got {goal_pos}")
+            if any(g_arr[i] < 0.0 or g_arr[i] > self.bounds[i] for i in range(3)):
+                raise ValueError(f"goal_pos {g_arr} is outside valid arena bounds {self.bounds}")
+            self.default_goal = g_arr
+        else:
+            self.default_goal = np.array(
+                [self.bounds[0] - 5.0, self.bounds[1] - 5.0, self.bounds[2] - 5.0],
+                dtype=np.float64,
+            )
+
+        # Obstacle count: non-negative integer
+        if (
+            isinstance(num_obstacles, bool)
+            or not isinstance(num_obstacles, (int, np.integer))
+            or num_obstacles < 0
+        ):
+            raise ValueError(f"Obstacle count must be a non-negative integer, got {num_obstacles}")
+
+        # Obstacle radius: positive finite value
+        if not math.isfinite(obstacle_radius) or obstacle_radius <= 0.0:
+            raise ValueError(
+                f"Obstacle radius must be a positive finite float, got {obstacle_radius}"
+            )
+
+        # Target and collision radius: positive finite values
+        if not math.isfinite(target_radius) or target_radius <= 0.0:
+            raise ValueError(f"target_radius must be a positive finite float, got {target_radius}")
+        if not math.isfinite(collision_radius) or collision_radius <= 0.0:
+            raise ValueError(
+                f"collision_radius must be a positive finite float, got {collision_radius}"
+            )
+
+        # LiDAR ray count: positive integer
+        if (
+            isinstance(num_lidar_rays, bool)
+            or not isinstance(num_lidar_rays, (int, np.integer))
+            or num_lidar_rays < 1
+        ):
+            raise ValueError(f"LiDAR ray count must be a positive integer, got {num_lidar_rays}")
+
+        # LiDAR range: positive finite value
+        if not math.isfinite(lidar_range) or lidar_range <= 0.0:
+            raise ValueError(f"LiDAR range must be a positive finite float, got {lidar_range}")
+
+        # Sensor noise and dropout: finite valid values
+        if not math.isfinite(lidar_noise_std) or lidar_noise_std < 0.0:
+            raise ValueError(
+                f"lidar_noise_std must be a non-negative finite float, got {lidar_noise_std}"
+            )
+        if not math.isfinite(lidar_dropout_prob) or not (0.0 <= lidar_dropout_prob <= 1.0):
             raise ValueError(
                 f"lidar_dropout_prob must be between 0.0 and 1.0, got {lidar_dropout_prob}"
             )
-        if not (0.0 <= lidar_min_range < lidar_range):
+        if not math.isfinite(lidar_min_range) or not (0.0 <= lidar_min_range < lidar_range):
             raise ValueError(
                 f"lidar_min_range must be >= 0.0 and < lidar_range ({lidar_range}), got {lidar_min_range}"
             )
 
-        self.bounds = (float(bounds[0]), float(bounds[1]), float(bounds[2]))
-        self.default_start = (
-            np.asarray(start_pos, dtype=np.float64)
-            if start_pos is not None
-            else np.array([5.0, 5.0, 5.0], dtype=np.float64)
-        )
-        self.default_goal = (
-            np.asarray(goal_pos, dtype=np.float64)
-            if goal_pos is not None
-            else np.array(
-                [self.bounds[0] - 5.0, self.bounds[1] - 5.0, self.bounds[2] - 5.0],
-                dtype=np.float64,
-            )
-        )
+        # Episode limits: positive integer
+        if (
+            isinstance(max_steps, bool)
+            or not isinstance(max_steps, (int, np.integer))
+            or max_steps < 1
+        ):
+            raise ValueError(f"max_steps must be a positive integer, got {max_steps}")
+
+        # Reward coefficients: finite and mathematically valid
+        for r_name, r_val in [
+            ("step_penalty", step_penalty),
+            ("goal_reward", goal_reward),
+            ("collision_reward", collision_reward),
+            ("progress_weight", progress_weight),
+        ]:
+            if not math.isfinite(r_val):
+                raise ValueError(f"{r_name} must be a finite float, got {r_val}")
+
+        for p_name, p_val in [
+            ("action_penalty_weight", action_penalty_weight),
+            ("angular_rate_penalty_weight", angular_rate_penalty_weight),
+            ("tilt_penalty_weight", tilt_penalty_weight),
+        ]:
+            if not math.isfinite(p_val) or p_val < 0.0:
+                raise ValueError(f"{p_name} must be a non-negative finite float, got {p_val}")
 
         self.num_obstacles = int(num_obstacles)
         self.obstacle_radius = float(obstacle_radius)
@@ -563,19 +711,54 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         )
         return np.asarray(np.clip(raw, -1.0, 1.0), dtype=np.float32)
 
-    def _check_collision(self, pos: np.ndarray) -> Tuple[bool, str]:
+    def _check_collision(
+        self, pos: np.ndarray, prev_pos: Optional[np.ndarray] = None
+    ) -> Tuple[bool, str]:
         r = self.collision_radius
         bx, by, bz = self.bounds
 
-        if pos[0] - r <= 0.0 or pos[0] + r >= bx:
+        if prev_pos is None:
+            if pos[0] - r <= 0.0 or pos[0] + r >= bx:
+                return True, "boundary_x"
+            if pos[1] - r <= 0.0 or pos[1] + r >= by:
+                return True, "boundary_y"
+            if pos[2] - r <= 0.0 or pos[2] + r >= bz:
+                return True, "boundary_z"
+
+            for obs in self._obstacles:
+                if obs.collides_with(pos, r):
+                    return True, "obstacle"
+            return False, "none"
+
+        # Continuous swept collision check between prev_pos and pos
+        p0 = np.asarray(prev_pos, dtype=np.float64)
+        p1 = np.asarray(pos, dtype=np.float64)
+
+        # 1. Swept boundary check
+        min_p = np.minimum(p0, p1)
+        max_p = np.maximum(p0, p1)
+        if min_p[0] - r <= 0.0 or max_p[0] + r >= bx:
             return True, "boundary_x"
-        if pos[1] - r <= 0.0 or pos[1] + r >= by:
+        if min_p[1] - r <= 0.0 or max_p[1] + r >= by:
             return True, "boundary_y"
-        if pos[2] - r <= 0.0 or pos[2] + r >= bz:
+        if min_p[2] - r <= 0.0 or max_p[2] + r >= bz:
             return True, "boundary_z"
 
+        # 2. Swept obstacle spheres check
+        seg = p1 - p0
+        seg_len_sq = float(np.dot(seg, seg))
+
         for obs in self._obstacles:
-            if obs.collides_with(pos, r):
+            c = obs.center
+            threshold = obs.radius + r
+            if seg_len_sq < 1e-12:
+                dist = float(np.linalg.norm(p0 - c))
+            else:
+                t = float(np.dot(c - p0, seg) / seg_len_sq)
+                t_clamped = max(0.0, min(1.0, t))
+                closest_point = p0 + t_clamped * seg
+                dist = float(np.linalg.norm(closest_point - c))
+            if dist <= threshold:
                 return True, "obstacle"
 
         return False, "none"
@@ -676,21 +859,30 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
 
         num_obs = self.num_obstacles
         if options and "num_obstacles" in options:
-            num_obs = int(options["num_obstacles"])
+            raw_obs = options["num_obstacles"]
+            if (
+                isinstance(raw_obs, bool)
+                or not isinstance(raw_obs, (int, np.integer))
+                or raw_obs < 0
+            ):
+                raise ValueError(
+                    f"num_obstacles in options must be a non-negative integer, got {raw_obs}"
+                )
+            num_obs = int(raw_obs)
 
         if options and "lidar_noise_std" in options:
             n_std = float(options["lidar_noise_std"])
-            if n_std < 0.0:
-                raise ValueError(f"lidar_noise_std cannot be negative, got {n_std}")
+            if not math.isfinite(n_std) or n_std < 0.0:
+                raise ValueError(f"lidar_noise_std cannot be negative or non-finite, got {n_std}")
             self.lidar_noise_std = n_std
         if options and "lidar_dropout_prob" in options:
             d_prob = float(options["lidar_dropout_prob"])
-            if not (0.0 <= d_prob <= 1.0):
+            if not math.isfinite(d_prob) or not (0.0 <= d_prob <= 1.0):
                 raise ValueError(f"lidar_dropout_prob must be between 0.0 and 1.0, got {d_prob}")
             self.lidar_dropout_prob = d_prob
         if options and "lidar_min_range" in options:
             m_range = float(options["lidar_min_range"])
-            if not (0.0 <= m_range < self.lidar_range):
+            if not math.isfinite(m_range) or not (0.0 <= m_range < self.lidar_range):
                 raise ValueError(
                     f"lidar_min_range must be >= 0.0 and < lidar_range ({self.lidar_range}), got {m_range}"
                 )
@@ -723,20 +915,25 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         action: np.ndarray,
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         act_arr = np.asarray(action, dtype=np.float32)
+        if act_arr.shape != (4,):
+            raise ValueError(f"Action must have shape (4,), got {act_arr.shape}")
+        if not np.all(np.isfinite(act_arr)):
+            act_arr = np.nan_to_num(act_arr, nan=0.0, posinf=1.0, neginf=-1.0)
         if not self.action_space.contains(act_arr):
             act_arr = np.clip(act_arr, -1.0, 1.0)
 
         self._current_step += 1
+        old_pos = self._position.copy()
 
         thrusts = self._action_to_motor_thrusts(act_arr)
         new_state = self.dynamics.step_rk4(thrusts)
-        self._position = new_state.position
+        self._position = new_state.position.copy()
 
         curr_distance = float(np.linalg.norm(self._goal - self._position))
         dist_delta = self._prev_distance_to_goal - curr_distance
         self._prev_distance_to_goal = curr_distance
 
-        is_collision, collision_type = self._check_collision(self._position)
+        is_collision, collision_type = self._check_collision(self._position, prev_pos=old_pos)
         is_success = curr_distance <= self.target_radius
 
         terminated = False
@@ -751,12 +948,38 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
             reward = self.collision_reward
             info["success"] = False
             info["is_success"] = False
+            info["reward_components"] = {
+                "progress_reward": 0.0,
+                "step_penalty": 0.0,
+                "effort_penalty": 0.0,
+                "rate_penalty": 0.0,
+                "tilt_penalty": 0.0,
+                "terminal_reward": self.collision_reward,
+            }
+            info["progress_reward"] = 0.0
+            info["effort_penalty"] = 0.0
+            info["rate_penalty"] = 0.0
+            info["tilt_penalty"] = 0.0
+            info["terminal_reward"] = self.collision_reward
             if self.terminate_on_collision:
                 terminated = True
         elif is_success:
             reward = self.goal_reward
             info["success"] = True
             info["is_success"] = True
+            info["reward_components"] = {
+                "progress_reward": 0.0,
+                "step_penalty": 0.0,
+                "effort_penalty": 0.0,
+                "rate_penalty": 0.0,
+                "tilt_penalty": 0.0,
+                "terminal_reward": self.goal_reward,
+            }
+            info["progress_reward"] = 0.0
+            info["effort_penalty"] = 0.0
+            info["rate_penalty"] = 0.0
+            info["tilt_penalty"] = 0.0
+            info["terminal_reward"] = self.goal_reward
             terminated = True
         else:
             action_effort = float(np.sum(np.square(act_arr)))
@@ -775,6 +998,19 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
             reward = float(
                 progress_reward + self.step_penalty - effort_penalty - rate_penalty - tilt_pen
             )
+            info["reward_components"] = {
+                "progress_reward": progress_reward,
+                "step_penalty": self.step_penalty,
+                "effort_penalty": -effort_penalty,
+                "rate_penalty": -rate_penalty,
+                "tilt_penalty": -tilt_pen,
+                "terminal_reward": 0.0,
+            }
+            info["progress_reward"] = progress_reward
+            info["effort_penalty"] = effort_penalty
+            info["rate_penalty"] = rate_penalty
+            info["tilt_penalty"] = tilt_pen
+            info["terminal_reward"] = 0.0
 
         if self._current_step >= self.max_steps and not terminated:
             truncated = True

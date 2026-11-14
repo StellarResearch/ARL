@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, cast
 
 if TYPE_CHECKING:
     from adaptive_rl.algorithms.base import BaseAlgorithm
@@ -167,6 +167,152 @@ def list_all_algorithm_metadata() -> Dict[str, AlgorithmMetadata]:
     return algorithm_registry.list_all_metadata()
 
 
+def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
+    """Inspect a model checkpoint archive to extract algorithm and space metadata.
+
+    Args:
+        path: Path to model checkpoint file (.zip).
+
+    Returns:
+        Dict with keys:
+          - 'algorithm': 'ppo' | 'sac' | None
+          - 'obs_shape': Tuple[int, ...] or None
+          - 'action_shape': Tuple[int, ...] or None
+          - 'compatible_env': '3-DOF' | '6-DOF' | None
+          - 'valid': bool
+          - 'error': Optional[str]
+    """
+    model_path = Path(path)
+    if not model_path.exists() and model_path.with_suffix(".zip").exists():
+        model_path = model_path.with_suffix(".zip")
+
+    if not model_path.is_file():
+        return {
+            "algorithm": None,
+            "obs_shape": None,
+            "action_shape": None,
+            "compatible_env": None,
+            "valid": False,
+            "error": f"Model file not found: {path}",
+        }
+
+    import zipfile
+
+    if not zipfile.is_zipfile(model_path):
+        return {
+            "algorithm": None,
+            "obs_shape": None,
+            "action_shape": None,
+            "compatible_env": None,
+            "valid": False,
+            "error": f"Checkpoint '{model_path.name}' is not a valid zip archive",
+        }
+
+    algo: Optional[str] = None
+    obs_shape: Optional[Tuple[int, ...]] = None
+    act_shape: Optional[Tuple[int, ...]] = None
+
+    # Check sidecar metadata JSON if present
+    candidate_metadata_paths = [
+        model_path.with_name(f"{model_path.stem}_metadata.json"),
+        model_path.parent / f"{model_path.stem.replace('_final', '')}_metadata.json",
+        model_path.parent.parent / "metadata" / f"{model_path.stem}_metadata.json",
+        model_path.parent.parent
+        / "metadata"
+        / f"{model_path.stem.replace('_final', '')}_metadata.json",
+    ]
+    for meta_p in candidate_metadata_paths:
+        if meta_p.is_file():
+            try:
+                import json
+
+                with open(meta_p, "r", encoding="utf-8") as f:
+                    sidecar_data = json.load(f)
+                sidecar_algo = sidecar_data.get("algorithm")
+                if sidecar_algo:
+                    algo = str(sidecar_algo).lower().strip()
+                break
+            except Exception:
+                pass
+
+    try:
+        with zipfile.ZipFile(model_path, "r") as z:
+            if "data" not in z.namelist():
+                return {
+                    "algorithm": None,
+                    "obs_shape": None,
+                    "action_shape": None,
+                    "compatible_env": None,
+                    "valid": False,
+                    "error": f"Archive '{model_path.name}' is missing Stable-Baselines3 'data' entry",
+                }
+
+            import json
+
+            raw_bytes = z.read("data")
+            raw_str = raw_bytes.decode("utf-8", errors="ignore")
+            data = json.loads(raw_str)
+
+            if obs_shape is None:
+                o_space = data.get("observation_space")
+                if isinstance(o_space, dict) and "_shape" in o_space:
+                    obs_shape = tuple(int(x) for x in o_space["_shape"])
+
+            if act_shape is None:
+                a_space = data.get("action_space")
+                if isinstance(a_space, dict) and "_shape" in a_space:
+                    act_shape = tuple(int(x) for x in a_space["_shape"])
+
+            if not algo:
+                policy_mod = str(data.get("policy_class", {}).get("__module__", ""))
+                if (
+                    "sac" in policy_mod
+                    or "SACPolicy" in raw_str
+                    or any(k in data for k in ["buffer_size", "tau", "target_entropy"])
+                ):
+                    algo = "sac"
+                elif (
+                    "common.policies" in policy_mod
+                    or "ActorCriticPolicy" in raw_str
+                    or any(k in data for k in ["n_steps", "n_epochs", "clip_range"])
+                ):
+                    algo = "ppo"
+    except Exception as exc:
+        return {
+            "algorithm": None,
+            "obs_shape": None,
+            "action_shape": None,
+            "compatible_env": None,
+            "valid": False,
+            "error": f"Corrupt checkpoint archive '{model_path.name}': {exc}",
+        }
+
+    if not algo or algo not in ("ppo", "sac"):
+        return {
+            "algorithm": algo,
+            "obs_shape": obs_shape,
+            "action_shape": act_shape,
+            "compatible_env": None,
+            "valid": False,
+            "error": f"Unsupported or unrecognized algorithm type: '{algo or 'unknown'}'",
+        }
+
+    compatible_env: Optional[str] = None
+    if obs_shape == (29,) and act_shape == (3,):
+        compatible_env = "3-DOF"
+    elif obs_shape == (36,) and act_shape == (4,):
+        compatible_env = "6-DOF"
+
+    return {
+        "algorithm": algo,
+        "obs_shape": obs_shape,
+        "action_shape": act_shape,
+        "compatible_env": compatible_env,
+        "valid": True,
+        "error": None,
+    }
+
+
 def load_algorithm_from_pretrained(
     path: str | Path,
     env: Optional[Any] = None,
@@ -189,20 +335,46 @@ def load_algorithm_from_pretrained(
     if not model_path.exists() and model_path.with_suffix(".zip").exists():
         model_path = model_path.with_suffix(".zip")
 
-    detected = algorithm_name.strip().lower() if algorithm_name else None
-    if detected is None and model_path.exists():
-        try:
-            import zipfile
+    if not model_path.is_file():
+        raise FileNotFoundError(f"Model file not found at: {path}")
 
-            with zipfile.ZipFile(model_path, "r") as z:
-                if "data" in z.namelist():
-                    data_str = z.read("data").decode("utf-8", errors="ignore")
-                    if '"SAC"' in data_str or "SACAlgorithm" in data_str:
-                        detected = "sac"
-                    elif '"PPO"' in data_str or "PPOAlgorithm" in data_str:
-                        detected = "ppo"
-        except Exception:
-            pass
+    detected = algorithm_name.strip().lower() if algorithm_name else None
+
+    # Inspect checkpoint archive
+    info = inspect_model_checkpoint(model_path)
+
+    if detected is None:
+        if not info.get("valid"):
+            raise AlgorithmRegistryError(
+                info.get("error")
+                or f"Unsupported or unrecognized checkpoint at '{model_path}'. Expected a valid PPO or SAC model checkpoint."
+            )
+        detected = info.get("algorithm")
+
+    # If archive is a valid checkpoint, verify space compatibility and algorithm match
+    if info.get("valid"):
+        archive_algo = info.get("algorithm")
+        # Never load SAC through a PPO loader
+        if archive_algo == "sac" and detected == "ppo":
+            raise AlgorithmRegistryError(
+                f"Cannot load SAC model '{model_path.name}' as PPO algorithm."
+            )
+        if archive_algo == "ppo" and detected == "sac":
+            raise AlgorithmRegistryError(
+                f"Cannot load PPO model '{model_path.name}' as SAC algorithm."
+            )
+
+        if env is not None:
+            if info.get("obs_shape") is not None and hasattr(env, "observation_space"):
+                if info["obs_shape"] != env.observation_space.shape:
+                    raise ValueError(
+                        f"Model observation space {info['obs_shape']} does not match environment observation space {env.observation_space.shape}"
+                    )
+            if info.get("action_shape") is not None and hasattr(env, "action_space"):
+                if info["action_shape"] != env.action_space.shape:
+                    raise ValueError(
+                        f"Model action space {info['action_shape']} does not match environment action space {env.action_space.shape}"
+                    )
 
     if detected == "sac":
         from adaptive_rl.algorithms.sac import SACAlgorithm
@@ -218,15 +390,9 @@ def load_algorithm_from_pretrained(
             return cast("BaseAlgorithm", factory.from_pretrained(model_path, env=env))
         return cast("BaseAlgorithm", factory(env=env))
 
-    # Fallback heuristic: try PPO first, then SAC
-    try:
-        from adaptive_rl.algorithms.ppo import PPOAlgorithm
-
-        return PPOAlgorithm.from_pretrained(model_path, env=env)
-    except Exception:
-        from adaptive_rl.algorithms.sac import SACAlgorithm
-
-        return SACAlgorithm.from_pretrained(model_path, env=env)
+    raise AlgorithmRegistryError(
+        f"Unsupported algorithm '{detected}' for model checkpoint at '{model_path}'."
+    )
 
 
 __all__ = [
@@ -236,6 +402,7 @@ __all__ = [
     "algorithm_registry",
     "get_algorithm_factory",
     "get_algorithm_metadata",
+    "inspect_model_checkpoint",
     "list_algorithms",
     "list_all_algorithm_metadata",
     "load_algorithm_from_pretrained",

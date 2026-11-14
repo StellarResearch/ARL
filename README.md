@@ -48,40 +48,55 @@ AdaptiveRL is an educational reinforcement-learning project in which a Proximal 
 AdaptiveRL is an educational reinforcement-learning project in which a PPO agent learns to navigate a simulated 3D drone through an obstacle-filled environment toward a target.
 
 > [!IMPORTANT]
-> **THIS IS A SIMULATION.**
+> **THIS IS AN EDUCATIONAL SIMULATION.**
 >
-> This project is an academic computer-science demonstration running a simplified 3-DOF kinematic point-mass simulation.
+> This project is an academic computer-science demonstration featuring:
+> 1. A fast **3-DOF kinematic point-mass simulation** (`DroneNavigation3DEnv`) with 3 acceleration actions.
+> 2. A physics-rich **6-DOF rigid-body quadrotor simulation** (`Drone6DOFEnv`) featuring unit quaternion attitude, Euler rotational equations, four individual motor thrusts, rotor torque mapping, Runge-Kutta 4th-order (RK4) integration, and full 3D quadrotor airframe visualization.
 >
 > It is **NOT**:
 > - a real drone autopilot
 > - a real-world flight controller
-> - PX4 Autopilot
-> - ArduPilot
-> - a realistic 6-DOF quadrotor aerodynamics simulator
+> - PX4 Autopilot or ArduPilot
+> - calibrated against physical drone hardware telemetry
 > - production hardware software
 
 ---
 
 ## Features
 
-- **Custom 3D Drone Navigation Environment**: Farama Gymnasium-compliant continuous 3D translation simulation with aerodynamic drag damping.
-- **PPO Reinforcement Learning**: On-policy actor-critic learning using Stable-Baselines3.
-- **Continuous 3D Acceleration Actions**: Commanded acceleration controls in X, Y, and Z axes ($[-1.0, 1.0]^3$).
-- **29-Dimensional Observation Space**: Normalized drone position, velocity, target position, relative target vector, target distance, and LiDAR range readings.
-- **16-Ray Simulated LiDAR**: Spherical rangefinder calculating analytical distances to obstacles and arena boundaries.
+- **Dual Simulation Dynamics**:
+  - **3-DOF Kinematic Drone** (`drone`, `drone_3d`): Fast point-mass kinematics with semi-implicit Euler integration, continuous 3D acceleration actions ($[-1, 1]^3$), and 29-dimensional observation space.
+  - **6-DOF Quadrotor** (`drone-6dof`, `drone_6dof`): Theoretical rigid-body flight dynamics featuring unit quaternion attitude, Euler rotational dynamics, gyroscopic terms, 4-motor thrust control ($[-1, 1]^4 \to [0, F_{\max}]^4$), Runge-Kutta 4th-order (RK4) integration, continuous swept collision checking, and 36-dimensional observation space.
+
+### 3-DOF Kinematic vs. 6-DOF Rigid-Body Simulation Comparison
+
+| Property | 3-DOF | 6-DOF |
+|---|---|---|
+| Observation dimensions | 29 | 36 |
+| Action dimensions | 3 | 4 |
+| Control | Acceleration | Motor thrust |
+| Attitude | Not modeled | Quaternion |
+| Angular velocity | Not modeled | 3-axis |
+- **Proper 3D Quadrotor Geometry & Visualization**:
+  - Full geometric airframe with central fuselage, 4 arms in X configuration, 4 rotor hub assemblies, and circular propeller blade paths.
+  - Distinct front (red) and rear (blue) arm/rotor visual identification plus forward heading nosecone pointer (+X_B direction).
+  - Exact body-to-world rigid-body coordinate transformation: $\mathbf{p}_W = \mathbf{p}_{\text{drone}} + R(\mathbf{q}) \mathbf{p}_B$.
+- **Reinforcement Learning (PPO & SAC)**:
+  - On-policy PPO and off-policy SAC using Stable-Baselines3.
+  - Unified configuration pipelines (`configs/ppo_drone_6dof.yaml`, `configs/sac_drone_6dof.yaml`, `configs/drone_6dof.yaml`).
+- **Interactive Streamlit Flight Deck (`app.py`)**:
+  - Dynamics model selector (3-DOF Kinematic Drone vs. 6-DOF Quadrotor).
+  - Trajectory playback scrubber updating quadrotor position, attitude, arm orientations, LiDAR, velocity, and telemetry (altitude, speed, Euler roll/pitch/yaw in degrees, angular velocity, goal distance).
+  - Explicit simulation playback mode indicator distinguishing educational simulation playback from live physical hardware.
+- **16-Ray Simulated LiDAR**: Spherical rangefinder calculating analytical distances to obstacles and arena boundaries with configurable noise and dropout.
 - **Procedurally Generated Spherical Obstacles**: Placed with guaranteed clearance from launch and goal points.
-- **Collision Detection**: Analytical spherical and bounding plane boundary collision detection.
+- **Continuous Swept Collision Detection**: Spherical segment and bounding box collision checks preventing high-speed obstacle tunneling.
 - **Target Detection**: Automatic goal-arrival termination within a calibrated target radius.
-- **Reward Shaping**: Multi-component reward encouraging progress toward the goal while penalizing collisions and excessive step duration.
+- **Reward Shaping & Decomposed Inspection**: Multi-component reward encouraging progress while penalizing collisions, excessive control effort, angular velocity, and tilt.
 - **Deterministic Evaluation**: Reusable evaluation pipeline with reproducible seed control.
-- **Trajectory & Safety Metrics**: Rigorous trajectory evaluation including path length, straight-line distance, path efficiency, obstacle surface clearance, maximum velocity/acceleration, and separated obstacle vs. boundary collisions.
-- **Untrained Random Policy Baseline**: Built-in non-learning baseline to scientifically validate policy improvement.
-- **Obstacle-Density Experiment**: Controlled testing across 4, 6, and 8 obstacles to demonstrate environmental difficulty scaling.
-- **PPO Learning-Curve Benchmark**: Train fresh PPO models across configurable timestep budgets and export evaluation metrics as JSON/CSV with optional Matplotlib plots (`--plot`, `--plot-x-axis`).
-- **Command-Line Interface (CLI)**: Typer-based CLI for training, evaluation, learning-curve benchmarking, environment inspection, and trajectory demonstration.
-- **Streamlit + Plotly 3D GUI**: Interactive browser-based presentation flight deck with a trajectory playback scrubber and live sensor visualization.
-- **Training Checkpoints**: Automatic model weight checkpointing (`.zip`) and JSON metadata export.
-- **Automated Test Suite**: Unit and integration tests verify kinematics, environment spaces, training lifecycle, benchmark outputs, and GUI charts.
+- **Command-Line Interface (CLI)**: Typer-based CLI for training (`train`), evaluation (`evaluate`), and deterministic demonstration flights (`demo-drone`).
+- **Automated Test Suite**: Unit and integration tests verify kinematics, 6-DOF physics invariants (hover, free fall, uncoupled torques, drag decay, quaternion stability up to 50k/100k steps), training lifecycle, and GUI visualization.
 
 ---
 
@@ -893,9 +908,10 @@ python -m pip install -e ".[all]"
 
 ## Limitations
 
-- **Kinematic Point Mass**: The drone is modeled as a 3-DOF translational point-mass with linear aerodynamic drag. It does not model 6-DOF rotational attitude dynamics, motor RPM lag, or gyroscopic effects.
-- **Analytical Rangefinder**: LiDAR sensing calculates exact geometric ray-sphere and ray-box intersections without simulated sensor noise, beam divergence, or surface reflection scattering.
-- **Simulation Only**: This project is built strictly as an academic educational demonstration and cannot be directly deployed onto real drone flight hardware without a low-level attitude controller.
+- **Simulation Only**: Designed strictly as an academic computer science and reinforcement learning demonstration project.
+- **No Hardware Validation**: This is a theoretical simulation model and has not been tuned or validated against physical UAV flight hardware telemetry.
+- **Analytical Rangefinder**: LiDAR sensing calculates geometric ray-sphere and ray-box intersections.
+- **No Real Drone Autopilot**: Not intended for direct deployment onto real drone flight hardware without a low-level attitude controller.
 
 ---
 
