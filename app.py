@@ -1,8 +1,8 @@
-"""AdaptiveRL: Autonomous 3D Drone Navigation Demonstration GUI.
+"""AdaptiveRL: Autonomous 3D Drone Navigation Flight Deck GUI.
 
-A Streamlit-based presentation interface for college professors and evaluators,
-visualizing real-time 3D flight trajectories, LiDAR sensor readings, PPO training,
-random baseline comparison, obstacle-density experiments, and system architecture.
+A premium aerospace-grade mission-control Streamlit interface for evaluating
+autonomous drone flight systems, rigid-body 6-DOF dynamics, 3-DOF kinematic simulation,
+16-ray spherical LiDAR sensing, PPO training, and empirical policy benchmarking.
 """
 
 from __future__ import annotations
@@ -14,9 +14,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 import streamlit as st
-from stable_baselines3 import PPO
 
-from adaptive_rl.algorithms.ppo import PPOAlgorithm
 from adaptive_rl.algorithms.registry import (
     inspect_model_checkpoint,
     load_algorithm_from_pretrained,
@@ -42,20 +40,258 @@ from adaptive_rl.training.trainer import PPOTrainer
 
 # Configure Streamlit Page
 st.set_page_config(
-    page_title="AdaptiveRL — 3D Drone Navigation Demo",
-    page_icon="🚁",
+    page_title="ARL | Autonomous Flight Systems — 3D Flight Deck",
+    page_icon="🛸",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
+def inject_custom_aerospace_css() -> None:
+    """Inject premium dark aerospace mission-control CSS styling."""
+    st.markdown(
+        """
+        <style>
+        :root {
+            --arl-bg: #080c14;
+            --arl-panel: #0f172a;
+            --arl-panel-border: #1e293b;
+            --arl-cyan: #00f2fe;
+            --arl-blue: #38bdf8;
+            --arl-accent: #2563eb;
+            --arl-green: #10b981;
+            --arl-amber: #f59e0b;
+            --arl-red: #ef4444;
+            --arl-text: #f1f5f9;
+            --arl-muted: #94a3b8;
+        }
+
+        /* Mission Control Top Header */
+        .arl-header-card {
+            background: linear-gradient(135deg, #091326 0%, #0d1b38 60%, #11224d 100%);
+            border: 1px solid #1e3a66;
+            border-radius: 8px;
+            padding: 16px 22px;
+            margin-bottom: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+        }
+
+        .arl-brand-title {
+            font-size: 24px;
+            font-weight: 800;
+            letter-spacing: 2.2px;
+            color: #ffffff;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        .arl-brand-title span.accent {
+            color: #00f2fe;
+            text-shadow: 0 0 12px rgba(0, 242, 254, 0.45);
+        }
+
+        .arl-brand-sub {
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            margin-top: 3px;
+            font-family: "JetBrains Mono", "SF Mono", monospace;
+        }
+
+        .arl-badge-group {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .arl-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            font-family: "JetBrains Mono", "SF Mono", monospace;
+        }
+
+        .arl-pill-cyan {
+            background: rgba(0, 242, 254, 0.12);
+            border: 1px solid rgba(0, 242, 254, 0.4);
+            color: #00f2fe;
+        }
+
+        .arl-pill-blue {
+            background: rgba(37, 99, 235, 0.18);
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            color: #38bdf8;
+        }
+
+        .arl-pill-green {
+            background: rgba(16, 185, 129, 0.14);
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            color: #10b981;
+        }
+
+        .arl-pill-amber {
+            background: rgba(245, 158, 11, 0.14);
+            border: 1px solid rgba(245, 158, 11, 0.4);
+            color: #f59e0b;
+        }
+
+        .arl-pill-red {
+            background: rgba(239, 68, 68, 0.14);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            color: #ef4444;
+        }
+
+        /* Mission Control Toolbar */
+        .arl-toolbar {
+            background: #0d1527;
+            border: 1px solid #1e2e4a;
+            border-radius: 8px;
+            padding: 14px 18px 10px 18px;
+            margin-bottom: 14px;
+        }
+
+        /* Flight Outcome Banner */
+        .arl-outcome-banner {
+            border-radius: 6px;
+            padding: 12px 18px;
+            margin-bottom: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .arl-outcome-banner.success {
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.45);
+            border-left: 5px solid #10b981;
+        }
+
+        .arl-outcome-banner.failure {
+            background: rgba(239, 68, 68, 0.12);
+            border: 1px solid rgba(239, 68, 68, 0.45);
+            border-left: 5px solid #ef4444;
+        }
+
+        /* Telemetry Cards */
+        .telemetry-card {
+            background: #0d1527;
+            border: 1px solid #1e304f;
+            border-radius: 6px;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+        }
+
+        .telemetry-header {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            color: #38bdf8;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            border-bottom: 1px solid rgba(56, 189, 248, 0.2);
+            padding-bottom: 4px;
+            font-family: "JetBrains Mono", "SF Mono", monospace;
+        }
+
+        .telemetry-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px 12px;
+        }
+
+        .telemetry-stat {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .telemetry-stat-label {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: #94a3b8;
+            letter-spacing: 0.5px;
+        }
+
+        .telemetry-stat-val {
+            font-size: 16px;
+            font-weight: 700;
+            font-family: "JetBrains Mono", "SF Mono", monospace;
+            color: #f8fafc;
+        }
+
+        .telemetry-stat-val.cyan { color: #00f2fe; }
+        .telemetry-stat-val.green { color: #10b981; }
+        .telemetry-stat-val.amber { color: #f59e0b; }
+        .telemetry-stat-val.red { color: #ef4444; }
+
+        .telemetry-stat-val span.unit {
+            font-size: 11px;
+            font-weight: normal;
+            color: #64748b;
+            margin-left: 2px;
+        }
+
+        /* Subtle disclaimer */
+        .baseline-disclaimer {
+            font-size: 11px;
+            color: #94a3b8;
+            background: #111b33;
+            border: 1px solid #1e355b;
+            border-radius: 4px;
+            padding: 6px 10px;
+            margin-top: 6px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
-    # Sidebar: Project Overview
-    st.sidebar.title("🚁 AdaptiveRL")
+    inject_custom_aerospace_css()
+
+    # Sidebar: Project Overview & Identity
     st.sidebar.markdown(
-        "**Autonomous 3D Drone Navigation**\n\n"
-        "Demonstration Platform for 3-DOF Kinematic and 6-DOF Rigid-Body Simulation using PPO & SAC.\n\n"
-        "*(Educational simulation for academic evaluation)*"
+        """
+        <div style="padding: 10px 0 16px 0; border-bottom: 1px solid #1e3a66; margin-bottom: 14px;">
+            <div style="font-size: 18px; font-weight: 800; letter-spacing: 1.5px; color: #ffffff;">
+                🛸 <span style="color: #00f2fe;">ARL</span> FLIGHT SYSTEMS
+            </div>
+            <div style="font-size: 10px; color: #94a3b8; letter-spacing: 1px; text-transform: uppercase;">
+                Autonomous Navigation Research Deck
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown(
+        "**Aerospace Simulation Platform**\n\n"
+        "Unified evaluation deck for 6-DOF rigid-body dynamics (RK4 integration) and "
+        "3-DOF kinematic drone simulation with deep reinforcement learning (PPO & SAC).\n\n"
+        "---\n"
+        "**Key Capabilities**\n"
+        "- 🛰️ 3D Mesh Airframe Telemetry\n"
+        "- 📡 16-Ray Spherical LiDAR Array\n"
+        "- 🔄 Playback Numerical Scrubber\n"
+        "- 🧪 Obstacle-Density Benchmarks"
     )
 
     available_models = get_available_models()
@@ -64,7 +300,7 @@ def main() -> None:
 
     tabs = st.tabs(
         [
-            "🎮 Live 3D Demo",
+            "🎮 Live 3D Flight Deck",
             "📈 Train PPO",
             "📊 Evaluation & Baseline",
             "🎯 Difficulty Experiment",
@@ -73,84 +309,108 @@ def main() -> None:
     )
 
     # ==========================================
-    # TAB 1: LIVE 3D DEMO
+    # TAB 1: LIVE 3D FLIGHT DECK
     # ==========================================
     with tabs[0]:
-        st.subheader("Interactive 3D Drone Simulation Playback")
+        # Professional ARL Mission Header
+        st.markdown(
+            """
+            <div class="arl-header-card">
+                <div class="arl-brand">
+                    <div class="arl-brand-title">
+                        ARL <span class="accent">|</span> AUTONOMOUS FLIGHT SYSTEMS
+                    </div>
+                    <div class="arl-brand-sub">
+                        HIGH-FIDELITY FLIGHT DYNAMICS & NEURAL NAVIGATION DECK
+                    </div>
+                </div>
+                <div class="arl-badge-group">
+                    <div class="arl-pill arl-pill-cyan">● SYSTEM ACTIVE</div>
+                    <div class="arl-pill arl-pill-blue">SIMULATION PLAYBACK</div>
+                    <div class="arl-pill arl-pill-green">16-RAY LIDAR READY</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
         st.caption(
-            "Observe the simulated drone navigate toward the target waypoint while avoiding spherical "
-            "obstacles in a 3D arena. Playback telemetry visualizes rigid-body dynamics, attitude, and LiDAR."
+            "Visualizing simulated quadrotor trajectory, rigid-body quaternion attitude, and spherical LiDAR "
+            "rangefinder readings. Recorded step playback from numerical physics integration (RK4/Euler)."
         )
 
-        st.info(
-            "ℹ️ **Simulation Playback Mode:** You are viewing recorded step playback from numerical "
-            "physics integration (RK4). This is an educational theoretical flight simulation, not "
-            "live hardware telemetry or real-time physical control.",
-            icon="ℹ️",
-        )
+        # Simulation Control Toolbar / Card
+        with st.container():
+            ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([1.5, 2.0, 1.0, 1.0, 1.1])
 
-        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([1.5, 2, 1, 1, 1])
+            with ctrl_col1:
+                env_choice = st.selectbox(
+                    "Dynamics Model:",
+                    options=["6-DOF Quadrotor", "3-DOF Kinematic Drone"],
+                    index=0,
+                    help="6-DOF rigid-body dynamics (quaternion attitude & 4 rotor thrusts) or 3-DOF point-mass kinematics.",
+                )
 
-        with ctrl_col1:
-            env_choice = st.selectbox(
-                "Dynamics Model:",
-                options=["6-DOF Quadrotor", "3-DOF Kinematic Drone"],
-                index=0,
-                help="Choose 6-DOF rigid-body dynamics (quaternion attitude & 4 rotors) or fast 3-DOF point-mass kinematics.",
-            )
+            with ctrl_col2:
+                policy_options = ["Random Action Baseline"]
+                for m in available_models:
+                    info = model_info_map[m.name]
+                    if info["valid"] and info["algorithm"]:
+                        algo_label = info["algorithm"].upper()
+                        env_label = f" ({info['compatible_env']})" if info["compatible_env"] else ""
+                        policy_options.append(f"Trained {algo_label}{env_label}: {m.name}")
+                    else:
+                        policy_options.append(f"Unsupported: {m.name}")
 
-        with ctrl_col2:
-            policy_options = ["Random Action Baseline"]
-            for m in available_models:
-                info = model_info_map[m.name]
-                if info["valid"] and info["algorithm"]:
-                    algo_label = info["algorithm"].upper()
-                    env_label = f" ({info['compatible_env']})" if info["compatible_env"] else ""
-                    policy_options.append(f"Trained {algo_label}{env_label}: {m.name}")
-                else:
-                    policy_options.append(f"Unsupported: {m.name}")
+                selected_policy = st.selectbox(
+                    "Select Policy / Checkpoint:",
+                    options=policy_options,
+                    index=0,
+                    help="Choose a trained neural network checkpoint or test an untrained random baseline.",
+                )
 
-            selected_policy = st.selectbox(
-                "Select Policy:",
-                options=policy_options,
-                index=0,
-                help="Choose a trained model checkpoint or test an untrained random baseline.",
-            )
+            with ctrl_col3:
+                demo_seed = st.number_input(
+                    "Environment Seed:",
+                    min_value=0,
+                    max_value=999999,
+                    value=42,
+                    step=1,
+                    help="Locks procedural obstacle placement and target location for reproducible evaluation.",
+                )
 
-        with ctrl_col3:
-            demo_seed = st.number_input(
-                "Environment Seed:",
-                min_value=0,
-                max_value=999999,
-                value=42,
-                step=1,
-                help="Locks procedural obstacle placement and target location for reproducible evaluation.",
-            )
+            with ctrl_col4:
+                num_obs = st.slider(
+                    "Obstacle Count:",
+                    min_value=0,
+                    max_value=8,
+                    value=4,
+                    step=1,
+                    help="Number of procedural spherical obstacles generated in the arena.",
+                )
 
-        with ctrl_col4:
-            num_obs = st.slider(
-                "Obstacles:",
-                min_value=0,
-                max_value=8,
-                value=4,
-                step=1,
-                help="Number of procedural spherical obstacles generated in the arena.",
-            )
+            with ctrl_col5:
+                show_lidar_rays = st.checkbox("Show 16-Ray LiDAR", value=True)
 
-        with ctrl_col5:
-            show_lidar_rays = st.checkbox("Show 16-Ray LiDAR", value=True)
-
-        run_col1, _ = st.columns([1, 4])
-        with run_col1:
-            launch_clicked = st.button(
-                "🚀 Run Flight Simulation", type="primary", use_container_width=True
-            )
+            run_col1, run_col2 = st.columns([1.5, 4.5])
+            with run_col1:
+                launch_clicked = st.button(
+                    "🚀 Execute Flight Simulation", type="primary", use_container_width=True
+                )
+            with run_col2:
+                if selected_policy.startswith("Random Action Baseline"):
+                    st.markdown(
+                        "<div class='baseline-disclaimer'>⚠️ <b>Untrained Baseline Note:</b> Random Action Baseline provides "
+                        "stochastic control inputs for baseline comparison; it does not represent a trained agent.</div>",
+                        unsafe_allow_html=True,
+                    )
 
         is_6dof = "6-DOF" in env_choice
         sim_key = f"flight_data_{'6dof' if is_6dof else '3dof'}"
 
         if launch_clicked or sim_key not in st.session_state:
-            with st.spinner(f"Executing {env_choice} simulation dynamics..."):
+            with st.spinner(f"Executing {env_choice} numerical dynamics simulation..."):
+                env: Any = None
                 if is_6dof:
                     env = Drone6DOFEnv(num_obstacles=int(num_obs))
                 else:
@@ -207,30 +467,60 @@ def main() -> None:
         steps = flight_data["steps"]
         total_steps = len(steps) - 1
 
-        # Outcome Banner
-        outcome_color = "#38a169" if flight_data["outcome"] == "SUCCESS" else "#e53e3e"
+        # Flight Outcome Status Banner
+        outcome_status = flight_data["outcome"]
+        is_success = outcome_status == "SUCCESS"
+        banner_cls = "success" if is_success else "failure"
+        badge_cls = "arl-pill-green" if is_success else "arl-pill-red"
+        outcome_banner_text = "MISSION SUCCESSFUL" if is_success else "COLLISION / TIMEOUT"
+
+        final_dist = steps[-1]["distance_to_goal"]
         st.markdown(
             f"""
-            <div style="background-color: {outcome_color}22; border-left: 5px solid {outcome_color}; padding: 12px 16px; border-radius: 4px; margin-bottom: 12px;">
-                <h4 style="margin: 0; color: {outcome_color};">Flight Outcome: {flight_data["outcome"]} ({env_choice})</h4>
-                <p style="margin: 4px 0 0 0; color: #cbd5e0; font-size: 14px;">
-                    Completed in <b>{flight_data["total_steps"]}</b> timesteps with cumulative reward <b>{flight_data["total_reward"]:.2f}</b> (Seed: {flight_data["seed"]}).
-                </p>
+            <div class="arl-outcome-banner {banner_cls}">
+                <div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="arl-pill {badge_cls}">● {outcome_banner_text}</span>
+                        <span style="font-weight: 700; font-size: 15px; color: #f1f5f9;">{env_choice}</span>
+                        <span style="color: #64748b;">|</span>
+                        <span style="color: #94a3b8; font-size: 13px;">Policy: <b>{selected_policy.split(': ')[0]}</b></span>
+                    </div>
+                    <div style="margin-top: 4px; font-size: 13px; color: #cbd5e1;">
+                        Episode finished in <b>{flight_data["total_steps"]}</b> timesteps with cumulative reward <b>{flight_data["total_reward"]:.2f}</b> (Seed: {flight_data["seed"]}).
+                    </div>
+                </div>
+                <div style="text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #94a3b8;">
+                    Final Goal Dist: <b style="color: #f8fafc;">{final_dist:.2f} m</b><br>
+                    Physics Mode: <b style="color: #38bdf8;">{'RK4 6-DOF' if is_6dof else 'Kinematic 3-DOF'}</b>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # Scrubber Slider for Trajectory Inspection
-        scrub_col, _ = st.columns([3, 1])
-        with scrub_col:
+        # Scrubber Slider for Trajectory Playback
+        scrub_col1, scrub_col2 = st.columns([3.5, 1.0])
+        with scrub_col1:
             selected_step = st.slider(
-                "Flight Step Playback:",
+                "Flight Step Playback Scrubber:",
                 min_value=0,
                 max_value=total_steps,
                 value=total_steps,
                 step=1,
-                help="Scrub through recorded flight time to inspect 3D drone attitude, position, speed, and sensor range.",
+                help="Scrub through recorded flight timesteps to inspect 3D drone attitude, position, speed, and sensor range.",
+            )
+        with scrub_col2:
+            step_pct = (selected_step / max(1, total_steps)) * 100.0
+            dt_step = 0.05
+            sim_time_sec = selected_step * dt_step
+            st.markdown(
+                f"""
+                <div style="padding-top: 18px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #94a3b8;">
+                    Step: <b style="color: #00f2fe;">{selected_step}</b> / {total_steps} ({step_pct:.0f}%)<br>
+                    Elapsed: <b style="color: #38bdf8;">{sim_time_sec:.2f}s</b>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
         step_info = steps[selected_step]
@@ -239,25 +529,7 @@ def main() -> None:
         cur_lidar = step_info["lidar_ranges"]
         cur_quat = step_info.get("quaternion")
 
-        # Build Interactive 3D Plotly Arena
-        fig = build_arena_3d_figure(
-            bounds=flight_data["bounds"],
-            obstacles=flight_data["obstacles"],
-            target=flight_data["target"],
-            start_pos=flight_data["start_pos"],
-            trajectory=[s["position"] for s in steps[: selected_step + 1]],
-            current_pos=cur_pos,
-            current_vel=cur_vel,
-            attitude_quaternion=cur_quat,
-            lidar_rays=flight_data["lidar_rays"],
-            lidar_ranges=cur_lidar,
-            show_lidar=show_lidar_rays,
-            title=f"3D Flight Arena ({env_choice}) — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Telemetry Metrics Rows
+        # Telemetry calculations
         if cur_quat is not None and len(cur_quat) == 4:
             roll_rad, pitch_rad, yaw_rad = quaternion_to_euler_angles(np.asarray(cur_quat))
             roll_deg = math.degrees(roll_rad)
@@ -267,23 +539,196 @@ def main() -> None:
             roll_deg, pitch_deg, yaw_deg = 0.0, 0.0, 0.0
 
         omega_mag = step_info.get("angular_speed", 0.0)
+        ang_vel = step_info.get("angular_velocity")
+        if ang_vel is not None and len(ang_vel) == 3:
+            p_val, q_val, r_val = ang_vel
+        else:
+            p_val, q_val, r_val = 0.0, 0.0, 0.0
 
-        # Attitude & Velocity Telemetry
-        st.markdown("##### 📡 Flight Deck Telemetry")
-        t1, t2, t3, t4, t5, t6 = st.columns(6)
-        t1.metric("Altitude (Z)", f"{cur_pos[2]:.2f} m")
-        t2.metric("Linear Speed", f"{step_info['speed']:.2f} m/s")
-        t3.metric("Roll (φ)", f"{roll_deg:+.1f}°")
-        t4.metric("Pitch (θ)", f"{pitch_deg:+.1f}°")
-        t5.metric("Yaw (ψ)", f"{yaw_deg:+.1f}°")
-        t6.metric("Angular Speed", f"{omega_mag:.2f} rad/s")
+        # Two-Column Master View: 3D Viewport on Left (dominant), Telemetry Console on Right
+        col_viewport, col_telemetry = st.columns([2.5, 1.0])
 
-        # Navigation & Rewards Telemetry
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Range to Goal", f"{step_info['distance_to_goal']:.2f} m")
-        m2.metric("Nearest Obstacle", f"{step_info['min_obstacle_distance']:.2f} m")
-        m3.metric("Step Reward", f"{step_info['reward']:+.2f}")
-        m4.metric("Cumulative Reward", f"{step_info['cumulative_reward']:+.2f}")
+        with col_viewport:
+            # Build Interactive 3D Plotly Arena
+            fig = build_arena_3d_figure(
+                bounds=flight_data["bounds"],
+                obstacles=flight_data["obstacles"],
+                target=flight_data["target"],
+                start_pos=flight_data["start_pos"],
+                trajectory=[s["position"] for s in steps[: selected_step + 1]],
+                current_pos=cur_pos,
+                current_vel=cur_vel,
+                attitude_quaternion=cur_quat,
+                lidar_rays=flight_data["lidar_rays"],
+                lidar_ranges=cur_lidar,
+                show_lidar=show_lidar_rays,
+                title=f"3D Flight Arena ({env_choice}) — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
+            )
+            # Give viewport substantial height for dominance
+            fig.update_layout(height=660)
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col_telemetry:
+            # 1. NAVIGATION TELEMETRY
+            rel_target = flight_data["target"] - cur_pos
+            st.markdown(
+                f"""
+                <div class="telemetry-card">
+                    <div class="telemetry-header">📍 Navigation & Position</div>
+                    <div class="telemetry-grid">
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Altitude (Z)</span>
+                            <span class="telemetry-stat-val cyan">{cur_pos[2]:.2f}<span class="unit">m</span></span>
+                        </div>
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Range to Goal</span>
+                            <span class="telemetry-stat-val green">{step_info['distance_to_goal']:.2f}<span class="unit">m</span></span>
+                        </div>
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Nearest Obstacle</span>
+                            <span class="telemetry-stat-val {'red' if step_info['min_obstacle_distance'] < 1.0 else 'amber'}">{step_info['min_obstacle_distance']:.2f}<span class="unit">m</span></span>
+                        </div>
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Rel Target [X,Y]</span>
+                            <span class="telemetry-stat-val">[{rel_target[0]:.1f}, {rel_target[1]:.1f}]</span>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # 2. FLIGHT DYNAMICS
+            st.markdown(
+                f"""
+                <div class="telemetry-card">
+                    <div class="telemetry-header">⚡ Flight Dynamics</div>
+                    <div class="telemetry-grid">
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Linear Speed</span>
+                            <span class="telemetry-stat-val cyan">{step_info['speed']:.2f}<span class="unit">m/s</span></span>
+                        </div>
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Angular Speed</span>
+                            <span class="telemetry-stat-val">{omega_mag:.2f}<span class="unit">rad/s</span></span>
+                        </div>
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Velocity [Vx, Vy]</span>
+                            <span class="telemetry-stat-val">[{cur_vel[0]:.1f}, {cur_vel[1]:.1f}]</span>
+                        </div>
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Climb Rate (Vz)</span>
+                            <span class="telemetry-stat-val">{cur_vel[2]:+.2f}<span class="unit">m/s</span></span>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # 3. ATTITUDE & ORIENTATION (6-DOF) / KINEMATICS (3-DOF)
+            if is_6dof and cur_quat is not None:
+                st.markdown(
+                    f"""
+                    <div class="telemetry-card">
+                        <div class="telemetry-header">🧭 Attitude & Orientation (6-DOF)</div>
+                        <div class="telemetry-grid">
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Roll (φ)</span>
+                                <span class="telemetry-stat-val">{roll_deg:+.1f}<span class="unit">°</span></span>
+                            </div>
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Pitch (θ)</span>
+                                <span class="telemetry-stat-val">{pitch_deg:+.1f}<span class="unit">°</span></span>
+                            </div>
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Yaw (ψ)</span>
+                                <span class="telemetry-stat-val">{yaw_deg:+.1f}<span class="unit">°</span></span>
+                            </div>
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Body Rates [p,q,r]</span>
+                                <span class="telemetry-stat-val">[{p_val:.1f}, {q_val:.1f}, {r_val:.1f}]</span>
+                            </div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    """
+                    <div class="telemetry-card">
+                        <div class="telemetry-header">🧭 Kinematic State (3-DOF)</div>
+                        <div style="font-size: 11px; color: #94a3b8; line-height: 1.4;">
+                            <b>Point-Mass Kinematics:</b> Continuous 3D acceleration control. Rotational torque and attitude dynamics are not simulated in 3-DOF mode.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            # 4. SENSORS & LIDAR
+            min_lidar = float(np.min(cur_lidar)) if len(cur_lidar) > 0 else 0.0
+            st.markdown(
+                f"""
+                <div class="telemetry-card">
+                    <div class="telemetry-header">📡 Sensors & Perception</div>
+                    <div class="telemetry-grid">
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">LiDAR Rays</span>
+                            <span class="telemetry-stat-val cyan">16 <span class="unit">Beams</span></span>
+                        </div>
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Closest Return</span>
+                            <span class="telemetry-stat-val {'red' if min_lidar < 1.5 else 'green'}">{min_lidar:.2f}<span class="unit">m</span></span>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # 5. REWARDS & PERFORMANCE
+            st.markdown(
+                f"""
+                <div class="telemetry-card">
+                    <div class="telemetry-header">🎯 Performance & Rewards</div>
+                    <div class="telemetry-grid">
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Step Reward</span>
+                            <span class="telemetry-stat-val">{step_info['reward']:+.2f}</span>
+                        </div>
+                        <div class="telemetry-stat">
+                            <span class="telemetry-stat-label">Cumulative Return</span>
+                            <span class="telemetry-stat-val green">{step_info['cumulative_reward']:+.2f}</span>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # Expandable Simulation Diagnostics Section
+        with st.expander("🔍 Simulation Diagnostics & Physics Specifications"):
+            diag_col1, diag_col2 = st.columns(2)
+            with diag_col1:
+                st.markdown(
+                    """
+                    **Dynamics Engine Specifications**
+                    - **6-DOF Quadrotor Dynamics**: Runge-Kutta 4th Order (RK4) integration with 5 substeps ($\\Delta t_{\\text{sub}} = 0.01\\text{ s}$).
+                    - **State Representation**: 36-dimensional state vector with position, linear velocity, unit quaternion attitude $\\mathbf{q} = [q_w, q_x, q_y, q_z]$, and body angular velocity $\\boldsymbol{\\omega} = [p, q, r]$.
+                    - **Control**: Continuous 4-motor thrust commands mapped to physical body torques and collective thrust.
+                    """
+                )
+            with diag_col2:
+                st.markdown(
+                    """
+                    **Sensor & Obstacle Parameters**
+                    - **Spherical LiDAR**: 16 analytical raycast rangefinders with geometric ray-sphere and bounding box intersection calculations.
+                    - **Collision Detection**: Continuous sphere-to-sphere collision checking with obstacle clearance radii.
+                    - **Playback Notice**: Recorded trajectory playback from deterministic numerical evaluation episodes.
+                    """
+                )
 
     # ==========================================
     # TAB 2: TRAIN PPO
@@ -319,7 +764,7 @@ def main() -> None:
             st.session_state["is_training"] = True
             st.info(f"Starting training run ({train_steps:,} timesteps on CPU)...")
             prog_bar = st.progress(0.0)
-            status_text = st.empty()
+            train_status_box: Any = st.empty()
 
             try:
                 train_cfg = ExperimentConfig(
@@ -344,7 +789,7 @@ def main() -> None:
                 duration = time.time() - t0
 
                 prog_bar.progress(1.0)
-                status_text.text(f"Training Complete! Duration: {duration:.2f}s")
+                train_status_box.text(f"Training Complete! Duration: {duration:.2f}s")
                 st.success(f"Checkpoint saved: `{result.final_model_path}`")
 
                 st.session_state["latest_training_rewards"] = result.episode_rewards
