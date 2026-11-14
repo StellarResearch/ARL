@@ -21,7 +21,9 @@ from adaptive_rl.environments.drone_6dof import (
 
 
 def _combine_meshes(
-    mesh_list: Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+    mesh_list: Sequence[
+        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ],
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Combine multiple (x, y, z, i, j, k) mesh tuples into a single unified mesh."""
     xs, ys, zs = [], [], []
@@ -185,27 +187,33 @@ def _blade_mesh_body(
     p6 = rotor_center - dir_v * blade_length + nor_v * (chord * 0.28)
     p7 = rotor_center - dir_v * blade_length - nor_v * (chord * 0.28)
 
-    upper = np.array([
-        [p0[0], p0[1], z + dz],
-        [p1[0], p1[1], z + dz],
-        [p2[0], p2[1], z + dz + 0.01],
-        [p3[0], p3[1], z + dz + 0.01],
-        [p4[0], p4[1], z + dz],
-        [p5[0], p5[1], z + dz],
-        [p6[0], p6[1], z + dz - 0.01],
-        [p7[0], p7[1], z + dz - 0.01],
-    ], dtype=np.float64)
+    upper = np.array(
+        [
+            [p0[0], p0[1], z + dz],
+            [p1[0], p1[1], z + dz],
+            [p2[0], p2[1], z + dz + 0.01],
+            [p3[0], p3[1], z + dz + 0.01],
+            [p4[0], p4[1], z + dz],
+            [p5[0], p5[1], z + dz],
+            [p6[0], p6[1], z + dz - 0.01],
+            [p7[0], p7[1], z + dz - 0.01],
+        ],
+        dtype=np.float64,
+    )
 
-    lower = np.array([
-        [p0[0], p0[1], z - dz],
-        [p1[0], p1[1], z - dz],
-        [p2[0], p2[1], z - dz + 0.01],
-        [p3[0], p3[1], z - dz + 0.01],
-        [p4[0], p4[1], z - dz],
-        [p5[0], p5[1], z - dz],
-        [p6[0], p6[1], z - dz - 0.01],
-        [p7[0], p7[1], z - dz - 0.01],
-    ], dtype=np.float64)
+    lower = np.array(
+        [
+            [p0[0], p0[1], z - dz],
+            [p1[0], p1[1], z - dz],
+            [p2[0], p2[1], z - dz + 0.01],
+            [p3[0], p3[1], z - dz + 0.01],
+            [p4[0], p4[1], z - dz],
+            [p5[0], p5[1], z - dz],
+            [p6[0], p6[1], z - dz - 0.01],
+            [p7[0], p7[1], z - dz - 0.01],
+        ],
+        dtype=np.float64,
+    )
 
     verts = np.vstack([upper, lower])
     # 16 vertices total: 0..7 upper, 8..15 lower
@@ -233,7 +241,9 @@ def _rotor_disc_mesh_body(
     z = rotor_center[2] + 0.045
     theta = np.linspace(0.0, 2.0 * math.pi, n_seg, endpoint=False)
     circle_pts = [
-        np.array([rotor_center[0] + radius * math.cos(th), rotor_center[1] + radius * math.sin(th), z])
+        np.array(
+            [rotor_center[0] + radius * math.cos(th), rotor_center[1] + radius * math.sin(th), z]
+        )
         for th in theta
     ]
     center_pt = np.array([rotor_center[0], rotor_center[1], z])
@@ -257,16 +267,18 @@ def _rotor_disc_mesh_body(
     )
 
 
-def _fuselage_mesh_body(d: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _fuselage_mesh_body(
+    d: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Generate sleek 3D faceted aerospace fuselage pod in body coordinates."""
     top_pts = [
-        [0.38 * d, 0.0, 0.02 * d],        # 0: nose
-        [0.22 * d, 0.18 * d, 0.05 * d],   # 1: front-left
-        [0.0, 0.22 * d, 0.05 * d],        # 2: mid-left
+        [0.38 * d, 0.0, 0.02 * d],  # 0: nose
+        [0.22 * d, 0.18 * d, 0.05 * d],  # 1: front-left
+        [0.0, 0.22 * d, 0.05 * d],  # 2: mid-left
         [-0.22 * d, 0.16 * d, 0.04 * d],  # 3: rear-left
-        [-0.34 * d, 0.0, 0.02 * d],       # 4: tail
-        [-0.22 * d, -0.16 * d, 0.04 * d], # 5: rear-right
-        [0.0, -0.22 * d, 0.05 * d],       # 6: mid-right
+        [-0.34 * d, 0.0, 0.02 * d],  # 4: tail
+        [-0.22 * d, -0.16 * d, 0.04 * d],  # 5: rear-right
+        [0.0, -0.22 * d, 0.05 * d],  # 6: mid-right
         [0.22 * d, -0.18 * d, 0.05 * d],  # 7: front-right
     ]
     bot_pts = [
@@ -317,7 +329,9 @@ def _fuselage_mesh_body(d: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, n
     )
 
 
-def _chevron_mesh_body(d: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _chevron_mesh_body(
+    d: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Generate forward heading indicator chevron in body coordinates."""
     z0 = 0.03 * d
     z1 = 0.06 * d
@@ -337,7 +351,9 @@ def _chevron_mesh_body(d: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np
     return verts[:, 0], verts[:, 1], verts[:, 2], i, j, k
 
 
-def _antennas_mesh_body(d: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _antennas_mesh_body(
+    d: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Generate dual rear telemetry antenna masts in body coordinates."""
     a1 = _cylinder_mesh_body(
         np.array([-0.24 * d, 0.08 * d, 0.03 * d]),
@@ -380,8 +396,8 @@ def _transform_mesh(
 def compute_quadrotor_3d_geometry(
     center_pos: np.ndarray | Sequence[float],
     quaternion: Optional[np.ndarray | Sequence[float]] = None,
-    arm_span: float = 1.2,
-    rotor_radius: float = 0.28,
+    arm_span: float = 0.4,
+    rotor_radius: float = 0.09,
     n_propeller_points: int = 16,
     propeller_phase: float = 0.0,
 ) -> Dict[str, Any]:
@@ -425,9 +441,9 @@ def compute_quadrotor_3d_geometry(
 
     body_rotors = [
         np.array([d, -d, 0.0], dtype=np.float64),  # R1 Front-Right
-        np.array([d, d, 0.0], dtype=np.float64),   # R2 Front-Left
+        np.array([d, d, 0.0], dtype=np.float64),  # R2 Front-Left
         np.array([-d, d, 0.0], dtype=np.float64),  # R3 Rear-Left
-        np.array([-d, -d, 0.0], dtype=np.float64), # R4 Rear-Right
+        np.array([-d, -d, 0.0], dtype=np.float64),  # R4 Rear-Right
     ]
 
     # Transform rotors to world coordinates
@@ -479,31 +495,53 @@ def compute_quadrotor_3d_geometry(
     ]
     mesh_front_arms = _transform_mesh(_combine_meshes(arm_front_cylinders), c_pos, rot_mat)
     mesh_rear_arms = _transform_mesh(_combine_meshes(arm_rear_cylinders), c_pos, rot_mat)
-    mesh_arms = _transform_mesh(_combine_meshes(arm_front_cylinders + arm_rear_cylinders), c_pos, rot_mat)
+    mesh_arms = _transform_mesh(
+        _combine_meshes(arm_front_cylinders + arm_rear_cylinders), c_pos, rot_mat
+    )
 
     # 3. Four Motor Housings
     motors_front = [
-        _cylinder_mesh_body(body_rotors[0] + np.array([0, 0, -0.07 * d]), body_rotors[0] + np.array([0, 0, 0.03 * d]), 0.15 * d),
-        _cylinder_mesh_body(body_rotors[1] + np.array([0, 0, -0.07 * d]), body_rotors[1] + np.array([0, 0, 0.03 * d]), 0.15 * d),
+        _cylinder_mesh_body(
+            body_rotors[0] + np.array([0, 0, -0.07 * d]),
+            body_rotors[0] + np.array([0, 0, 0.03 * d]),
+            0.15 * d,
+        ),
+        _cylinder_mesh_body(
+            body_rotors[1] + np.array([0, 0, -0.07 * d]),
+            body_rotors[1] + np.array([0, 0, 0.03 * d]),
+            0.15 * d,
+        ),
     ]
     motors_rear = [
-        _cylinder_mesh_body(body_rotors[2] + np.array([0, 0, -0.07 * d]), body_rotors[2] + np.array([0, 0, 0.03 * d]), 0.15 * d),
-        _cylinder_mesh_body(body_rotors[3] + np.array([0, 0, -0.07 * d]), body_rotors[3] + np.array([0, 0, 0.03 * d]), 0.15 * d),
+        _cylinder_mesh_body(
+            body_rotors[2] + np.array([0, 0, -0.07 * d]),
+            body_rotors[2] + np.array([0, 0, 0.03 * d]),
+            0.15 * d,
+        ),
+        _cylinder_mesh_body(
+            body_rotors[3] + np.array([0, 0, -0.07 * d]),
+            body_rotors[3] + np.array([0, 0, 0.03 * d]),
+            0.15 * d,
+        ),
     ]
     mesh_motors_front = _transform_mesh(_combine_meshes(motors_front), c_pos, rot_mat)
     mesh_motors_rear = _transform_mesh(_combine_meshes(motors_rear), c_pos, rot_mat)
 
     # 4. Four Rotor Hub Spinners and Assembly
     hubs = [
-        _cylinder_mesh_body(r + np.array([0, 0, 0.03 * d]), r + np.array([0, 0, 0.08 * d]), 0.07 * d)
+        _cylinder_mesh_body(
+            r + np.array([0, 0, 0.03 * d]), r + np.array([0, 0, 0.08 * d]), 0.07 * d
+        )
         for r in body_rotors
     ]
     mesh_rotor_hubs = _transform_mesh(_combine_meshes(hubs), c_pos, rot_mat)
-    mesh_rotor_assemblies = _transform_mesh(_combine_meshes(motors_front + motors_rear + hubs), c_pos, rot_mat)
+    mesh_rotor_assemblies = _transform_mesh(
+        _combine_meshes(motors_front + motors_rear + hubs), c_pos, rot_mat
+    )
 
     # 5. Four Recognizable Propeller Blades with Dynamic Phase
     blade_len = float(rotor_radius)
-    blade_chord = max(0.06 * d, 0.06)
+    blade_chord = max(0.22 * blade_len, 0.012)
 
     # Counter-rotating propeller directions (CCW for R1/R3, CW for R2/R4)
     phi = float(propeller_phase)
@@ -519,36 +557,79 @@ def compute_quadrotor_3d_geometry(
     mesh_props_rear = _transform_mesh(_combine_meshes(props_rear), c_pos, rot_mat)
 
     # Translucent spinning rotor blur discs
-    discs = [
-        _rotor_disc_mesh_body(r, float(rotor_radius) * 0.95)
-        for r in body_rotors
-    ]
+    discs = [_rotor_disc_mesh_body(r, float(rotor_radius) * 0.95) for r in body_rotors]
     mesh_rotor_discs = _transform_mesh(_combine_meshes(discs), c_pos, rot_mat)
 
     # 6. Landing Gear (Dual Skids and 4 Angled Struts)
     skid_port = [
-        _cylinder_mesh_body(np.array([-0.36 * d, 0.22 * d, -0.16 * d]), np.array([0.36 * d, 0.22 * d, -0.16 * d]), 0.02 * d),
-        _cylinder_mesh_body(np.array([0.36 * d, 0.22 * d, -0.16 * d]), np.array([0.44 * d, 0.22 * d, -0.08 * d]), 0.02 * d),
-        _cylinder_mesh_body(np.array([-0.36 * d, 0.22 * d, -0.16 * d]), np.array([-0.44 * d, 0.22 * d, -0.08 * d]), 0.02 * d),
+        _cylinder_mesh_body(
+            np.array([-0.36 * d, 0.22 * d, -0.16 * d]),
+            np.array([0.36 * d, 0.22 * d, -0.16 * d]),
+            0.02 * d,
+        ),
+        _cylinder_mesh_body(
+            np.array([0.36 * d, 0.22 * d, -0.16 * d]),
+            np.array([0.44 * d, 0.22 * d, -0.08 * d]),
+            0.02 * d,
+        ),
+        _cylinder_mesh_body(
+            np.array([-0.36 * d, 0.22 * d, -0.16 * d]),
+            np.array([-0.44 * d, 0.22 * d, -0.08 * d]),
+            0.02 * d,
+        ),
     ]
     skid_stbd = [
-        _cylinder_mesh_body(np.array([-0.36 * d, -0.22 * d, -0.16 * d]), np.array([0.36 * d, -0.22 * d, -0.16 * d]), 0.02 * d),
-        _cylinder_mesh_body(np.array([0.36 * d, -0.22 * d, -0.16 * d]), np.array([0.44 * d, -0.22 * d, -0.08 * d]), 0.02 * d),
-        _cylinder_mesh_body(np.array([-0.36 * d, -0.22 * d, -0.16 * d]), np.array([-0.44 * d, -0.22 * d, -0.08 * d]), 0.02 * d),
+        _cylinder_mesh_body(
+            np.array([-0.36 * d, -0.22 * d, -0.16 * d]),
+            np.array([0.36 * d, -0.22 * d, -0.16 * d]),
+            0.02 * d,
+        ),
+        _cylinder_mesh_body(
+            np.array([0.36 * d, -0.22 * d, -0.16 * d]),
+            np.array([0.44 * d, -0.22 * d, -0.08 * d]),
+            0.02 * d,
+        ),
+        _cylinder_mesh_body(
+            np.array([-0.36 * d, -0.22 * d, -0.16 * d]),
+            np.array([-0.44 * d, -0.22 * d, -0.08 * d]),
+            0.02 * d,
+        ),
     ]
     struts = [
-        _cylinder_mesh_body(np.array([0.16 * d, 0.14 * d, 0.0]), np.array([0.18 * d, 0.22 * d, -0.16 * d]), 0.018 * d),
-        _cylinder_mesh_body(np.array([-0.16 * d, 0.14 * d, 0.0]), np.array([-0.18 * d, 0.22 * d, -0.16 * d]), 0.018 * d),
-        _cylinder_mesh_body(np.array([0.16 * d, -0.14 * d, 0.0]), np.array([0.18 * d, -0.22 * d, -0.16 * d]), 0.018 * d),
-        _cylinder_mesh_body(np.array([-0.16 * d, -0.14 * d, 0.0]), np.array([-0.18 * d, -0.22 * d, -0.16 * d]), 0.018 * d),
+        _cylinder_mesh_body(
+            np.array([0.16 * d, 0.14 * d, 0.0]),
+            np.array([0.18 * d, 0.22 * d, -0.16 * d]),
+            0.018 * d,
+        ),
+        _cylinder_mesh_body(
+            np.array([-0.16 * d, 0.14 * d, 0.0]),
+            np.array([-0.18 * d, 0.22 * d, -0.16 * d]),
+            0.018 * d,
+        ),
+        _cylinder_mesh_body(
+            np.array([0.16 * d, -0.14 * d, 0.0]),
+            np.array([0.18 * d, -0.22 * d, -0.16 * d]),
+            0.018 * d,
+        ),
+        _cylinder_mesh_body(
+            np.array([-0.16 * d, -0.14 * d, 0.0]),
+            np.array([-0.18 * d, -0.22 * d, -0.16 * d]),
+            0.018 * d,
+        ),
     ]
-    mesh_landing_gear = _transform_mesh(_combine_meshes(skid_port + skid_stbd + struts), c_pos, rot_mat)
+    mesh_landing_gear = _transform_mesh(
+        _combine_meshes(skid_port + skid_stbd + struts), c_pos, rot_mat
+    )
 
     # 7. Forward Camera & Sensor Gimbal Assembly
     camera_parts = [
-        _cylinder_mesh_body(np.array([0.32 * d, 0.0, 0.0]), np.array([0.40 * d, 0.0, -0.03 * d]), 0.025 * d),
+        _cylinder_mesh_body(
+            np.array([0.32 * d, 0.0, 0.0]), np.array([0.40 * d, 0.0, -0.03 * d]), 0.025 * d
+        ),
         _sphere_mesh_body(np.array([0.42 * d, 0.0, -0.04 * d]), 0.06 * d),
-        _cylinder_mesh_body(np.array([0.42 * d, 0.0, -0.04 * d]), np.array([0.48 * d, 0.0, -0.04 * d]), 0.035 * d),
+        _cylinder_mesh_body(
+            np.array([0.42 * d, 0.0, -0.04 * d]), np.array([0.48 * d, 0.0, -0.04 * d]), 0.035 * d
+        ),
     ]
     mesh_camera = _transform_mesh(_combine_meshes(camera_parts), c_pos, rot_mat)
 
@@ -583,6 +664,9 @@ def compute_quadrotor_3d_geometry(
         "mesh_heading_indicator": mesh_heading,
         "rot_mat": rot_mat,
         "body_rotors": body_rotors,
+        "arm_span": arm_span,
+        "rotor_radius": rotor_radius,
+        "d": d,
     }
 
 
@@ -686,9 +770,18 @@ def _generate_box_wireframe(
     ]
 
     edges = [
-        (0, 1), (1, 2), (2, 3), (3, 0),
-        (4, 5), (5, 6), (6, 7), (7, 4),
-        (0, 4), (1, 5), (2, 6), (3, 7),
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
     ]
 
     xs: List[Optional[float]] = []
@@ -717,8 +810,8 @@ def build_arena_3d_figure(
     lidar_ranges: Optional[Sequence[float] | np.ndarray] = None,
     show_lidar: bool = True,
     title: str = "3D Drone Flight Arena",
-    arm_span: float = 1.8,
-    rotor_radius: float = 0.42,
+    arm_span: float = 0.4,
+    rotor_radius: float = 0.09,
     camera_preset: str = "Arena Overview",
     show_floor: bool = True,
     show_safety_zones: bool = True,
@@ -990,7 +1083,13 @@ def build_arena_3d_figure(
             propeller_phase=propeller_phase,
         )
 
-        def _add_mesh(mesh_dict: Dict[str, np.ndarray], color: str, name: str, opacity: float = 1.0, showlegend: bool = False) -> None:
+        def _add_mesh(
+            mesh_dict: Dict[str, np.ndarray],
+            color: str,
+            name: str,
+            opacity: float = 1.0,
+            showlegend: bool = False,
+        ) -> None:
             if len(mesh_dict["x"]) > 0:
                 fig.add_trace(
                     go.Mesh3d(
@@ -1018,28 +1117,54 @@ def build_arena_3d_figure(
         _add_mesh(geom["mesh_rear_arms"], "#3b82f6", "Rear Arms", opacity=1.0, showlegend=True)
 
         # Rotor Assemblies (Motors and Hubs)
-        _add_mesh(geom["mesh_rotor_assemblies"], "#94a3b8", "Rotor Assemblies", opacity=1.0, showlegend=True)
+        _add_mesh(
+            geom["mesh_rotor_assemblies"],
+            "#94a3b8",
+            "Rotor Assemblies",
+            opacity=1.0,
+            showlegend=True,
+        )
 
         # Front & Rear 3D Propeller Blades
-        _add_mesh(geom["mesh_props_front"], "#00e5ff", "Front Propellers", opacity=0.95, showlegend=True)
-        _add_mesh(geom["mesh_props_rear"], "#3b82f6", "Rear Propellers", opacity=0.95, showlegend=True)
+        _add_mesh(
+            geom["mesh_props_front"], "#00e5ff", "Front Propellers", opacity=0.95, showlegend=True
+        )
+        _add_mesh(
+            geom["mesh_props_rear"], "#3b82f6", "Rear Propellers", opacity=0.95, showlegend=True
+        )
 
         # Translucent Spinning Rotor Blur Discs
         if "mesh_rotor_discs" in geom:
-            _add_mesh(geom["mesh_rotor_discs"], "#38bdf8", "Rotor Blur Discs", opacity=0.20, showlegend=False)
+            _add_mesh(
+                geom["mesh_rotor_discs"],
+                "#38bdf8",
+                "Rotor Blur Discs",
+                opacity=0.20,
+                showlegend=False,
+            )
 
         # Dual Landing Gear Skids & Struts
-        _add_mesh(geom["mesh_landing_gear"], "#475569", "Landing Gear", opacity=1.0, showlegend=True)
+        _add_mesh(
+            geom["mesh_landing_gear"], "#475569", "Landing Gear", opacity=1.0, showlegend=True
+        )
 
         # Forward Optical Sensor Gimbal
-        _add_mesh(geom["mesh_camera"], "#06b6d4", "Sensor Gimbal & Lens", opacity=1.0, showlegend=True)
+        _add_mesh(
+            geom["mesh_camera"], "#06b6d4", "Sensor Gimbal & Lens", opacity=1.0, showlegend=True
+        )
 
         # Dual Rear Telemetry Antenna Masts
         if "mesh_antennas" in geom:
             _add_mesh(geom["mesh_antennas"], "#64748b", "Antennas", opacity=1.0, showlegend=False)
 
         # Forward Heading Indicator Chevron (+X_B)
-        _add_mesh(geom["mesh_heading_indicator"], "#fbbf24", "Forward Heading (+X_B)", opacity=1.0, showlegend=True)
+        _add_mesh(
+            geom["mesh_heading_indicator"],
+            "#fbbf24",
+            "Forward Heading (+X_B)",
+            opacity=1.0,
+            showlegend=True,
+        )
 
         # Center Marker (Drone Trace)
         fig.add_trace(
@@ -1212,10 +1337,16 @@ def run_drone_simulation_episode(
     terminated = False
     truncated = False
     step_count = 0
+    collision_occurred = False
+    collision_count = 0
+    collision_steps: List[int] = []
 
     num_rays = int(getattr(env, "num_lidar_rays", 16))
     lidar_range = float(getattr(env, "lidar_range", 20.0))
     act_shape = env.action_space.shape if hasattr(env, "action_space") else (3,)
+    arm_span = float(getattr(env, "arm_span", 0.4))
+    rotor_radius = float(getattr(env, "rotor_radius", 0.09))
+    physical_dims = getattr(env, "physical_dimensions", {})
 
     raw_lidar_init = obs[-num_rays:] if len(obs) >= num_rays else np.zeros(num_rays)
     lidar_ranges_init = (raw_lidar_init * lidar_range).copy()
@@ -1240,6 +1371,8 @@ def run_drone_simulation_episode(
             "collision": False,
             "collision_type": "none",
             "is_success": False,
+            "terminated": False,
+            "truncated": False,
             "quaternion": info.get("quaternion").copy() if "quaternion" in info else None,
             "wind_vector": info.get("wind_vector"),
             "reward_components": info.get("reward_components"),
@@ -1259,6 +1392,12 @@ def run_drone_simulation_episode(
         pos = info["position"].copy()
         vel = info["velocity"].copy()
         trajectory.append(pos)
+
+        step_collision = bool(info.get("collision", False))
+        if step_collision:
+            collision_occurred = True
+            collision_count += 1
+            collision_steps.append(step_count)
 
         raw_lidar_norm = obs[-num_rays:] if len(obs) >= num_rays else np.zeros(num_rays)
         lidar_ranges = (raw_lidar_norm * lidar_range).copy()
@@ -1280,16 +1419,41 @@ def run_drone_simulation_episode(
                 "cumulative_reward": float(total_reward),
                 "lidar_ranges": lidar_ranges,
                 "action": np.asarray(action, dtype=np.float32).copy(),
-                "collision": bool(info.get("collision", False)),
+                "collision": step_collision,
                 "collision_type": str(info.get("collision_type", "none")),
                 "is_success": bool(info.get("is_success", False) or info.get("success", False)),
+                "terminated": bool(terminated),
+                "truncated": bool(truncated),
                 "quaternion": info.get("quaternion").copy() if "quaternion" in info else None,
                 "wind_vector": info.get("wind_vector"),
                 "reward_components": info.get("reward_components"),
             }
         )
 
-    outcome = "SUCCESS" if steps_data[-1]["is_success"] else "COLLISION / TIMEOUT"
+    last_step = steps_data[-1]
+    is_goal_reached = bool(last_step["is_success"])
+    is_terminal_collision = bool(last_step["collision"]) or (terminated and not is_goal_reached)
+    is_time_limit = bool(
+        truncated
+        or (step_count >= env.max_steps and not is_goal_reached and not is_terminal_collision)
+    )
+
+    if is_goal_reached:
+        outcome = "SUCCESS"
+        termination_reason = "goal_reached"
+    elif is_terminal_collision:
+        outcome = "COLLISION"
+        coll_t = str(last_step.get("collision_type", "boundary_or_obstacle"))
+        termination_reason = f"collision ({coll_t})"
+    elif is_time_limit:
+        outcome = "TIMEOUT"
+        termination_reason = "time_limit_truncated"
+    elif terminated:
+        outcome = "TERMINATED"
+        termination_reason = "environment_terminated"
+    else:
+        outcome = "TIMEOUT"
+        termination_reason = "time_limit_reached"
 
     return {
         "trajectory": trajectory,
@@ -1297,6 +1461,18 @@ def run_drone_simulation_episode(
         "total_reward": total_reward,
         "total_steps": step_count,
         "outcome": outcome,
+        "terminated": bool(terminated),
+        "truncated": bool(truncated),
+        "is_success": is_goal_reached,
+        "collision": is_terminal_collision,
+        "collision_occurred": collision_occurred,
+        "collision_count": collision_count,
+        "collision_steps": collision_steps,
+        "collision_type": str(last_step.get("collision_type", "none")),
+        "termination_reason": termination_reason,
+        "arm_span": arm_span,
+        "rotor_radius": rotor_radius,
+        "physical_dimensions": physical_dims,
         "seed": seed,
         "obstacles": getattr(env, "_obstacles", getattr(env, "obstacles", [])),
         "target": getattr(

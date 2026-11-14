@@ -531,6 +531,31 @@ class DroneNavigation3DEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         self._current_step = 0
         self._prev_distance_to_goal: float = float(np.linalg.norm(self._goal - self._position))
 
+    @property
+    def arm_length(self) -> float:
+        """Nominal drone arm length in meters."""
+        return 0.2
+
+    @property
+    def arm_span(self) -> float:
+        """Nominal diagonal rotor span in meters (2 * arm_length)."""
+        return 0.4
+
+    @property
+    def rotor_radius(self) -> float:
+        """Nominal rotor radius in meters."""
+        return 0.09
+
+    @property
+    def physical_dimensions(self) -> Dict[str, float]:
+        """Physical geometry dimensions for visualization and structural modeling."""
+        return {
+            "arm_length": 0.2,
+            "arm_span": 0.4,
+            "rotor_radius": 0.09,
+            "collision_radius": self.collision_radius,
+        }
+
     def _get_obs(self) -> np.ndarray:
         bx, by, bz = self.bounds
         v_max = self.kinematics.max_velocity

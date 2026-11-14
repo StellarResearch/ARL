@@ -9,6 +9,7 @@ import pytest
 from gymnasium.utils.env_checker import check_env
 
 from adaptive_rl.environments import get, make_env
+from adaptive_rl.environments.drone import ObstacleSphere3D
 from adaptive_rl.environments.drone_6dof import (
     Drone6DOFEnv,
     DroneDynamics6DOF,
@@ -294,3 +295,75 @@ def test_drone_6dof_invalid_input_validation(invalid_kwargs: dict, match_str: st
     """Verify that invalid shapes, non-finite values, and out-of-range inputs raise ValueError."""
     with pytest.raises(ValueError, match=match_str):
         Drone6DOFEnv(**invalid_kwargs)
+
+
+def test_drone_6dof_physical_dimensions() -> None:
+    """Verify physical geometry properties and rotor positions on 6-DOF model."""
+    env = Drone6DOFEnv(arm_length=0.2)
+    assert math.isclose(env.arm_length, 0.2)
+    assert math.isclose(env.arm_span, 0.4)
+    assert math.isclose(env.rotor_radius, 0.09)
+
+    # Check rotor positions in body frame
+    rotors = env.rotor_positions
+    assert len(rotors) == 4
+    d = 0.2 / math.sqrt(2)
+    for pos in rotors:
+        # Radial distance must equal arm_length (0.2 m)
+        assert math.isclose(float(np.linalg.norm(pos)), 0.2, abs_tol=1e-6)
+        assert math.isclose(abs(pos[0]), d, abs_tol=1e-6)
+        assert math.isclose(abs(pos[1]), d, abs_tol=1e-6)
+        assert math.isclose(pos[2], 0.0, abs_tol=1e-6)
+
+    dims = env.physical_dimensions
+    assert math.isclose(dims["arm_length"], 0.2)
+    assert math.isclose(dims["arm_span"], 0.4)
+    assert math.isclose(dims["rotor_radius"], 0.09)
+    env.close()
+
+
+def test_drone_6dof_lidar_frame_semantics() -> None:
+    """Verify difference between world-fixed (default) and body-fixed LiDAR rays under rotation."""
+    # Create two environments with identical configuration except body_frame_lidar
+    env_world = Drone6DOFEnv(
+        num_obstacles=1, obstacle_radius=2.0, body_frame_lidar=False, max_steps=10
+    )
+    env_body = Drone6DOFEnv(
+        num_obstacles=1, obstacle_radius=2.0, body_frame_lidar=True, max_steps=10
+    )
+
+    env_world.reset(seed=123)
+    env_body.reset(seed=123)
+
+    # Place an obstacle directly in front (+X) of drone
+    obs = ObstacleSphere3D(center=np.array([15.0, 10.0, 5.0]), radius=2.0)
+    env_world._obstacles = [obs]
+    env_body._obstacles = [obs]
+    env_world.dynamics.state.position = np.array([10.0, 10.0, 5.0])
+    env_body.dynamics.state.position = np.array([10.0, 10.0, 5.0])
+
+    # Attitude 1: Identity attitude (Euler angles roll=0, pitch=0, yaw=0)
+    # When identity attitude, world frame and body frame coincide
+    obs_w1 = env_world._get_obs()
+    obs_b1 = env_body._get_obs()
+    lidar_w1 = obs_w1[-16:]
+    lidar_b1 = obs_b1[-16:]
+    np.testing.assert_allclose(lidar_w1, lidar_b1, atol=1e-5)
+
+    # Attitude 2: Pure 90-degree pitch around Y: q = [cos(pi/4), 0, sin(pi/4), 0]
+    q_pitch90 = np.array([math.cos(math.pi / 4.0), 0.0, math.sin(math.pi / 4.0), 0.0])
+    env_world.dynamics.state.quaternion = q_pitch90.copy()
+    env_body.dynamics.state.quaternion = q_pitch90.copy()
+
+    obs_w2 = env_world._get_obs()
+    obs_b2 = env_body._get_obs()
+    lidar_w2 = obs_w2[-16:]
+    lidar_b2 = obs_b2[-16:]
+
+    # For world-fixed LiDAR, rays don't change with attitude, so readings remain identical
+    np.testing.assert_allclose(lidar_w2, lidar_w1, atol=1e-5)
+    # For body-fixed LiDAR, rays rotated by 90-degree pitch, so readings differ from world-fixed
+    assert not np.allclose(lidar_b2, lidar_w2, atol=1e-3)
+
+    env_world.close()
+    env_body.close()

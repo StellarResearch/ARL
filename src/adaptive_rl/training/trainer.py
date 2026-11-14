@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -192,6 +193,28 @@ class RLTrainer:
         }
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(meta_dict, f, indent=2)
+
+        # Embed arl_metadata.json into the saved model zip archive for self-contained environment verification
+        try:
+            import zipfile
+
+            if final_model_path.exists():
+                cfg_dict = self.config.model_dump()
+                config_fp = hashlib.sha256(
+                    json.dumps(cfg_dict, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()[:16]
+                embed_meta = {
+                    "environment_id": self.config.environment.name,
+                    "algorithm": self.config.algorithm.name,
+                    "seed": self.config.seed,
+                    "config_fingerprint": config_fp,
+                    "created_at": datetime.fromtimestamp(finished_at, tz=timezone.utc).isoformat(),
+                    "version": adaptive_rl.__version__,
+                }
+                with zipfile.ZipFile(final_model_path, "a") as z:
+                    z.writestr("arl_metadata.json", json.dumps(embed_meta, indent=2))
+        except Exception:
+            pass
 
         # Generate and save experiment manifest (Issue #248)
         from adaptive_rl.manifest import create_manifest, save_manifest

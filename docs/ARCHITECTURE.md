@@ -40,15 +40,40 @@ src/adaptive_rl/
 - **`DroneDisturbed3DEnv` (`drone_disturbed`, `drone_disturbance`)**: 3D drone navigation subject to steady prevailing wind, stochastic Ornstein-Uhlenbeck (OU) gusts, moving dynamic obstacles with boundary reflection, and step-indexed disturbance recovery tracking.
 
 ### 2. Visualization & Flight Deck (`adaptive_rl.gui`)
-- **Interactive 3D Arena Plotly Visualizer**:
-  - Full 3D quadrotor geometric model: central fuselage hub, four arms in X configuration, four rotor assemblies, and circular propeller blade paths.
-  - Distinct front/rear visual identification (front red arms/rotors, rear blue arms/rotors, and forward heading nosecone pointer along $+X_B$).
-  - Exact body-to-world rigid-body coordinate transformation: $\mathbf{p}_W = \mathbf{p}_{\text{drone}} + R(\mathbf{q}) \mathbf{p}_B$.
-  - 16-ray spherical LiDAR beams and contact points.
-  - Trajectory playback scrubber slider with telemetry (altitude, speed, Euler roll/pitch/yaw, angular velocity, goal distance, obstacle clearance).
+- **Interactive 3D Arena Plotly Visualizer (`build_arena_3d_figure`, `compute_quadrotor_3d_geometry`)**:
+  - **Volumetric 3D Quadrotor Airframe**:
+    - Central aerodynamic fuselage pod with upper/lower chamfered contours and forward nose.
+    - 4 volumetric cylindrical arms arranged in the exact physical X-configuration.
+    - 4 structural motor mountings and cylindrical rotor hubs.
+    - 4 aerodynamic twisted dual-blade propellers with distinct front/rear rotor coloring and semi-transparent rotor disc blur.
+    - Port and starboard tubular landing gear skids connected by angled structural struts.
+    - Forward-facing optical sensor gimbal and camera assembly.
+    - Dual rear telemetry antenna masts.
+    - Illuminated navigation chevron indicating aircraft heading vector ($+\mathbf{X}_B$).
+  - **Physical Dimension Consistency**:
+    - Visualizer dimensions are strictly aligned with the physics engine: default `arm_span = 0.4 m` ($2 \times \text{arm\_length}$) and `rotor_radius = 0.09 m` ($0.45 \times \text{arm\_length}$).
+    - Rotor hubs sit at radial distance $\sqrt{d^2 + d^2} = 0.2\text{ m}$ where $d = 0.2 / \sqrt{2} \approx 0.1414\text{ m}$, exactly matching `DroneDynamics6DOF(arm_length=0.2)`.
+  - **Attitude Transformation**:
+    - Exact rigid-body body-to-world transformation applied to all airframe vertex meshes: $\mathbf{p}_W = \mathbf{p}_{\text{center}} + R(\mathbf{q}) \mathbf{p}_B$.
+  - **LiDAR Sensing Representation**:
+    - 16-ray LiDAR beam visualization with configurable world-fixed (`body_frame_lidar=False`, default for backward compatibility) or body-fixed (`body_frame_lidar=True`) coordinate frame semantics.
+  - **Flight Deck Telemetry & Scrubber**:
+    - Scrubbing slider providing step-indexed inspection of 3D positions, Euler attitude angles (roll, pitch, yaw), linear velocities, body angular rates, goal distance, and obstacle clearance.
+    - Reliable outcome differentiation: distinctly categorizes and displays `SUCCESS` (green), `COLLISION` (red with collision boundary/obstacle type and collision count), and `TIMEOUT` (amber).
 - **Streamlit Application (`app.py`)**:
+  - Full aerospace mission-control styling: dark graphite background, navy telemetry panels, and high-contrast instruments.
   - Dynamics model selector supporting both 3-DOF Kinematic Drone and 6-DOF Quadrotor.
-  - Playback mode distinction with educational simulation disclaimer.
+  - Checkpoint integrity inspection detecting verified vs unverified shape-matched models and displaying parameter fingerprints.
+
+### 3. Architecture Distinction: Three.js Browser Demo vs Python 6-DOF Flight Deck
+- **GitHub Pages Showcase (`docs/index.html`)**:
+  - A lightweight client-side Three.js interactive demonstration designed for universal browser access without requiring a Python runtime or GPU dependencies.
+  - Operates on a simplified **3-DOF point-mass kinematic model** implemented entirely in JavaScript. It does *not* execute Python code, PyTorch neural networks, or rigid-body 6-DOF equations.
+- **Python Flight Deck (`app.py` & `adaptive_rl`)**:
+  - The genuine Python engineering simulator executing the full rigid-body 6-DOF flight dynamics engine (`Drone6DOFEnv`) with quaternion attitude kinematics, Euler rotational equations, motor RPM/thrust mapping, and RK4 integration.
+  - Features genuine PyTorch PPO and SAC inference, swept collision detection, and volumetric Plotly 3D airframe rendering.
+- **Educational Simulation Scope**:
+  - The 6-DOF rigid-body equations are theoretical and educational. The simulator has not been validated against physical flight telemetry from physical drone hardware. Direct deployment to autopilots (e.g. PX4 or ArduPilot) requires hardware-in-the-loop validation and cascaded low-level PID attitude controllers.
 
 ### 2. Algorithms & Training (`adaptive_rl.algorithms`, `adaptive_rl.training`)
 - **PPO (`PPOAlgorithm`)**: On-policy actor-critic algorithm wrapped from Stable-Baselines3.

@@ -36,6 +36,17 @@ Coordinate Frame Conventions:
      tau_y = d * (-F1 - F2 + F3 + F4)  [Pitch torque]
      tau_z = c_tau * (+F1 - F2 + F3 - F4) [Yaw reaction torque]
 
+5. LiDAR Coordinate Frame Semantics:
+   - World-Fixed (Default, `body_frame_lidar=False`):
+     LiDAR ray cast directions remain invariant with respect to the world ENU axes,
+     measuring obstacle clearance relative to global cardinal axes. This matches the
+     observation contract used by historical 3-DOF models and existing 6-DOF checkpoints.
+   - Body-Fixed (`body_frame_lidar=True`):
+     LiDAR ray cast directions are rigidly attached to the quadrotor body frame and
+     dynamically rotated into world coordinates via R(q) before computing ray-sphere
+     and ray-boundary intersections, simulating a sensor package physically mounted
+     to the airframe.
+
 Equations of Motion:
 --------------------
 - Translational acceleration:
@@ -263,6 +274,39 @@ class DroneDynamics6DOF:
             angular_velocity=np.zeros(3, dtype=np.float64),
         )
 
+    @property
+    def arm_span(self) -> float:
+        """Diagonal tip-to-tip rotor center span in meters (2 * arm_length)."""
+        return 2.0 * self.arm_length
+
+    @property
+    def rotor_radius(self) -> float:
+        """Physical rotor blade radius in meters."""
+        return 0.45 * self.arm_length
+
+    @property
+    def rotor_positions(self) -> List[np.ndarray]:
+        """Return the 4 rotor positions in the body frame [Front-Right, Front-Left, Rear-Left, Rear-Right]."""
+        d = self.d
+        return [
+            np.array([d, -d, 0.0], dtype=np.float64),  # R1 Front-Right
+            np.array([d, d, 0.0], dtype=np.float64),  # R2 Front-Left
+            np.array([-d, d, 0.0], dtype=np.float64),  # R3 Rear-Left
+            np.array([-d, -d, 0.0], dtype=np.float64),  # R4 Rear-Right
+        ]
+
+    @property
+    def physical_dimensions(self) -> Dict[str, float]:
+        """Return physical geometry dimensions for visualization and structural modeling."""
+        return {
+            "mass": self.mass,
+            "arm_length": self.arm_length,
+            "arm_span": self.arm_span,
+            "rotor_offset_d": self.d,
+            "rotor_radius": self.rotor_radius,
+            "body_radius": self.arm_length * 0.35,
+        }
+
     def reset(
         self,
         position: Optional[np.ndarray] = None,
@@ -440,6 +484,8 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
     - 36-dimensional observation space (position, velocity, quaternion, angular velocity,
       goal, relative target vector, target distance, and 16-ray 3D LiDAR).
     - Procedural spherical obstacles and arena boundary collision detection.
+    - Configurable LiDAR frame semantics: default world-fixed (backward compatible with
+      historical models) or body-fixed (rotated with aircraft attitude).
     """
 
     metadata = {"render_modes": ["ansi", "human"]}
@@ -477,6 +523,7 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         lidar_dropout_prob: float = 0.0,
         lidar_min_range: float = 0.0,
         terminate_on_collision: bool = True,
+        body_frame_lidar: bool = False,
         render_mode: Optional[str] = None,
         split: Optional[str] = None,
     ) -> None:
@@ -607,6 +654,7 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         self.angular_rate_penalty_weight = float(angular_rate_penalty_weight)
         self.tilt_penalty_weight = float(tilt_penalty_weight)
         self.terminate_on_collision = bool(terminate_on_collision)
+        self.body_frame_lidar = bool(body_frame_lidar)
         self.render_mode = render_mode
 
         self.split: Optional[str] = None
@@ -664,6 +712,31 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         self._current_step = 0
         self._prev_distance_to_goal: float = float(np.linalg.norm(self._goal - self._position))
 
+    @property
+    def arm_length(self) -> float:
+        """Physical arm length from center of mass to rotor center in meters."""
+        return self.dynamics.arm_length
+
+    @property
+    def arm_span(self) -> float:
+        """Physical diagonal rotor span in meters (2 * arm_length)."""
+        return self.dynamics.arm_span
+
+    @property
+    def rotor_radius(self) -> float:
+        """Physical rotor blade radius in meters."""
+        return self.dynamics.rotor_radius
+
+    @property
+    def rotor_positions(self) -> List[np.ndarray]:
+        """Physical rotor positions in the body frame."""
+        return self.dynamics.rotor_positions
+
+    @property
+    def physical_dimensions(self) -> Dict[str, float]:
+        """Physical geometry dimensions for simulation and visual rendering."""
+        return self.dynamics.physical_dimensions
+
     def _action_to_motor_thrusts(self, action: np.ndarray) -> np.ndarray:
         """Map normalized action [-1, 1]^4 to motor thrusts [0, max_thrust]^4."""
         act_arr = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
@@ -694,9 +767,17 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         curr_dist = float(np.linalg.norm(self._goal - state.position))
         norm_dist = [min(1.0, curr_dist / self.max_diagonal)]
 
+        # LiDAR rays: by default world-aligned (body_frame_lidar=False) to maintain
+        # full backward compatibility with pretrained checkpoints. When body_frame_lidar=True,
+        # rays are rotated from body frame to world frame using the current attitude quaternion.
+        lidar_rays: np.ndarray = self.lidar_rays
+        if self.body_frame_lidar:
+            rot_mat = quaternion_to_rotation_matrix(state.quaternion)
+            lidar_rays = np.asarray([rot_mat @ ray for ray in self.lidar_rays], dtype=np.float32)
+
         lidar_readings = compute_lidar_3d_readings(
             origin=state.position,
-            ray_directions=self.lidar_rays,
+            ray_directions=lidar_rays,
             obstacles=self._obstacles,
             bounds=self.bounds,
             max_range=self.lidar_range,

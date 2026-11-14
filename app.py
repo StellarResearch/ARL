@@ -187,6 +187,12 @@ def inject_custom_aerospace_css() -> None:
             border-left: 5px solid #ef4444;
         }
 
+        .arl-outcome-banner.timeout {
+            background: rgba(245, 158, 11, 0.12);
+            border: 1px solid rgba(245, 158, 11, 0.45);
+            border-left: 5px solid #f59e0b;
+        }
+
         /* Telemetry Cards */
         .telemetry-card {
             background: #0d1527;
@@ -341,7 +347,9 @@ def main() -> None:
 
         # Simulation Control Toolbar / Card
         with st.container():
-            ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5, ctrl_col6 = st.columns([1.3, 1.8, 0.9, 0.9, 1.0, 1.2])
+            ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5, ctrl_col6 = st.columns(
+                [1.3, 1.8, 0.9, 0.9, 1.0, 1.2]
+            )
 
             with ctrl_col1:
                 env_choice = st.selectbox(
@@ -420,7 +428,10 @@ def main() -> None:
                 try:
                     model_to_use: Optional[Any] = None
 
-                    if not selected_policy.startswith("Random Action Baseline") and available_models:
+                    if (
+                        not selected_policy.startswith("Random Action Baseline")
+                        and available_models
+                    ):
                         raw_name = selected_policy.split(": ", 1)[-1].strip()
                         matching = [p for p in available_models if p.name == raw_name]
                         if matching:
@@ -442,6 +453,12 @@ def main() -> None:
                                     f"{env.action_space.shape}. Falling back to Random Baseline."
                                 )
                             else:
+                                if info.get("compatibility_status") == "unverified_shape_match":
+                                    st.info(
+                                        f"ℹ️ Model '{raw_name}' matched {env_choice} by space dimensions "
+                                        f"({info['obs_shape']}/{info['action_shape']}). Training environment identity "
+                                        "was inferred from shapes rather than verified metadata."
+                                    )
                                 try:
                                     if info["algorithm"] == "sac":
                                         from stable_baselines3 import SAC
@@ -471,36 +488,59 @@ def main() -> None:
         # Flight Outcome Status Banner
         outcome_status = flight_data["outcome"]
         is_success = outcome_status == "SUCCESS"
-        banner_cls = "success" if is_success else "failure"
-        badge_cls = "arl-pill-green" if is_success else "arl-pill-red"
-        outcome_banner_text = "MISSION SUCCESSFUL" if is_success else "COLLISION / TIMEOUT"
+        is_collision = outcome_status == "COLLISION"
+        is_timeout = outcome_status == "TIMEOUT"
+
+        if is_success:
+            banner_cls = "success"
+            badge_cls = "arl-pill-green"
+            outcome_banner_text = "MISSION SUCCESSFUL"
+        elif is_collision:
+            banner_cls = "failure"
+            badge_cls = "arl-pill-red"
+            coll_t = flight_data.get("collision_type", "impact")
+            outcome_banner_text = f"TERMINATION — COLLISION ({coll_t})"
+        elif is_timeout:
+            banner_cls = "timeout"
+            badge_cls = "arl-pill-amber"
+            outcome_banner_text = "MISSION EXPIRED — TIMEOUT"
+        else:
+            banner_cls = "failure"
+            badge_cls = "arl-pill-red"
+            outcome_banner_text = f"TERMINATED — {outcome_status}"
+
+        coll_notice = ""
+        if flight_data.get("collision_occurred") and not is_collision:
+            coll_cnt = flight_data.get("collision_count", 1)
+            coll_notice = f"<span class='arl-pill arl-pill-amber'>⚠️ {coll_cnt} COLLISION(S)</span>"
 
         final_dist = steps[-1]["distance_to_goal"]
-        st.markdown(
-            f"""
-            <div class="arl-outcome-banner {banner_cls}">
-                <div>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span class="arl-pill {badge_cls}">● {outcome_banner_text}</span>
-                        <span style="font-weight: 700; font-size: 15px; color: #f1f5f9;">{env_choice}</span>
-                        <span style="color: #64748b;">|</span>
-                        <span style="color: #94a3b8; font-size: 13px;">Policy: <b>{selected_policy.split(': ')[0]}</b></span>
-                    </div>
-                    <div style="margin-top: 4px; font-size: 13px; color: #cbd5e1;">
-                        Episode finished in <b>{flight_data["total_steps"]}</b> timesteps with cumulative reward <b>{flight_data["total_reward"]:.2f}</b> (Seed: {flight_data["seed"]}).
-                    </div>
-                </div>
-                <div style="text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #94a3b8;">
-                    Final Goal Dist: <b style="color: #f8fafc;">{final_dist:.2f} m</b><br>
-                    Physics Mode: <b style="color: #38bdf8;">{'RK4 6-DOF' if is_6dof else 'Kinematic 3-DOF'}</b>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        banner_html = (
+            f'<div class="arl-outcome-banner {banner_cls}">'
+            f"<div>"
+            f'<div style="display: flex; align-items: center; gap: 10px;">'
+            f'<span class="arl-pill {badge_cls}">● {outcome_banner_text}</span>'
+            f"{coll_notice}"
+            f'<span style="font-weight: 700; font-size: 15px; color: #f1f5f9;">{env_choice}</span>'
+            f'<span style="color: #64748b;">|</span>'
+            f'<span style="color: #94a3b8; font-size: 13px;">Policy: <b>{selected_policy.split(": ")[0]}</b></span>'
+            f"</div>"
+            f'<div style="margin-top: 4px; font-size: 13px; color: #cbd5e1;">'
+            f"Episode finished in <b>{flight_data['total_steps']}</b> timesteps with cumulative reward <b>{flight_data['total_reward']:.2f}</b> (Seed: {flight_data['seed']})."
+            f"</div>"
+            f"</div>"
+            f"<div style=\"text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #94a3b8;\">"
+            f'Final Goal Dist: <b style="color: #f8fafc;">{final_dist:.2f} m</b><br>'
+            f'Physics Mode: <b style="color: #38bdf8;">{"RK4 6-DOF" if is_6dof else "Kinematic 3-DOF"}</b>'
+            f"</div>"
+            f"</div>"
         )
+        st.markdown(banner_html, unsafe_allow_html=True)
 
         # Scrubber & Viewport Control Bar
-        vp_col1, vp_col2, vp_col3, vp_col4, vp_col5, vp_col6 = st.columns([2.4, 0.7, 1.4, 0.7, 0.7, 0.7])
+        vp_col1, vp_col2, vp_col3, vp_col4, vp_col5, vp_col6 = st.columns(
+            [2.4, 0.7, 1.4, 0.7, 0.7, 0.7]
+        )
         with vp_col1:
             selected_step = st.slider(
                 "Flight Step Playback Scrubber:",
@@ -526,19 +566,32 @@ def main() -> None:
         with vp_col3:
             camera_preset = st.selectbox(
                 "Camera Perspective / Preset:",
-                options=["Arena Overview", "Drone Follow", "Drone Inspection", "Target View", "Free Orbit", "Reset Camera"],
+                options=[
+                    "Arena Overview",
+                    "Drone Follow",
+                    "Drone Inspection",
+                    "Target View",
+                    "Free Orbit",
+                    "Reset Camera",
+                ],
                 index=0,
                 help="Select 3D viewport camera perspective. Use 'Drone Inspection' for detailed close-up examination of quadrotor airframe.",
             )
         with vp_col4:
             st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-            show_floor = st.checkbox("Floor", value=True, help="Render 3D flight test chamber floor and grid.")
+            show_floor = st.checkbox(
+                "Floor", value=True, help="Render 3D flight test chamber floor and grid."
+            )
         with vp_col5:
             st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-            show_safety = st.checkbox("Safety", value=True, help="Render obstacle safety proximity zones.")
+            show_safety = st.checkbox(
+                "Safety", value=True, help="Render obstacle safety proximity zones."
+            )
         with vp_col6:
             st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-            show_traj = st.checkbox("Path", value=True, help="Render recorded 3D flight trajectory.")
+            show_traj = st.checkbox(
+                "Path", value=True, help="Render recorded 3D flight trajectory."
+            )
 
         step_info = steps[selected_step]
         cur_pos = step_info["position"]
@@ -585,6 +638,8 @@ def main() -> None:
                 show_safety_zones=show_safety,
                 show_trajectory=show_traj,
                 propeller_phase=selected_step * 0.45,
+                arm_span=flight_data.get("arm_span", 0.4),
+                rotor_radius=flight_data.get("rotor_radius", 0.09),
             )
             # Give viewport substantial height for dominance
             fig.update_layout(height=660)
@@ -604,11 +659,11 @@ def main() -> None:
                         </div>
                         <div class="telemetry-stat">
                             <span class="telemetry-stat-label">Range to Goal</span>
-                            <span class="telemetry-stat-val green">{step_info['distance_to_goal']:.2f}<span class="unit">m</span></span>
+                            <span class="telemetry-stat-val green">{step_info["distance_to_goal"]:.2f}<span class="unit">m</span></span>
                         </div>
                         <div class="telemetry-stat">
                             <span class="telemetry-stat-label">Nearest Obstacle</span>
-                            <span class="telemetry-stat-val {'red' if step_info['min_obstacle_distance'] < 1.0 else 'amber'}">{step_info['min_obstacle_distance']:.2f}<span class="unit">m</span></span>
+                            <span class="telemetry-stat-val {"red" if step_info["min_obstacle_distance"] < 1.0 else "amber"}">{step_info["min_obstacle_distance"]:.2f}<span class="unit">m</span></span>
                         </div>
                         <div class="telemetry-stat">
                             <span class="telemetry-stat-label">Rel Target [X,Y]</span>
@@ -628,7 +683,7 @@ def main() -> None:
                     <div class="telemetry-grid">
                         <div class="telemetry-stat">
                             <span class="telemetry-stat-label">Linear Speed</span>
-                            <span class="telemetry-stat-val cyan">{step_info['speed']:.2f}<span class="unit">m/s</span></span>
+                            <span class="telemetry-stat-val cyan">{step_info["speed"]:.2f}<span class="unit">m/s</span></span>
                         </div>
                         <div class="telemetry-stat">
                             <span class="telemetry-stat-label">Angular Speed</span>
@@ -702,7 +757,7 @@ def main() -> None:
                         </div>
                         <div class="telemetry-stat">
                             <span class="telemetry-stat-label">Closest Return</span>
-                            <span class="telemetry-stat-val {'red' if min_lidar < 1.5 else 'green'}">{min_lidar:.2f}<span class="unit">m</span></span>
+                            <span class="telemetry-stat-val {"red" if min_lidar < 1.5 else "green"}">{min_lidar:.2f}<span class="unit">m</span></span>
                         </div>
                     </div>
                 </div>
@@ -718,11 +773,11 @@ def main() -> None:
                     <div class="telemetry-grid">
                         <div class="telemetry-stat">
                             <span class="telemetry-stat-label">Step Reward</span>
-                            <span class="telemetry-stat-val">{step_info['reward']:+.2f}</span>
+                            <span class="telemetry-stat-val">{step_info["reward"]:+.2f}</span>
                         </div>
                         <div class="telemetry-stat">
                             <span class="telemetry-stat-label">Cumulative Return</span>
-                            <span class="telemetry-stat-val green">{step_info['cumulative_reward']:+.2f}</span>
+                            <span class="telemetry-stat-val green">{step_info["cumulative_reward"]:+.2f}</span>
                         </div>
                     </div>
                 </div>
@@ -919,9 +974,13 @@ def main() -> None:
                                     else "Trained Policy"
                                 )
                                 metrics_to_plot[algo_title] = trained_res
-                                Evaluator.save_report(trained_res, Path("artifacts/evaluation.json"))
+                                Evaluator.save_report(
+                                    trained_res, Path("artifacts/evaluation.json")
+                                )
                         else:
-                            st.warning("No saved model found. Please train a compatible agent first.")
+                            st.warning(
+                                "No saved model found. Please train a compatible agent first."
+                            )
 
                     # Evaluate Random Policy
                     if eval_mode in ["Compare Both (PPO vs Random)", "Random Only"]:

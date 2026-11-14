@@ -11,6 +11,7 @@ pytest.importorskip("streamlit")
 
 import plotly.graph_objects as go
 
+from adaptive_rl.algorithms.registry import inspect_model_checkpoint
 from adaptive_rl.environments.drone import DroneNavigation3DEnv, ObstacleSphere3D
 from adaptive_rl.environments.drone_6dof import Drone6DOFEnv
 from adaptive_rl.gui.visualizer import (
@@ -96,7 +97,11 @@ def test_run_drone_simulation_episode() -> None:
     assert "outcome" in result
     assert len(result["steps"]) > 1
     assert result["seed"] == 42
-    assert result["outcome"] in ["SUCCESS", "COLLISION / TIMEOUT"]
+    assert result["outcome"] in ["SUCCESS", "COLLISION", "TIMEOUT"]
+    assert "collision_occurred" in result
+    assert "collision_count" in result
+    assert "terminated" in result
+    assert "truncated" in result
 
     first_step = result["steps"][0]
     assert first_step["step"] == 0
@@ -545,11 +550,13 @@ def test_quadrotor_mesh_translation_and_rotation_invariance() -> None:
     g2 = compute_quadrotor_3d_geometry(center_pos=c2, quaternion=q_ident, arm_span=1.5)
 
     # Translation offset must be exact across all fuselage vertices
-    diff = np.column_stack([
-        g2["mesh_fuselage"]["x"] - g1["mesh_fuselage"]["x"],
-        g2["mesh_fuselage"]["y"] - g1["mesh_fuselage"]["y"],
-        g2["mesh_fuselage"]["z"] - g1["mesh_fuselage"]["z"],
-    ])
+    diff = np.column_stack(
+        [
+            g2["mesh_fuselage"]["x"] - g1["mesh_fuselage"]["x"],
+            g2["mesh_fuselage"]["y"] - g1["mesh_fuselage"]["y"],
+            g2["mesh_fuselage"]["z"] - g1["mesh_fuselage"]["z"],
+        ]
+    )
     assert np.allclose(diff, c2 - c1, atol=1e-5)
 
     # 180-deg Yaw rotation around Z axis: [0, 0, 1, 0] in (w, x, y, z) or [0, 0, 0, 1]
@@ -579,7 +586,9 @@ def test_drone_distinguishable_from_obstacles_in_plotly_figure() -> None:
 
     # Collect trace types
     mesh_traces = [t for t in fig.data if isinstance(t, go.Mesh3d)]
-    surface_traces = [t for t in fig.data if isinstance(t, go.Surface) and "Obstacle" in getattr(t, "name", "")]
+    surface_traces = [
+        t for t in fig.data if isinstance(t, go.Surface) and "Obstacle" in getattr(t, "name", "")
+    ]
 
     assert len(mesh_traces) >= 6, "Expected at least 6 distinct 3D drone mesh components"
     assert len(surface_traces) == 2, "Expected 2 obstacle sphere surfaces"
@@ -676,7 +685,9 @@ def test_propeller_phase_and_blade_rotation() -> None:
     q_ident = np.array([1.0, 0.0, 0.0, 0.0])
 
     g0 = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q_ident, propeller_phase=0.0)
-    g1 = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q_ident, propeller_phase=math.pi / 2.0)
+    g1 = compute_quadrotor_3d_geometry(
+        center_pos=center, quaternion=q_ident, propeller_phase=math.pi / 2.0
+    )
 
     p0 = g0["mesh_props_front"]
     p1 = g1["mesh_props_front"]
@@ -730,3 +741,94 @@ def test_arena_floor_and_waypoint_beacons() -> None:
     assert "Waypoint Beacon Column" in trace_names
     assert "Target Waypoint" in trace_names
     assert "Start Position" in trace_names
+
+
+def test_visualizer_physical_dimensions_consistency() -> None:
+    """Verify that visualizer default dimensions match the 6-DOF physics engine exactly."""
+    env = Drone6DOFEnv(arm_length=0.2)
+    geom = compute_quadrotor_3d_geometry(
+        center_pos=np.array([0.0, 0.0, 5.0]),
+        arm_span=env.arm_span,
+        rotor_radius=env.rotor_radius,
+    )
+
+    # 1. Physics arm length is 0.2 m -> visualizer arm span is 2 * 0.2 = 0.4 m
+    assert math.isclose(env.arm_span, 0.4)
+    assert math.isclose(env.rotor_radius, 0.09)
+
+    # 2. Rotor positions in geometry should have radial distance = arm_length = 0.2 m
+    rotors = geom["rotors"]
+    assert len(rotors) == 4
+    for r in rotors:
+        radial_dist = math.sqrt((r[0] - 0.0) ** 2 + (r[1] - 0.0) ** 2)
+        assert math.isclose(radial_dist, env.arm_length, abs_tol=1e-4)
+
+    # 3. Propeller disk outer radius matches physics rotor radius
+    assert math.isclose(geom["rotor_radius"], env.rotor_radius, abs_tol=1e-4)
+    env.close()
+
+
+def test_simulation_episode_telemetry_outcomes() -> None:
+    """Verify outcome differentiation (SUCCESS, COLLISION, TIMEOUT) and telemetry metrics."""
+    # 1. Test timeout outcome with tiny max_steps
+    env_timeout = Drone6DOFEnv(max_steps=3, start_pos=(5.0, 5.0, 5.0), goal_pos=(25.0, 25.0, 10.0))
+    res_timeout = run_drone_simulation_episode(env=env_timeout, model=None, seed=42)
+    assert res_timeout["outcome"] == "TIMEOUT"
+    assert res_timeout["truncated"] is True
+    assert res_timeout["terminated"] is False
+    assert "collision_occurred" in res_timeout
+    assert "collision_count" in res_timeout
+    assert "collision_steps" in res_timeout
+    assert math.isclose(res_timeout["arm_span"], 0.4)
+    assert math.isclose(res_timeout["rotor_radius"], 0.09)
+    assert "physical_dimensions" in res_timeout
+    env_timeout.close()
+
+    # 2. Test success outcome with start directly on goal
+    env_success = Drone6DOFEnv(
+        max_steps=10,
+        start_pos=(10.0, 10.0, 5.0),
+        goal_pos=(10.1, 10.1, 5.1),
+        target_radius=1.5,
+    )
+    res_success = run_drone_simulation_episode(env=env_success, model=None, seed=42)
+    assert res_success["outcome"] == "SUCCESS"
+    assert res_success["terminated"] is True
+    assert res_success["is_success"] is True
+    env_success.close()
+
+
+def test_checkpoint_compatibility_inspection(tmp_path: Path) -> None:
+    """Verify inspect_model_checkpoint returns structured compatibility metadata."""
+    import zipfile
+
+    # 1. Non-existent file
+    res_missing = inspect_model_checkpoint(tmp_path / "non_existent.zip")
+    assert res_missing["valid"] is False
+    assert res_missing["compatibility_status"] == "incompatible"
+
+    # 2. Non-zip file
+    bad_file = tmp_path / "corrupted.zip"
+    bad_file.write_text("not a zip")
+    res_corrupted = inspect_model_checkpoint(bad_file)
+    assert res_corrupted["valid"] is False
+    assert res_corrupted["compatibility_status"] == "incompatible"
+
+    # 3. Zip file with embedded arl_metadata.json
+    good_zip = tmp_path / "valid_model.zip"
+    with zipfile.ZipFile(good_zip, "w") as zf:
+        zf.writestr(
+            "arl_metadata.json",
+            '{"environment_id": "drone-6dof", "config_fingerprint": "fp_test_123", "algorithm": "PPO"}',
+        )
+        zf.writestr(
+            "data",
+            b'{"observation_space": {"shape": [36]}, "action_space": {"shape": [4]}}',
+        )
+    res_valid = inspect_model_checkpoint(good_zip)
+    assert res_valid["valid"] is True
+    assert res_valid["compatible_env"] == "6-DOF"
+    assert res_valid["compatibility_status"] == "verified"
+    assert res_valid["environment_id"] == "drone-6dof"
+    assert res_valid["config_fingerprint"] == "fp_test_123"
+    assert res_valid["metadata_source"] == "embedded"

@@ -88,7 +88,7 @@
           <div class="simulation-disclaimer-box">
             <span class="icon">ℹ️</span>
             <div>
-              <strong>THIS IS A SIMULATION.</strong> Academic computer-science project running a simplified 3-DOF kinematic point-mass simulation with aerodynamic drag. It is <em>not</em> an autopilot, PX4 controller, or 6-DOF quadrotor aerodynamics simulator.
+              <strong>DEMO & SIMULATION NOTICE:</strong> This static browser page is a client-side Three.js 3-DOF kinematic demonstration for interactive web exploration. The core Python repository provides full rigid-body 6-DOF quadrotor dynamics (quaternion attitude, motor thrusts, RK4 integration) and a Streamlit flight deck (<code style="background: rgba(255,255,255,0.1); padding: 2px 5px; border-radius: 4px;">app.py</code>). All 6-DOF dynamics models are theoretical and educational simulations and have not been validated against physical flight hardware telemetry.
             </div>
           </div>
 
@@ -926,21 +926,21 @@ adaptive-rl evaluate --config configs/drone_ppo_demo.yaml --compare-random</code
           <div class="limit-item">
             <span class="icon">⚠️</span>
             <div>
-              <strong>Kinematic Point-Mass Physics:</strong> Models translational 3-DOF acceleration with drag damping; does not simulate 6-DOF attitude quaternions, rotor gyroscopic precession, or blade wash.
+              <strong>Browser Demo vs Python 6-DOF:</strong> This static browser demo uses a client-side Three.js 3-DOF kinematic model. The Python repository implements full 6-DOF rigid-body quadrotor dynamics (<code style="background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 3px;">Drone6DOFEnv</code>) with quaternion kinematics and RK4 integration.
             </div>
           </div>
 
           <div class="limit-item">
             <span class="icon">⚠️</span>
             <div>
-              <strong>Analytical Geometric LiDAR:</strong> Raycasting computes exact mathematical sphere intersections without modeling laser bounce noise, atmospheric dust, or surface reflectance.
+              <strong>Theoretical Physics:</strong> The Python 6-DOF rigid-body dynamics model is a theoretical, educational simulation. It has not been validated against hardware flight telemetry from physical quadrotors.
             </div>
           </div>
 
           <div class="limit-item">
             <span class="icon">⚠️</span>
             <div>
-              <strong>Simulation Only:</strong> This model is not deployable directly onto real quadrotor flight controllers (like PX4 or ArduPilot) without a cascaded low-level PID attitude controller.
+              <strong>Simulation Only:</strong> This model is not deployable directly onto real quadrotor flight controllers (like PX4 or ArduPilot) without physical hardware calibration and a cascaded low-level attitude controller.
             </div>
           </div>
         </div>
@@ -955,7 +955,7 @@ adaptive-rl evaluate --config configs/drone_ppo_demo.yaml --compare-random</code
           <div class="roadmap-item">
             <span class="icon">🚀</span>
             <div>
-              <strong>6-DOF Rigid Body Dynamics:</strong> Extending the simulation to full quadrotor attitude dynamics, motor RPM lag, and torque coupling.
+              <strong>Hardware Validation & Flight Telemetry:</strong> Validating 6-DOF simulated attitude dynamics against real quadrotor IMU and optical motion-capture flight logs.
             </div>
           </div>
 
@@ -1326,15 +1326,15 @@ adaptive-rl evaluate --config configs/drone_ppo_demo.yaml --compare-random</code
             <div>
               <h4 style="color: var(--accent-amber); margin-bottom: 0.5rem;">Documented Limitations</h4>
               <p style="font-size: 0.85rem;">
-                • Point-mass 3-DOF translation (no 6-DOF attitude quaternions).<br>
-                • Analytical geometric LiDAR (no laser bounce noise).<br>
-                • Educational demonstration; not a production flight controller.
+                • Browser demo uses 3-DOF Three.js; Python backend provides 6-DOF.<br>
+                • 6-DOF physics is theoretical & educational; unvalidated on flight hardware.<br>
+                • Educational demonstration; not a production autopilot.
               </p>
             </div>
             <div>
               <h4 style="color: var(--accent-blue); margin-bottom: 0.5rem;">Future Research</h4>
               <p style="font-size: 0.85rem;">
-                • 6-DOF quadrotor aerodynamics with motor lag.<br>
+                • Physical flight hardware telemetry validation.<br>
                 • Domain randomization (wind gusts & sensor noise).<br>
                 • PX4 Software-in-the-Loop bridge.
               </p>

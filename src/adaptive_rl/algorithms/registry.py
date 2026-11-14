@@ -179,6 +179,10 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
           - 'obs_shape': Tuple[int, ...] or None
           - 'action_shape': Tuple[int, ...] or None
           - 'compatible_env': '3-DOF' | '6-DOF' | None
+          - 'compatibility_status': 'verified' | 'unverified_shape_match' | 'dimension_mismatch' | 'incompatible'
+          - 'environment_id': Optional[str]
+          - 'config_fingerprint': Optional[str]
+          - 'metadata_source': Optional[str] ('embedded' | 'sidecar' | 'shape_inferred')
           - 'valid': bool
           - 'error': Optional[str]
     """
@@ -192,6 +196,10 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
             "obs_shape": None,
             "action_shape": None,
             "compatible_env": None,
+            "compatibility_status": "incompatible",
+            "environment_id": None,
+            "config_fingerprint": None,
+            "metadata_source": None,
             "valid": False,
             "error": f"Model file not found: {path}",
         }
@@ -204,6 +212,10 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
             "obs_shape": None,
             "action_shape": None,
             "compatible_env": None,
+            "compatibility_status": "incompatible",
+            "environment_id": None,
+            "config_fingerprint": None,
+            "metadata_source": None,
             "valid": False,
             "error": f"Checkpoint '{model_path.name}' is not a valid zip archive",
         }
@@ -211,15 +223,26 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
     algo: Optional[str] = None
     obs_shape: Optional[Tuple[int, ...]] = None
     act_shape: Optional[Tuple[int, ...]] = None
+    env_id: Optional[str] = None
+    config_fingerprint: Optional[str] = None
+    metadata_source: Optional[str] = None
 
     # Check sidecar metadata JSON if present
     candidate_metadata_paths = [
         model_path.with_name(f"{model_path.stem}_metadata.json"),
+        model_path.with_name(f"{model_path.stem}_training.json"),
+        model_path.with_name(f"{model_path.stem}_manifest.json"),
+        model_path.parent / f"{model_path.stem.replace('_final', '')}_training.json",
+        model_path.parent / f"{model_path.stem.replace('_final', '')}_manifest.json",
         model_path.parent / f"{model_path.stem.replace('_final', '')}_metadata.json",
-        model_path.parent.parent / "metadata" / f"{model_path.stem}_metadata.json",
+        model_path.parent.parent / "metadata" / f"{model_path.stem}_training.json",
+        model_path.parent.parent / "metadata" / f"{model_path.stem}_manifest.json",
         model_path.parent.parent
         / "metadata"
-        / f"{model_path.stem.replace('_final', '')}_metadata.json",
+        / f"{model_path.stem.replace('_final', '')}_training.json",
+        model_path.parent.parent
+        / "metadata"
+        / f"{model_path.stem.replace('_final', '')}_manifest.json",
     ]
     for meta_p in candidate_metadata_paths:
         if meta_p.is_file():
@@ -228,21 +251,51 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
 
                 with open(meta_p, "r", encoding="utf-8") as f:
                     sidecar_data = json.load(f)
-                sidecar_algo = sidecar_data.get("algorithm")
-                if sidecar_algo:
-                    algo = str(sidecar_algo).lower().strip()
+                if not algo and sidecar_data.get("algorithm"):
+                    algo = str(sidecar_data["algorithm"]).lower().strip()
+                if not env_id and sidecar_data.get("environment"):
+                    env_id = str(sidecar_data["environment"])
+                if not config_fingerprint:
+                    if sidecar_data.get("config_fingerprint"):
+                        config_fingerprint = str(sidecar_data["config_fingerprint"])
+                    elif sidecar_data.get("config_hash"):
+                        config_fingerprint = str(sidecar_data["config_hash"])
+                metadata_source = "sidecar"
                 break
             except Exception:
                 pass
 
     try:
         with zipfile.ZipFile(model_path, "r") as z:
-            if "data" not in z.namelist():
+            namelist = z.namelist()
+
+            # Check if archive contains embedded arl_metadata.json
+            if "arl_metadata.json" in namelist:
+                try:
+                    import json
+
+                    raw_meta = z.read("arl_metadata.json").decode("utf-8", errors="ignore")
+                    embedded_meta = json.loads(raw_meta)
+                    if not algo and embedded_meta.get("algorithm"):
+                        algo = str(embedded_meta["algorithm"]).lower().strip()
+                    if embedded_meta.get("environment_id"):
+                        env_id = str(embedded_meta["environment_id"])
+                    if embedded_meta.get("config_fingerprint"):
+                        config_fingerprint = str(embedded_meta["config_fingerprint"])
+                    metadata_source = "embedded"
+                except Exception:
+                    pass
+
+            if "data" not in namelist:
                 return {
                     "algorithm": None,
                     "obs_shape": None,
                     "action_shape": None,
                     "compatible_env": None,
+                    "compatibility_status": "incompatible",
+                    "environment_id": None,
+                    "config_fingerprint": None,
+                    "metadata_source": None,
                     "valid": False,
                     "error": f"Archive '{model_path.name}' is missing Stable-Baselines3 'data' entry",
                 }
@@ -255,13 +308,17 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
 
             if obs_shape is None:
                 o_space = data.get("observation_space")
-                if isinstance(o_space, dict) and "_shape" in o_space:
-                    obs_shape = tuple(int(x) for x in o_space["_shape"])
+                if isinstance(o_space, dict):
+                    raw_sh = o_space.get("_shape") or o_space.get("shape")
+                    if raw_sh is not None:
+                        obs_shape = tuple(int(x) for x in raw_sh)
 
             if act_shape is None:
                 a_space = data.get("action_space")
-                if isinstance(a_space, dict) and "_shape" in a_space:
-                    act_shape = tuple(int(x) for x in a_space["_shape"])
+                if isinstance(a_space, dict):
+                    raw_sh = a_space.get("_shape") or a_space.get("shape")
+                    if raw_sh is not None:
+                        act_shape = tuple(int(x) for x in raw_sh)
 
             if not algo:
                 policy_mod = str(data.get("policy_class", {}).get("__module__", ""))
@@ -283,6 +340,10 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
             "obs_shape": None,
             "action_shape": None,
             "compatible_env": None,
+            "compatibility_status": "incompatible",
+            "environment_id": None,
+            "config_fingerprint": None,
+            "metadata_source": None,
             "valid": False,
             "error": f"Corrupt checkpoint archive '{model_path.name}': {exc}",
         }
@@ -293,21 +354,55 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
             "obs_shape": obs_shape,
             "action_shape": act_shape,
             "compatible_env": None,
+            "compatibility_status": "incompatible",
+            "environment_id": env_id,
+            "config_fingerprint": config_fingerprint,
+            "metadata_source": metadata_source,
             "valid": False,
             "error": f"Unsupported or unrecognized algorithm type: '{algo or 'unknown'}'",
         }
 
     compatible_env: Optional[str] = None
-    if obs_shape == (29,) and act_shape == (3,):
-        compatible_env = "3-DOF"
-    elif obs_shape == (36,) and act_shape == (4,):
+    compatibility_status = "incompatible"
+
+    clean_env_id = str(env_id).lower() if env_id else ""
+    if "6dof" in clean_env_id or "6-dof" in clean_env_id:
         compatible_env = "6-DOF"
+        if obs_shape == (36,) and act_shape == (4,):
+            compatibility_status = "verified"
+        else:
+            compatibility_status = "dimension_mismatch"
+    elif "drone" in clean_env_id or "3dof" in clean_env_id or "3-dof" in clean_env_id:
+        compatible_env = "3-DOF"
+        if obs_shape == (29,) and act_shape == (3,):
+            compatibility_status = "verified"
+        else:
+            compatibility_status = "dimension_mismatch"
+    else:
+        # Fall back to observation/action shape matching for legacy checkpoints
+        if obs_shape == (29,) and act_shape == (3,):
+            compatible_env = "3-DOF"
+            compatibility_status = "unverified_shape_match"
+            if not metadata_source:
+                metadata_source = "shape_inferred"
+        elif obs_shape == (36,) and act_shape == (4,):
+            compatible_env = "6-DOF"
+            compatibility_status = "unverified_shape_match"
+            if not metadata_source:
+                metadata_source = "shape_inferred"
+        else:
+            compatible_env = None
+            compatibility_status = "incompatible"
 
     return {
         "algorithm": algo,
         "obs_shape": obs_shape,
         "action_shape": act_shape,
         "compatible_env": compatible_env,
+        "compatibility_status": compatibility_status,
+        "environment_id": env_id,
+        "config_fingerprint": config_fingerprint,
+        "metadata_source": metadata_source,
         "valid": True,
         "error": None,
     }

@@ -191,6 +191,10 @@ adaptive-rl experiment-density --model artifacts/models/drone_ppo_demo_final.zip
 - The PPO policy learned purposeful obstacle avoidance, reducing collisions by 65 percentage points (from 100% down to 35%) and doubling flight longevity (141.0 steps vs 71.2 steps).
 - The cumulative reward improved from **-101.24** to **-3.34**, proving that the policy network internalizes goal-directed attraction and LiDAR-based repulsion.
 
+> [!NOTE]
+> **Provenance & Discrepancy with `docs/RESULTS.md`:**
+> `docs/RESULTS.md` records an earlier 10-episode demonstration trial showing a 40.0% success rate and +24.8 mean reward without fixed test seed isolation. In contrast, the formal benchmark above was evaluated across 20 procedural seeds (Seed 42) with strict collision and boundary checks, reflecting the true difficulty of multi-obstacle arena navigation. Both figures are preserved to provide complete experimental provenance.
+
 ---
 
 ### Experiment 2: Obstacle-Density Scaling (10 Test Episodes per Condition, Seed 42)

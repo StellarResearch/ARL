@@ -108,58 +108,50 @@ AdaptiveRL is an educational reinforcement-learning project in which a PPO agent
                             ▼
              ┌──────────────────────────────┐
              │     CLI / Streamlit GUI      │
+             │ (Aerospace Flight Deck & 3D) │
              └──────────────┬───────────────┘
                             │
                             ▼
              ┌──────────────────────────────┐
-             │   PPO Training / Evaluation  │
+             │   RL Algorithms & Planners   │
+             │   (PPO, SAC, & 3D A* Lattice)│
              └──────────────┬───────────────┘
                             │
-                            ▼
-             ┌──────────────────────────────┐
-             │     DroneNavigation3DEnv     │
-             └──────────────┬───────────────┘
-                            │
-                            ▼
-             ┌──────────────────────────────┐
-             │      3D Kinematic Drone      │
-             └──────────────┬───────────────┘
-                            │
-                            ▼
-             ┌──────────────────────────────┐
-             │  Sensors + Obstacles + Target│
-             └──────────────┬───────────────┘
-                            │
-                            ▼
-             ┌──────────────────────────────┐
-             │         Observation          │
-             │           (29-dim)           │
-             └──────────────┬───────────────┘
-                            │
-                            ▼
-             ┌──────────────────────────────┐
-             │          PPO Agent           │
-             └──────────────┬───────────────┘
-                            │
-                            ▼
-             ┌──────────────────────────────┐
-             │      Continuous Action       │
-             │       (3D Acceleration)      │
-             └──────────────┬───────────────┘
-                            │
-                            ▼
-             ┌──────────────────────────────┐
-             │         Environment          │
-             └──────────────────────────────┘
+             ┌──────────────┴──────────────┐
+             ▼                             ▼
+┌──────────────────────────────┐ ┌──────────────────────────────┐
+│     DroneNavigation3DEnv     │ │        Drone6DOFEnv          │
+│       (3-DOF Kinematic)      │ │    (6-DOF Rigid-Body Quad)   │
+├──────────────────────────────┤ ├──────────────────────────────┤
+│ • 29-D Observation Vector    │ │ • 36-D Observation Vector    │
+│ • 3-D Acceleration Action    │ │ • 4-D Motor Thrust Action    │
+│ • Semi-implicit Euler Drag   │ │ • RK4 (5 Substeps) Dynamics  │
+│ • Spherical Obstacles        │ │ • Quaternion & Body Torques  │
+│ • 16-Ray World-Fixed LiDAR   │ │ • World / Body-Frame LiDAR   │
+└──────────────┬───────────────┘ └──────────────┬───────────────┘
+               │                                │
+               └──────────────┬─────────────────┘
+                              │
+                              ▼
+               ┌──────────────────────────────┐
+               │    Closed-Loop Feedback      │
+               │ Reward Shaping + Diagnostics │
+               └──────────────────────────────┘
 ```
 
 ### The Reinforcement Learning Loop
-1. **Drone observes environment**: The drone receives a 29-dimensional continuous state vector containing its normalized coordinates, velocity, relative goal vector, distance ratio, and 16 LiDAR raycast readings.
-2. **PPO receives observation**: The observation vector is passed through the actor-critic neural network (`MlpPolicy`).
-3. **PPO chooses acceleration action**: The policy network outputs a continuous 3D acceleration vector $(a_x, a_y, a_z) \in [-1.0, 1.0]^3$.
-4. **Environment updates drone state**: The kinematic engine updates linear velocity with aerodynamic drag damping and computes the new 3D position over a time step of $\Delta t = 0.1\text{ s}$.
-5. **Reward is calculated**: The environment computes step reward based on Euclidean progress toward the target, step duration penalties, and terminal bonuses/penalties (+100 for goal arrival, -100 for collision).
-6. **PPO learns from repeated interaction**: The agent stores transitions in a rollout buffer and performs gradient updates using the PPO clipped surrogate objective.
+1. **Airframe state observation**:
+   - In **3-DOF mode**, the agent receives a 29-dimensional continuous state vector: normalized position, velocity, relative goal vector, goal distance ratio, and 16 spherical LiDAR range readings.
+   - In **6-DOF mode**, the agent receives a 36-dimensional state vector: normalized position, linear velocity, unit quaternion attitude $(\mathbf{q} \in \mathbb{R}^4, \|\mathbf{q}\|=1.0)$, body angular rates $(\mathbf{\omega} \in \mathbb{R}^3)$, target position, relative goal vector, distance ratio, and 16-ray 3D LiDAR readings (configurable as world-fixed or body-fixed).
+2. **Policy forward pass**: The observation vector is processed by an on-policy actor-critic network (**PPO**) or off-policy maximum-entropy network (**SAC**).
+3. **Action generation**:
+   - In **3-DOF mode**, the policy outputs continuous 3D acceleration $(a_x, a_y, a_z) \in [-1.0, 1.0]^3$.
+   - In **6-DOF mode**, the policy outputs four normalized motor commands $(u_1, u_2, u_3, u_4) \in [-1.0, 1.0]^4$, mapped to individual physical rotor thrusts $[0, F_{\max}]^4$.
+4. **Physical dynamic integration**:
+   - In **3-DOF mode**, the kinematic engine updates linear velocity with aerodynamic drag damping and computes updated 3D position over $\Delta t = 0.1\text{ s}$.
+   - In **6-DOF mode**, collective thrust and roll/pitch/yaw body torques drive rigid-body translational and rotational equations of motion integrated via Runge-Kutta 4th-order (RK4) over 5 internal substeps with continuous swept-sphere collision detection.
+5. **Reward calculation**: Step returns combine Euclidean progress toward the goal, step penalties, actuator effort penalties, attitude tilt and rate penalties, and terminal bonuses/penalties (+100 for goal arrival, -100 for collision).
+6. **Policy optimization**: Transitions update policy networks via PPO clipped surrogate gradients or SAC dual Q-learning with automatic entropy adjustment.
 
 ---
 
@@ -694,6 +686,10 @@ Instead of hand-coding navigation heuristics, the agent learns through trial and
 | **Trained PPO Policy (25k steps)** | **5.0%** | **35.0%** | **-3.34** | **141.0** | **65% survival rate**, +97.9 reward delta |
 
 *Finding: An unguided random agent collides 100% of the time within ~71 steps. PPO dramatically reduces collisions to 35% and doubles flight duration, validating goal-directed attraction and obstacle avoidance.*
+
+> [!NOTE]
+> **Provenance & Benchmark Metric Disclosure:**
+> An earlier preliminary development table in `docs/RESULTS.md` recorded 40.0% success and +24.8 reward measured across 10 unseeded demonstration runs without fixed procedural seed control. In contrast, the formal benchmark above was measured across 20 procedural test seeds (Seed 42) with strict terminal collision conditions, demonstrating the realistic difficulty of dense 3D navigation. Both sets of empirical data are preserved for scientific transparency.
 
 ### 2. Obstacle-Density Scaling (10 Test Episodes per Condition, Seed 42)
 
