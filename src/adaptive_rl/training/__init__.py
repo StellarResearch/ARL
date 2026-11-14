@@ -5,6 +5,8 @@ from adaptive_rl.training.callbacks import (
     CheckpointCallback,
     MetricLoggerCallback,
     SB3CallbackAdapter,
+    StreamlitProgressCallback,
+    TrainingProgressCallback,
 )
 from adaptive_rl.training.checkpointing import CheckpointManager
 from adaptive_rl.training.trainer import (
@@ -25,6 +27,8 @@ __all__ = [
     "PPOTrainer",
     "RLTrainer",
     "SB3CallbackAdapter",
+    "StreamlitProgressCallback",
+    "TrainingProgressCallback",
     "TrainingResult",
     "get_trainer",
 ]

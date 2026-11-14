@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from abc import ABC
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback as SB3BaseCallback
@@ -359,3 +360,128 @@ class SB3CallbackAdapter(SB3BaseCallback):
         """Propagate training end event."""
         for callback in self.callbacks:
             callback.on_training_end()
+
+
+class TrainingProgressCallback(BaseCallback):
+    """Callback for monitoring, reporting, and streaming real training progress to GUIs or consoles.
+
+    Tracks genuine step and episode telemetry from the environment and training loop:
+    - Current timestep and progress ratio.
+    - Completed episode count.
+    - Latest episode reward and rolling mean reward.
+    - Wall-clock elapsed duration and throughput (timesteps/sec).
+    - Status string ('training', 'completed').
+    """
+
+    def __init__(
+        self,
+        total_timesteps: int,
+        on_update: Optional[Callable[[Dict[str, Any]], None]] = None,
+        progress_bar: Any = None,
+        status_text: Any = None,
+        update_frequency: int = 100,
+        rolling_window: int = 10,
+    ) -> None:
+        if total_timesteps <= 0:
+            raise ValueError(f"total_timesteps must be positive, got {total_timesteps}")
+        self.total_timesteps = int(total_timesteps)
+        self.on_update = on_update
+        self.progress_bar = progress_bar
+        self.status_text = status_text
+        self.update_frequency = max(1, int(update_frequency))
+        self.rolling_window = max(1, int(rolling_window))
+
+        self.current_step: int = 0
+        self.total_episodes: int = 0
+        self.episode_rewards: List[float] = []
+        self.start_time: float = 0.0
+        self.last_update_step: int = 0
+        self.is_complete: bool = False
+
+    def on_training_start(self, locals_dict: Optional[Dict[str, Any]] = None) -> None:
+        self.start_time = time.time()
+        self.current_step = 0
+        self.total_episodes = 0
+        self.episode_rewards = []
+        self.last_update_step = 0
+        self.is_complete = False
+        self._notify_progress(force=True)
+
+    def on_step(self, step: int, locals_dict: Optional[Dict[str, Any]] = None) -> bool:
+        self.current_step = int(step)
+        if (self.current_step - self.last_update_step) >= self.update_frequency:
+            self._notify_progress()
+            self.last_update_step = self.current_step
+        return True
+
+    def on_episode_end(
+        self,
+        episode: int,
+        episode_reward: float,
+        episode_length: int,
+        info: Optional[Dict[str, Any]] = None,
+        metrics: Optional[EpisodeMetrics] = None,
+    ) -> None:
+        self.total_episodes = int(episode)
+        self.episode_rewards.append(float(episode_reward))
+        self._notify_progress(force=True)
+
+    def on_training_end(self) -> None:
+        self.current_step = self.total_timesteps
+        self.is_complete = True
+        self._notify_progress(force=True)
+
+    def get_progress_data(self) -> Dict[str, Any]:
+        now = time.time()
+        elapsed = max(0.0, now - self.start_time) if self.start_time > 0.0 else 0.0
+        fps = (self.current_step / elapsed) if elapsed > 0.0 else 0.0
+        progress_ratio = min(1.0, max(0.0, self.current_step / float(self.total_timesteps)))
+
+        latest_rew = self.episode_rewards[-1] if self.episode_rewards else None
+        recent = self.episode_rewards[-self.rolling_window :] if self.episode_rewards else []
+        rolling_rew = (sum(recent) / len(recent)) if recent else None
+
+        return {
+            "current_step": self.current_step,
+            "total_timesteps": self.total_timesteps,
+            "progress_ratio": progress_ratio,
+            "episodes": self.total_episodes,
+            "latest_reward": latest_rew,
+            "rolling_reward": rolling_rew,
+            "elapsed_seconds": elapsed,
+            "fps": fps,
+            "status": "completed" if self.is_complete else "training",
+        }
+
+    def _notify_progress(self, force: bool = False) -> None:
+        data = self.get_progress_data()
+
+        if self.on_update is not None and callable(self.on_update):
+            try:
+                self.on_update(data)
+            except Exception:
+                pass
+
+        if self.progress_bar is not None:
+            try:
+                self.progress_bar.progress(data["progress_ratio"])
+            except Exception:
+                pass
+
+        if self.status_text is not None:
+            try:
+                rew_str = (
+                    f" | Rolling Return: {data['rolling_reward']:.2f}"
+                    if data["rolling_reward"] is not None
+                    else ""
+                )
+                self.status_text.text(
+                    f"Step {data['current_step']:,} / {data['total_timesteps']:,} "
+                    f"({data['progress_ratio'] * 100:.1f}%) | Ep: {data['episodes']}"
+                    f"{rew_str} | Speed: {data['fps']:.0f} steps/s"
+                )
+            except Exception:
+                pass
+
+
+StreamlitProgressCallback = TrainingProgressCallback

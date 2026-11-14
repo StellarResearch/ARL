@@ -329,7 +329,8 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
                 ):
                     algo = "sac"
                 elif (
-                    "common.policies" in policy_mod
+                    "ppo" in policy_mod
+                    or "common.policies" in policy_mod
                     or "ActorCriticPolicy" in raw_str
                     or any(k in data for k in ["n_steps", "n_epochs", "clip_range"])
                 ):

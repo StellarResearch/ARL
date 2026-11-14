@@ -57,6 +57,47 @@ class PPOAlgorithm(BaseAlgorithm):
             device: Device (cpu, cuda, auto) to run computation on.
             **kwargs: Additional hyperparameters passed to Stable-Baselines3 PPO.
         """
+        if learning_rate <= 0.0:
+            raise ValueError(f"learning_rate must be positive, got {learning_rate}")
+        if n_steps <= 0:
+            raise ValueError(f"n_steps must be a positive integer, got {n_steps}")
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be a positive integer, got {batch_size}")
+        if batch_size > n_steps:
+            raise ValueError(
+                f"batch_size ({batch_size}) cannot exceed n_steps ({n_steps}) for PPO."
+            )
+        if n_epochs <= 0:
+            raise ValueError(f"n_epochs must be a positive integer, got {n_epochs}")
+        if not (0.0 <= gamma <= 1.0):
+            raise ValueError(f"gamma must be between 0.0 and 1.0, got {gamma}")
+        if not (0.0 <= gae_lambda <= 1.0):
+            raise ValueError(f"gae_lambda must be between 0.0 and 1.0, got {gae_lambda}")
+        if clip_range <= 0.0:
+            raise ValueError(f"clip_range must be positive, got {clip_range}")
+        if ent_coef < 0.0:
+            raise ValueError(f"ent_coef must be non-negative, got {ent_coef}")
+        if vf_coef < 0.0:
+            raise ValueError(f"vf_coef must be non-negative, got {vf_coef}")
+        if max_grad_norm <= 0.0:
+            raise ValueError(f"max_grad_norm must be positive, got {max_grad_norm}")
+
+        supported_kwargs = {
+            "policy_kwargs",
+            "tensorboard_log",
+            "stats_window_size",
+            "target_kl",
+            "rollout_buffer_class",
+            "rollout_buffer_kwargs",
+            "normalize_advantage",
+            "use_sde",
+            "sde_sample_freq",
+            "clip_range_vf",
+        }
+        unsupported = set(kwargs.keys()) - supported_kwargs
+        if unsupported:
+            raise ValueError(f"Unsupported hyperparameter(s) for PPO: {sorted(unsupported)}")
+
         self.env = env
         self.policy_name = policy
         self.hyperparameters: dict[str, Any] = {

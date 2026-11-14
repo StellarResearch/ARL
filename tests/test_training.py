@@ -215,3 +215,114 @@ def test_trainer_close_succeeds_for_well_behaved_environments(
         for record in caplog.records
         if record.levelno >= logging.ERROR and record.name == "adaptive_rl.training.trainer"
     ]
+
+
+def test_training_progress_callback_lifecycle() -> None:
+    """Verify TrainingProgressCallback correctly captures steps, throughput, and rolling reward."""
+    from adaptive_rl.training.callbacks import StreamlitProgressCallback, TrainingProgressCallback
+
+    updates = []
+
+    def on_update(data: dict) -> None:
+        updates.append(data.copy())
+
+    cb = TrainingProgressCallback(
+        total_timesteps=1000,
+        on_update=on_update,
+        update_frequency=100,
+        rolling_window=5,
+    )
+    # Verify Streamlit alias points to same class
+    assert StreamlitProgressCallback is TrainingProgressCallback
+
+    cb.on_training_start()
+    assert cb.current_step == 0
+    assert cb.total_episodes == 0
+    assert len(updates) == 1
+    assert updates[0]["progress_ratio"] == 0.0
+
+    # Step up to 100 -> triggers progress update
+    for s in range(1, 101):
+        cb.on_step(step=s)
+    assert len(updates) == 2
+    assert updates[1]["current_step"] == 100
+    assert updates[1]["progress_ratio"] == 0.1
+
+    # Episode completion
+    cb.on_episode_end(episode=1, episode_reward=25.0, episode_length=50)
+    assert cb.total_episodes == 1
+    assert cb.episode_rewards == [25.0]
+    data = cb.get_progress_data()
+    assert data["latest_reward"] == 25.0
+    assert data["rolling_reward"] == 25.0
+
+    # Add 4 more episodes to verify rolling return
+    for ep, r in enumerate([10.0, 15.0, 20.0, 30.0], start=2):
+        cb.on_episode_end(episode=ep, episode_reward=r, episode_length=50)
+    data = cb.get_progress_data()
+    assert data["episodes"] == 5
+    # Mean of [25, 10, 15, 20, 30] = 100 / 5 = 20.0
+    assert data["rolling_reward"] == 20.0
+
+    cb.on_training_end()
+    assert cb.is_complete is True
+    assert cb.current_step == 1000
+    data_final = cb.get_progress_data()
+    assert data_final["progress_ratio"] == 1.0
+    assert data_final["status"] == "completed"
+
+
+def test_ppo_hyperparameter_validation() -> None:
+    """Verify PPO parameter validation catches erroneous or contradictory settings."""
+    env = DroneNavigation3DEnv(max_steps=5)
+
+    # 1. batch_size > n_steps
+    with pytest.raises(ValueError, match="cannot exceed n_steps"):
+        PPOAlgorithm(env=env, n_steps=64, batch_size=128)
+
+    # 2. Non-positive learning rate
+    with pytest.raises(ValueError, match="learning_rate must be positive"):
+        PPOAlgorithm(env=env, learning_rate=-0.001)
+
+    # 3. Invalid gamma
+    with pytest.raises(ValueError, match="gamma must be between"):
+        PPOAlgorithm(env=env, gamma=1.5)
+
+    # 4. Invalid gae_lambda
+    with pytest.raises(ValueError, match="gae_lambda must be between"):
+        PPOAlgorithm(env=env, gae_lambda=-0.1)
+
+    # 5. Unsupported keyword argument
+    with pytest.raises(ValueError, match="Unsupported hyperparameter"):
+        PPOAlgorithm(env=env, non_existent_hyperparameter=42)
+
+    env.close()
+
+
+def test_sac_hyperparameter_validation() -> None:
+    """Verify SAC parameter validation catches erroneous or out-of-range settings."""
+    from adaptive_rl.algorithms.sac import SACAlgorithm
+
+    env = DroneNavigation3DEnv(max_steps=5)
+
+    # 1. Invalid learning rate
+    with pytest.raises(ValueError, match="learning_rate must be positive"):
+        SACAlgorithm(env=env, learning_rate=0.0)
+
+    # 2. Invalid tau
+    with pytest.raises(ValueError, match="tau must be in range"):
+        SACAlgorithm(env=env, tau=1.5)
+
+    # 3. Invalid ent_coef string
+    with pytest.raises(ValueError, match="Invalid ent_coef string"):
+        SACAlgorithm(env=env, ent_coef="invalid_ent_str")
+
+    # 4. Negative learning_starts
+    with pytest.raises(ValueError, match="learning_starts must be non-negative"):
+        SACAlgorithm(env=env, learning_starts=-5)
+
+    # 5. Unsupported keyword argument
+    with pytest.raises(ValueError, match="Unsupported hyperparameter"):
+        SACAlgorithm(env=env, invalid_sac_kwarg="bogus")
+
+    env.close()

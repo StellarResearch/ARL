@@ -55,6 +55,53 @@ class SACAlgorithm(BaseAlgorithm):
             device: Computation device ('cpu', 'cuda', 'auto').
             **kwargs: Additional hyperparameters passed to Stable-Baselines3 SAC.
         """
+        if learning_rate <= 0.0:
+            raise ValueError(f"learning_rate must be positive, got {learning_rate}")
+        if buffer_size <= 0:
+            raise ValueError(f"buffer_size must be a positive integer, got {buffer_size}")
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be a positive integer, got {batch_size}")
+        if learning_starts < 0:
+            raise ValueError(f"learning_starts must be non-negative, got {learning_starts}")
+        if not (0.0 < tau <= 1.0):
+            raise ValueError(f"tau must be in range (0.0, 1.0], got {tau}")
+        if not (0.0 <= gamma <= 1.0):
+            raise ValueError(f"gamma must be between 0.0 and 1.0, got {gamma}")
+        if train_freq < 1:
+            raise ValueError(f"train_freq must be a positive integer, got {train_freq}")
+        if gradient_steps < 1 and gradient_steps != -1:
+            raise ValueError(f"gradient_steps must be >= 1 or -1, got {gradient_steps}")
+        if isinstance(ent_coef, (int, float)):
+            if ent_coef < 0.0:
+                raise ValueError(f"ent_coef must be non-negative, got {ent_coef}")
+        elif isinstance(ent_coef, str):
+            if not (ent_coef == "auto" or ent_coef.startswith("auto_")):
+                raise ValueError(
+                    f"Invalid ent_coef string '{ent_coef}'. Expected 'auto' or 'auto_<target_entropy>'"
+                )
+        else:
+            raise ValueError(
+                f"ent_coef must be a float or string ('auto'), got {type(ent_coef).__name__}"
+            )
+
+        supported_kwargs = {
+            "policy_kwargs",
+            "tensorboard_log",
+            "stats_window_size",
+            "action_noise",
+            "replay_buffer_class",
+            "replay_buffer_kwargs",
+            "optimize_memory_usage",
+            "target_update_interval",
+            "target_entropy",
+            "use_sde",
+            "sde_sample_freq",
+            "use_sde_at_warmup",
+        }
+        unsupported = set(kwargs.keys()) - supported_kwargs
+        if unsupported:
+            raise ValueError(f"Unsupported hyperparameter(s) for SAC: {sorted(unsupported)}")
+
         self.env = env
         self.policy_name = policy
         self.hyperparameters: dict[str, Any] = {

@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import streamlit as st
@@ -36,7 +36,7 @@ from adaptive_rl.gui import (
     get_available_models,
     run_drone_simulation_episode,
 )
-from adaptive_rl.training.trainer import PPOTrainer
+from adaptive_rl.training import RLTrainer, TrainingProgressCallback
 
 # Configure Streamlit Page
 st.set_page_config(
@@ -307,7 +307,7 @@ def main() -> None:
     tabs = st.tabs(
         [
             "🎮 Live 3D Flight Deck",
-            "📈 Train PPO",
+            "📈 Train Policy",
             "📊 Evaluation & Baseline",
             "🎯 Difficulty Experiment",
             "📘 About & Architecture",
@@ -808,71 +808,201 @@ def main() -> None:
                 )
 
     # ==========================================
-    # TAB 2: TRAIN PPO
+    # TAB 2: TRAIN POLICY (PPO & SAC)
     # ==========================================
     with tabs[1]:
-        st.subheader("Train PPO Policy")
+        st.subheader("Train Autonomous Flight Policy (PPO & SAC)")
         st.markdown(
-            "Execute real reinforcement learning training using **Stable-Baselines3 PPO** "
-            "on your CPU. Training progress and rewards are tracked in real-time."
+            "Execute genuine reinforcement learning training on your CPU with real-time "
+            "progress streaming, step throughput, and episodic reward tracking."
         )
 
-        train_col1, train_col2, train_col3 = st.columns(3)
-        with train_col1:
+        tr_col1, tr_col2, tr_col3, tr_col4 = st.columns(4)
+        with tr_col1:
+            train_algo = st.selectbox(
+                "Algorithm:",
+                options=["PPO", "SAC"],
+                index=0,
+                help="PPO: On-policy clipped surrogate. SAC: Off-policy maximum-entropy actor-critic.",
+            )
+        with tr_col2:
+            train_env_choice = st.selectbox(
+                "Dynamics Model:",
+                options=["3-DOF Kinematic Drone", "6-DOF Quadrotor"],
+                index=0,
+                help="Select target physics simulation environment.",
+            )
+        with tr_col3:
             train_steps = st.select_slider(
                 "Training Budget (Timesteps):",
-                options=[5000, 10000, 25000, 50000],
-                value=25000,
-                help="25,000 steps requires ~25 seconds on a standard student laptop CPU.",
+                options=[2000, 5000, 10000, 25000, 50000],
+                value=5000,
+                help="Timestep budget. 5,000-10,000 steps completes rapidly for CPU interactive testing.",
             )
-        with train_col2:
-            train_lr = st.selectbox(
-                "Learning Rate:",
-                options=[0.0001, 0.0003, 0.001],
-                index=1,
-            )
-        with train_col3:
+        with tr_col4:
             train_seed = st.number_input("Random Seed:", value=42, step=1)
 
+        # Hyperparameter configuration
+        with st.expander("⚙️ Algorithm Hyperparameters", expanded=False):
+            hp_c1, hp_c2, hp_c3 = st.columns(3)
+            with hp_c1:
+                train_lr = st.selectbox(
+                    "Learning Rate:",
+                    options=[0.0001, 0.0003, 0.001],
+                    index=1,
+                )
+                train_gamma = st.number_input(
+                    "Discount Factor (γ):", value=0.99, min_value=0.8, max_value=1.0, step=0.01
+                )
+            with hp_c2:
+                if train_algo == "PPO":
+                    train_n_steps = st.number_input(
+                        "Rollout Steps (n_steps):",
+                        value=1024,
+                        min_value=64,
+                        max_value=4096,
+                        step=128,
+                    )
+                    train_batch_size = st.number_input(
+                        "Minibatch Size:", value=64, min_value=16, max_value=512, step=16
+                    )
+                else:
+                    train_buffer_size = st.number_input(
+                        "Replay Buffer Size:",
+                        value=50000,
+                        min_value=1000,
+                        max_value=200000,
+                        step=5000,
+                    )
+                    train_batch_size = st.number_input(
+                        "Minibatch Size:", value=128, min_value=16, max_value=512, step=32
+                    )
+            with hp_c3:
+                if train_algo == "PPO":
+                    train_n_epochs = st.number_input(
+                        "Epochs (n_epochs):", value=10, min_value=1, max_value=30, step=1
+                    )
+                    train_clip_range = st.number_input(
+                        "Clip Range:", value=0.2, min_value=0.05, max_value=0.4, step=0.05
+                    )
+                    train_ent_coef = st.number_input(
+                        "Entropy Coef:", value=0.0, min_value=0.0, max_value=0.1, step=0.01
+                    )
+                else:
+                    train_learning_starts = st.number_input(
+                        "Learning Starts:", value=100, min_value=0, max_value=5000, step=50
+                    )
+                    train_tau = st.number_input(
+                        "Target Smoothing (tau):",
+                        value=0.005,
+                        min_value=0.001,
+                        max_value=0.1,
+                        step=0.005,
+                        format="%.3f",
+                    )
+                    train_ent_coef_str = st.selectbox(
+                        "Entropy Regularization:", ["auto", "0.01", "0.05", "0.1"]
+                    )
+
         is_training = st.session_state.get("is_training", False)
-        start_train_btn = st.button("▶ Start PPO Training", type="primary", disabled=is_training)
+        start_train_btn = st.button(
+            f"▶ Start {train_algo} Training", type="primary", disabled=is_training
+        )
 
         if start_train_btn:
             st.session_state["is_training"] = True
-            st.info(f"Starting training run ({train_steps:,} timesteps on CPU)...")
+            st.info(
+                f"Training {train_algo} on {train_env_choice} for {train_steps:,} timesteps on CPU..."
+            )
             prog_bar = st.progress(0.0)
             train_status_box: Any = st.empty()
 
+            m_c1, m_c2, m_c3, m_c4 = st.columns(4)
+            m_steps = m_c1.empty()
+            m_eps = m_c2.empty()
+            m_rew = m_c3.empty()
+            m_speed = m_c4.empty()
+
             try:
+                env_id = "drone-6dof" if train_env_choice == "6-DOF Quadrotor" else "drone"
+                algo_key = train_algo.lower()
+                experiment_name = f"{env_id.replace('-', '_')}_{algo_key}_gui"
+
+                algo_params: Dict[str, Any] = {}
+                if algo_key == "ppo":
+                    algo_params = {
+                        "n_steps": int(train_n_steps),
+                        "n_epochs": int(train_n_epochs),
+                        "clip_range": float(train_clip_range),
+                        "ent_coef": float(train_ent_coef),
+                    }
+                else:
+                    sac_ent: Union[str, float] = (
+                        "auto" if train_ent_coef_str == "auto" else float(train_ent_coef_str)
+                    )
+                    algo_params = {
+                        "buffer_size": int(train_buffer_size),
+                        "learning_starts": int(train_learning_starts),
+                        "tau": float(train_tau),
+                        "ent_coef": sac_ent,
+                    }
+
                 train_cfg = ExperimentConfig(
-                    name="drone_ppo_gui",
+                    name=experiment_name,
                     seed=int(train_seed),
                     algorithm=AlgorithmConfig(
-                        name="ppo",
+                        name=algo_key,
                         learning_rate=float(train_lr),
+                        gamma=float(train_gamma),
+                        batch_size=int(train_batch_size),
+                        parameters=algo_params,
                     ),
                     environment=EnvironmentConfig(
-                        name="drone",
+                        name=env_id,
                     ),
                     training=TrainingConfig(
                         total_timesteps=int(train_steps),
+                        checkpoint_freq=0,
                     ),
                     output_dir=Path("artifacts"),
                 )
 
-                trainer = PPOTrainer(config=train_cfg)
+                def _on_gui_progress(data: Dict[str, Any]) -> None:
+                    prog_bar.progress(data["progress_ratio"])
+                    rew_disp = (
+                        f"{data['rolling_reward']:.2f}"
+                        if data["rolling_reward"] is not None
+                        else "--"
+                    )
+                    train_status_box.text(
+                        f"Status: {data['status'].upper()} | Step {data['current_step']:,} / "
+                        f"{data['total_timesteps']:,} ({data['progress_ratio'] * 100:.1f}%) | "
+                        f"Speed: {data['fps']:.0f} steps/s"
+                    )
+                    m_steps.metric("Timesteps", f"{data['current_step']:,}")
+                    m_eps.metric("Episodes", f"{data['episodes']}")
+                    m_rew.metric("Rolling Return", rew_disp)
+                    m_speed.metric("Throughput", f"{data['fps']:.0f} steps/s")
+
+                gui_callback = TrainingProgressCallback(
+                    total_timesteps=int(train_steps),
+                    on_update=_on_gui_progress,
+                    update_frequency=100,
+                )
+
+                trainer = RLTrainer(config=train_cfg, callbacks=[gui_callback])
                 t0 = time.time()
                 result = trainer.fit()
                 duration = time.time() - t0
 
                 prog_bar.progress(1.0)
-                train_status_box.text(f"Training Complete! Duration: {duration:.2f}s")
+                train_status_box.text(f"Training Complete! Total duration: {duration:.2f}s")
                 st.success(f"Checkpoint saved: `{result.final_model_path}`")
 
                 st.session_state["latest_training_rewards"] = result.episode_rewards
 
                 t1, t2, t3, t4 = st.columns(4)
-                t1.metric("Timesteps", f"{result.total_timesteps:,}")
+                t1.metric("Total Steps", f"{result.total_timesteps:,}")
                 t2.metric("Episodes Completed", f"{result.episodes_completed}")
                 t3.metric("Training Time", f"{duration:.2f}s")
                 t4.metric("Mean Final Reward", f"{result.mean_reward:.2f}")
@@ -933,17 +1063,29 @@ def main() -> None:
 
         if run_eval_btn:
             with st.spinner(f"Running evaluation ({eval_episodes} episodes)..."):
-                eval_env = DroneNavigation3DEnv()
+                is_eval_6dof = False
+                target_path = None
+                info = None
+                if available_models and eval_model_name in model_info_map:
+                    target_path = next(
+                        (p for p in available_models if p.name == eval_model_name), None
+                    )
+                    if target_path:
+                        info = model_info_map[target_path.name]
+                        if info.get("compatible_env") == "6-DOF":
+                            is_eval_6dof = True
+
+                eval_env = (
+                    Drone6DOFEnv(max_steps=200)
+                    if is_eval_6dof
+                    else DroneNavigation3DEnv(max_steps=200)
+                )
                 try:
                     metrics_to_plot: Dict[str, Any] = {}
 
                     # Evaluate Model
                     if eval_mode in ["Compare Both (PPO vs Random)", "PPO Only"]:
-                        if available_models and eval_model_name in model_info_map:
-                            target_path = next(
-                                p for p in available_models if p.name == eval_model_name
-                            )
-                            info = model_info_map[target_path.name]
+                        if target_path is not None and info is not None:
                             if not info["valid"]:
                                 st.warning(
                                     f"Checkpoint '{eval_model_name}' is unsupported: {info['error']}"
@@ -954,7 +1096,7 @@ def main() -> None:
                             ):
                                 st.warning(
                                     f"Checkpoint '{eval_model_name}' expects observation shape {info['obs_shape']} "
-                                    f"and action shape {info['action_shape']}, but 3-DOF benchmark environment requires "
+                                    f"and action shape {info['action_shape']}, but active evaluation environment requires "
                                     f"{eval_env.observation_space.shape} and {eval_env.action_space.shape}. "
                                     "Cannot evaluate incompatible model."
                                 )
@@ -969,7 +1111,7 @@ def main() -> None:
                                     base_seed=42,
                                 )
                                 algo_title = (
-                                    f"{info['algorithm'].upper()} Policy"
+                                    f"{info['algorithm'].upper()} Policy ({'6-DOF' if is_eval_6dof else '3-DOF'})"
                                     if info["algorithm"]
                                     else "Trained Policy"
                                 )
@@ -989,7 +1131,9 @@ def main() -> None:
                             num_episodes=int(eval_episodes),
                             base_seed=42,
                         )
-                        metrics_to_plot["Random Policy"] = rand_res
+                        metrics_to_plot[
+                            f"Random Policy ({'6-DOF' if is_eval_6dof else '3-DOF'})"
+                        ] = rand_res
 
                     st.session_state["benchmark_results"] = metrics_to_plot
 
