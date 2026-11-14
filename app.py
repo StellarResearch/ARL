@@ -7,16 +7,23 @@ random baseline comparison, obstacle-density experiments, and system architectur
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import numpy as np
 import streamlit as st
 from stable_baselines3 import PPO
 
 from adaptive_rl.algorithms.ppo import PPOAlgorithm
+from adaptive_rl.algorithms.registry import (
+    inspect_model_checkpoint,
+    load_algorithm_from_pretrained,
+)
 from adaptive_rl.config import AlgorithmConfig, EnvironmentConfig, ExperimentConfig, TrainingConfig
 from adaptive_rl.environments.drone import DroneNavigation3DEnv
+from adaptive_rl.environments.drone_6dof import Drone6DOFEnv, quaternion_to_euler_angles
 from adaptive_rl.evaluation.evaluator import (
     Evaluator,
     evaluate_ppo_policy,
@@ -47,11 +54,12 @@ def main() -> None:
     st.sidebar.title("🚁 AdaptiveRL")
     st.sidebar.markdown(
         "**Autonomous 3D Drone Navigation**\n\n"
-        "College Demonstration Prototype using Proximal Policy Optimization (PPO).\n\n"
-        "*(Point-mass kinematic simulation for academic evaluation)*"
+        "Demonstration Platform for 3-DOF Kinematic and 6-DOF Rigid-Body Simulation using PPO & SAC.\n\n"
+        "*(Educational simulation for academic evaluation)*"
     )
 
     available_models = get_available_models()
+    model_info_map = {m.name: inspect_model_checkpoint(m) for m in available_models}
     model_names = [m.name for m in available_models]
 
     tabs = st.tabs(
@@ -68,27 +76,48 @@ def main() -> None:
     # TAB 1: LIVE 3D DEMO
     # ==========================================
     with tabs[0]:
-        st.subheader("Live 3D Drone Navigation Simulation")
+        st.subheader("Interactive 3D Drone Simulation Playback")
         st.caption(
-            "Observe the drone navigate from its launch position toward the green target diamond "
-            "while avoiding spherical obstacles using continuous 3D acceleration actions."
+            "Observe the simulated drone navigate toward the target waypoint while avoiding spherical "
+            "obstacles in a 3D arena. Playback telemetry visualizes rigid-body dynamics, attitude, and LiDAR."
         )
 
-        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([2, 1, 1, 1])
+        st.info(
+            "ℹ️ **Simulation Playback Mode:** You are viewing recorded step playback from numerical "
+            "physics integration (RK4). This is an educational theoretical flight simulation, not "
+            "live hardware telemetry or real-time physical control.",
+            icon="ℹ️",
+        )
+
+        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([1.5, 2, 1, 1, 1])
 
         with ctrl_col1:
+            env_choice = st.selectbox(
+                "Dynamics Model:",
+                options=["6-DOF Quadrotor", "3-DOF Kinematic Drone"],
+                index=0,
+                help="Choose 6-DOF rigid-body dynamics (quaternion attitude & 4 rotors) or fast 3-DOF point-mass kinematics.",
+            )
+
+        with ctrl_col2:
             policy_options = ["Random Action Baseline"]
-            if model_names:
-                policy_options = [f"Trained PPO: {m}" for m in model_names] + policy_options
+            for m in available_models:
+                info = model_info_map[m.name]
+                if info["valid"] and info["algorithm"]:
+                    algo_label = info["algorithm"].upper()
+                    env_label = f" ({info['compatible_env']})" if info["compatible_env"] else ""
+                    policy_options.append(f"Trained {algo_label}{env_label}: {m.name}")
+                else:
+                    policy_options.append(f"Unsupported: {m.name}")
 
             selected_policy = st.selectbox(
                 "Select Policy:",
                 options=policy_options,
                 index=0,
-                help="Choose a trained PPO model checkpoint or test an untrained random baseline.",
+                help="Choose a trained model checkpoint or test an untrained random baseline.",
             )
 
-        with ctrl_col2:
+        with ctrl_col3:
             demo_seed = st.number_input(
                 "Environment Seed:",
                 min_value=0,
@@ -98,7 +127,7 @@ def main() -> None:
                 help="Locks procedural obstacle placement and target location for reproducible evaluation.",
             )
 
-        with ctrl_col3:
+        with ctrl_col4:
             num_obs = st.slider(
                 "Obstacles:",
                 min_value=0,
@@ -108,7 +137,7 @@ def main() -> None:
                 help="Number of procedural spherical obstacles generated in the arena.",
             )
 
-        with ctrl_col4:
+        with ctrl_col5:
             show_lidar_rays = st.checkbox("Show 16-Ray LiDAR", value=True)
 
         run_col1, _ = st.columns([1, 4])
@@ -117,28 +146,64 @@ def main() -> None:
                 "🚀 Run Flight Simulation", type="primary", use_container_width=True
             )
 
-        if launch_clicked or "flight_data" not in st.session_state:
-            with st.spinner("Executing simulation dynamics..."):
-                env = DroneNavigation3DEnv(num_obstacles=int(num_obs))
-                model_to_use: Optional[PPO] = None
+        is_6dof = "6-DOF" in env_choice
+        sim_key = f"flight_data_{'6dof' if is_6dof else '3dof'}"
 
-                if selected_policy.startswith("Trained PPO:") and available_models:
-                    raw_name = selected_policy.replace("Trained PPO: ", "").strip()
-                    matching = [p for p in available_models if p.name == raw_name]
-                    if matching:
-                        try:
-                            model_to_use = PPO.load(str(matching[0]))
-                        except Exception as exc:
-                            st.warning(f"Could not load checkpoint ({exc}); using random actions.")
+        if launch_clicked or sim_key not in st.session_state:
+            with st.spinner(f"Executing {env_choice} simulation dynamics..."):
+                if is_6dof:
+                    env = Drone6DOFEnv(num_obstacles=int(num_obs))
+                else:
+                    env = DroneNavigation3DEnv(num_obstacles=int(num_obs))
 
-                st.session_state["flight_data"] = run_drone_simulation_episode(
-                    env=env,
-                    model=model_to_use,
-                    seed=int(demo_seed),
-                )
-                env.close()
+                try:
+                    model_to_use: Optional[Any] = None
 
-        flight_data = st.session_state["flight_data"]
+                    if not selected_policy.startswith("Random Action Baseline") and available_models:
+                        raw_name = selected_policy.split(": ", 1)[-1].strip()
+                        matching = [p for p in available_models if p.name == raw_name]
+                        if matching:
+                            target_p = matching[0]
+                            info = model_info_map[target_p.name]
+                            if not info["valid"]:
+                                st.warning(
+                                    f"Checkpoint '{raw_name}' is unsupported: {info['error']}. "
+                                    "Falling back to Random Baseline."
+                                )
+                            elif (
+                                info["obs_shape"] != env.observation_space.shape
+                                or info["action_shape"] != env.action_space.shape
+                            ):
+                                st.warning(
+                                    f"Model '{raw_name}' expects observation shape {info['obs_shape']} and "
+                                    f"action shape {info['action_shape']}, but {env_choice} environment has "
+                                    f"observation shape {env.observation_space.shape} and action shape "
+                                    f"{env.action_space.shape}. Falling back to Random Baseline."
+                                )
+                            else:
+                                try:
+                                    if info["algorithm"] == "sac":
+                                        from stable_baselines3 import SAC
+
+                                        model_to_use = SAC.load(str(target_p))
+                                    else:
+                                        from stable_baselines3 import PPO
+
+                                        model_to_use = PPO.load(str(target_p))
+                                except Exception as exc:
+                                    st.warning(
+                                        f"Could not load checkpoint ({exc}); using random actions."
+                                    )
+
+                    st.session_state[sim_key] = run_drone_simulation_episode(
+                        env=env,
+                        model=model_to_use,
+                        seed=int(demo_seed),
+                    )
+                finally:
+                    env.close()
+
+        flight_data = st.session_state[sim_key]
         steps = flight_data["steps"]
         total_steps = len(steps) - 1
 
@@ -147,7 +212,7 @@ def main() -> None:
         st.markdown(
             f"""
             <div style="background-color: {outcome_color}22; border-left: 5px solid {outcome_color}; padding: 12px 16px; border-radius: 4px; margin-bottom: 12px;">
-                <h4 style="margin: 0; color: {outcome_color};">Flight Outcome: {flight_data["outcome"]}</h4>
+                <h4 style="margin: 0; color: {outcome_color};">Flight Outcome: {flight_data["outcome"]} ({env_choice})</h4>
                 <p style="margin: 4px 0 0 0; color: #cbd5e0; font-size: 14px;">
                     Completed in <b>{flight_data["total_steps"]}</b> timesteps with cumulative reward <b>{flight_data["total_reward"]:.2f}</b> (Seed: {flight_data["seed"]}).
                 </p>
@@ -165,13 +230,14 @@ def main() -> None:
                 max_value=total_steps,
                 value=total_steps,
                 step=1,
-                help="Scrub through flight time to inspect position, speed, and sensor range.",
+                help="Scrub through recorded flight time to inspect 3D drone attitude, position, speed, and sensor range.",
             )
 
         step_info = steps[selected_step]
         cur_pos = step_info["position"]
         cur_vel = step_info["velocity"]
         cur_lidar = step_info["lidar_ranges"]
+        cur_quat = step_info.get("quaternion")
 
         # Build Interactive 3D Plotly Arena
         fig = build_arena_3d_figure(
@@ -182,22 +248,42 @@ def main() -> None:
             trajectory=[s["position"] for s in steps[: selected_step + 1]],
             current_pos=cur_pos,
             current_vel=cur_vel,
+            attitude_quaternion=cur_quat,
             lidar_rays=flight_data["lidar_rays"],
             lidar_ranges=cur_lidar,
             show_lidar=show_lidar_rays,
-            title=f"3D Flight Arena — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
+            title=f"3D Flight Arena ({env_choice}) — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
         )
 
         st.plotly_chart(fig, use_container_width=True)
 
-        # Step Metrics Row
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
-        m1.metric("Altitude (Z)", f"{cur_pos[2]:.2f} m")
-        m2.metric("Ground Speed", f"{step_info['speed']:.2f} m/s")
-        m3.metric("Range to Goal", f"{step_info['distance_to_goal']:.2f} m")
-        m4.metric("Nearest Obstacle", f"{step_info['min_obstacle_distance']:.2f} m")
-        m5.metric("Step Reward", f"{step_info['reward']:+.2f}")
-        m6.metric("Cumulative Reward", f"{step_info['cumulative_reward']:+.2f}")
+        # Telemetry Metrics Rows
+        if cur_quat is not None and len(cur_quat) == 4:
+            roll_rad, pitch_rad, yaw_rad = quaternion_to_euler_angles(np.asarray(cur_quat))
+            roll_deg = math.degrees(roll_rad)
+            pitch_deg = math.degrees(pitch_rad)
+            yaw_deg = math.degrees(yaw_rad)
+        else:
+            roll_deg, pitch_deg, yaw_deg = 0.0, 0.0, 0.0
+
+        omega_mag = step_info.get("angular_speed", 0.0)
+
+        # Attitude & Velocity Telemetry
+        st.markdown("##### 📡 Flight Deck Telemetry")
+        t1, t2, t3, t4, t5, t6 = st.columns(6)
+        t1.metric("Altitude (Z)", f"{cur_pos[2]:.2f} m")
+        t2.metric("Linear Speed", f"{step_info['speed']:.2f} m/s")
+        t3.metric("Roll (φ)", f"{roll_deg:+.1f}°")
+        t4.metric("Pitch (θ)", f"{pitch_deg:+.1f}°")
+        t5.metric("Yaw (ψ)", f"{yaw_deg:+.1f}°")
+        t6.metric("Angular Speed", f"{omega_mag:.2f} rad/s")
+
+        # Navigation & Rewards Telemetry
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Range to Goal", f"{step_info['distance_to_goal']:.2f} m")
+        m2.metric("Nearest Obstacle", f"{step_info['min_obstacle_distance']:.2f} m")
+        m3.metric("Step Reward", f"{step_info['reward']:+.2f}")
+        m4.metric("Cumulative Reward", f"{step_info['cumulative_reward']:+.2f}")
 
     # ==========================================
     # TAB 2: TRAIN PPO
@@ -329,23 +415,46 @@ def main() -> None:
                 try:
                     metrics_to_plot: Dict[str, Any] = {}
 
-                    # Evaluate PPO
+                    # Evaluate Model
                     if eval_mode in ["Compare Both (PPO vs Random)", "PPO Only"]:
-                        if available_models:
+                        if available_models and eval_model_name in model_info_map:
                             target_path = next(
                                 p for p in available_models if p.name == eval_model_name
                             )
-                            ppo_algo = PPOAlgorithm.from_pretrained(target_path, env=eval_env)
-                            ppo_res = evaluate_ppo_policy(
-                                algorithm=ppo_algo,
-                                env=eval_env,
-                                num_episodes=int(eval_episodes),
-                                base_seed=42,
-                            )
-                            metrics_to_plot["PPO Policy"] = ppo_res
-                            Evaluator.save_report(ppo_res, Path("artifacts/evaluation.json"))
+                            info = model_info_map[target_path.name]
+                            if not info["valid"]:
+                                st.warning(
+                                    f"Checkpoint '{eval_model_name}' is unsupported: {info['error']}"
+                                )
+                            elif (
+                                info["obs_shape"] != eval_env.observation_space.shape
+                                or info["action_shape"] != eval_env.action_space.shape
+                            ):
+                                st.warning(
+                                    f"Checkpoint '{eval_model_name}' expects observation shape {info['obs_shape']} "
+                                    f"and action shape {info['action_shape']}, but 3-DOF benchmark environment requires "
+                                    f"{eval_env.observation_space.shape} and {eval_env.action_space.shape}. "
+                                    "Cannot evaluate incompatible model."
+                                )
+                            else:
+                                trained_algo = load_algorithm_from_pretrained(
+                                    target_path, env=eval_env
+                                )
+                                trained_res = evaluate_ppo_policy(
+                                    algorithm=trained_algo,
+                                    env=eval_env,
+                                    num_episodes=int(eval_episodes),
+                                    base_seed=42,
+                                )
+                                algo_title = (
+                                    f"{info['algorithm'].upper()} Policy"
+                                    if info["algorithm"]
+                                    else "Trained Policy"
+                                )
+                                metrics_to_plot[algo_title] = trained_res
+                                Evaluator.save_report(trained_res, Path("artifacts/evaluation.json"))
                         else:
-                            st.warning("No saved model found. Please train a PPO agent first.")
+                            st.warning("No saved model found. Please train a compatible agent first.")
 
                     # Evaluate Random Policy
                     if eval_mode in ["Compare Both (PPO vs Random)", "Random Only"]:
@@ -390,7 +499,7 @@ def main() -> None:
             # Side-by-Side Comparison Chart
             fig_comp = build_comparison_bar_chart(
                 metrics_map=bench_results,
-                title="PPO Policy vs Random Baseline (Success & Collision Rates)",
+                title="Trained Policy vs Random Baseline (Success & Collision Rates)",
             )
             st.plotly_chart(fig_comp, use_container_width=True)
             st.info("Evaluation report exported to `artifacts/evaluation.json`")
@@ -426,24 +535,34 @@ def main() -> None:
         run_diff_btn = st.button("🎯 Run Obstacle-Density Experiment", type="primary")
 
         if run_diff_btn:
-            if available_models:
-                with st.spinner("Evaluating across 4, 6, and 8 obstacles..."):
-                    target_path = next(p for p in available_models if p.name == diff_model_name)
-                    dummy_env = DroneNavigation3DEnv()
-                    try:
-                        algo = PPOAlgorithm.from_pretrained(target_path, env=dummy_env)
-                        density_results = run_obstacle_density_experiment(
-                            algorithm=algo,
-                            obstacle_counts=(4, 6, 8),
-                            episodes_per_density=int(diff_episodes),
-                            base_seed=42,
-                            output_path=Path("artifacts/obstacle_density_experiment.json"),
-                        )
-                        st.session_state["density_results"] = density_results
-                    finally:
-                        dummy_env.close()
+            if available_models and diff_model_name in model_info_map:
+                target_path = next(p for p in available_models if p.name == diff_model_name)
+                info = model_info_map[target_path.name]
+                if not info["valid"]:
+                    st.warning(f"Checkpoint '{diff_model_name}' is unsupported: {info['error']}")
+                elif info["obs_shape"] != (29,) or info["action_shape"] != (3,):
+                    st.warning(
+                        f"Checkpoint '{diff_model_name}' expects observation shape {info['obs_shape']} and "
+                        f"action shape {info['action_shape']}, which is incompatible with the 3-DOF obstacle-density "
+                        "experiment (requires observation shape (29,) and action shape (3,))."
+                    )
+                else:
+                    with st.spinner("Evaluating across 4, 6, and 8 obstacles..."):
+                        dummy_env = DroneNavigation3DEnv()
+                        try:
+                            algo = load_algorithm_from_pretrained(target_path, env=dummy_env)
+                            density_results = run_obstacle_density_experiment(
+                                algorithm=algo,
+                                obstacle_counts=(4, 6, 8),
+                                episodes_per_density=int(diff_episodes),
+                                base_seed=42,
+                                output_path=Path("artifacts/obstacle_density_experiment.json"),
+                            )
+                            st.session_state["density_results"] = density_results
+                        finally:
+                            dummy_env.close()
             else:
-                st.warning("No saved model found. Please train a PPO agent first.")
+                st.warning("No saved model found. Please train a compatible agent first.")
 
         density_data = st.session_state.get("density_results", None)
         if density_data:
@@ -479,18 +598,27 @@ def main() -> None:
     # TAB 5: ABOUT & ARCHITECTURE
     # ==========================================
     with tabs[4]:
-        st.subheader("System Architecture & College Demonstration Specs")
+        st.subheader("System Architecture & Specifications")
 
         st.markdown(
             r"""
+            ### Simulation Environments: 3-DOF vs. 6-DOF Comparison
+
+            | Property | 3-DOF | 6-DOF |
+            |---|---|---|
+            | Observation dimensions | 29 | 36 |
+            | Action dimensions | 3 | 4 |
+            | Control | Acceleration | Motor thrust |
+            | Attitude | Not modeled | Quaternion |
+            | Angular velocity | Not modeled | 3-axis |
+
             ### How It Works (Step-by-Step)
-            1. **Drone Observes**: The drone receives a **29-dimensional continuous state vector** at each time step.
-            2. **PPO Predicts**: The neural network (MlpPolicy) computes continuous 3D acceleration commands.
-            3. **Action Executed**: Commanded accelerations $(a_x, a_y, a_z) \in [-1.0, 1.0]^3$ are scaled to $\pm 4.0\text{ m/s}^2$.
-            4. **Physics Integration**: 3D kinematics updates velocity with aerodynamic drag and integrates position.
-            5. **Reward Feedback**: The environment rewards closing distance to the target and penalizes collisions.
-            6. **Policy Learning**: During training, PPO updates actor-critic weights using generalized advantage estimation.
-            7. **Evaluation**: The trained policy is tested deterministically on unseen random seeds.
+            1. **Observation**: State vector received from 3-DOF point-mass (29 dims) or 6-DOF rigid-body (36 dims).
+            2. **Policy Prediction**: Trained neural network (PPO or SAC) predicts continuous control actions.
+            3. **Action Execution**: Commanded accelerations (3-DOF) or individual motor thrusts (6-DOF) applied to dynamics.
+            4. **Physics Integration**: Semi-implicit Euler (3-DOF) or Runge-Kutta 4th-order (RK4) integration with quaternion kinematics (6-DOF).
+            5. **Reward Feedback**: Progress towards goal rewarded; collisions, control effort, and instability penalized.
+            6. **Policy Learning**: Agents trained with Stable-Baselines3 PPO or SAC on parameterized Gymnasium environments.
             """
         )
 
@@ -499,7 +627,7 @@ def main() -> None:
         with arch_col1:
             st.markdown(
                 r"""
-                ### Specifications
+                ### 3-DOF Kinematic Drone Specs
                 - **Observation Space (29 Dims)**:
                   - Drone position $\mathbf{p} = [x, y, z]$ (3 dims)
                   - Velocity vector $\mathbf{v} = [v_x, v_y, v_z]$ (3 dims)
@@ -509,22 +637,23 @@ def main() -> None:
                   - 16-ray spherical LiDAR rangefinder readings (16 dims)
                 - **Action Space (3 Dims)**:
                   - Continuous 3D acceleration commands in $[-1.0, 1.0]^3$
-                - **Agent**: Stable-Baselines3 PPO (`MlpPolicy`, 2 layers of 64 units)
+                - **Integration**: Semi-implicit Euler ($\Delta t = 0.05\text{ s}$)
                 """
             )
 
         with arch_col2:
             st.markdown(
                 r"""
-                ### Kinematic Flight Model
-                $$\mathbf{a}_t = \text{clip}(\mathbf{u}_t, -1, 1) \cdot a_{\max}$$
-                $$\mathbf{v}_{t+1} = \mathbf{v}_t (1 - c_{\text{drag}} \Delta t) + \mathbf{a}_t \Delta t$$
-                $$\mathbf{p}_{t+1} = \mathbf{p}_t + \mathbf{v}_{t+1} \Delta t$$
-                - **Time Step**: $\Delta t = 0.1\text{ s}$
-                - **Max Acceleration**: $a_{\max} = 4.0\text{ m/s}^2$
-                - **Max Velocity**: $v_{\max} = 8.0\text{ m/s}$
-                - **Linear Drag**: $c_{\text{drag}} = 0.05$
-                - **Arena Bounds**: $30\text{m} \times 30\text{m} \times 15\text{m}$
+                ### 6-DOF Rigid-Body Quadrotor Specs
+                - **Observation Space (36 Dims)**:
+                  - Position (3 dims), Velocity (3 dims)
+                  - Attitude quaternion $\mathbf{q} = [q_w, q_x, q_y, q_z]$ (4 dims)
+                  - Body angular velocity $\boldsymbol{\omega} = [p, q, r]$ (3 dims)
+                  - Target position (3 dims), Relative offset (3 dims), Distance ratio (1 dim)
+                  - 16-ray spherical LiDAR rangefinder readings (16 dims)
+                - **Action Space (4 Dims)**:
+                  - 4 continuous rotor thrust commands in $[-1.0, 1.0]^4 \to [0, F_{\max}]^4$
+                - **Integration**: RK4 with 5 substeps ($\Delta t_{\text{sub}} = 0.01\text{ s}$) and quaternion re-normalization
                 """
             )
 
@@ -532,9 +661,9 @@ def main() -> None:
         st.markdown(
             """
             ### Educational Scope & Honest Technical Limitations
-            - **Simulation Only**: Designed as a college computer science/engineering demonstration project.
-            - **Point-Mass Kinematics**: Uses a translational 3-DOF model with aerodynamic drag; does not model 6-DOF rotor aerodynamics, blade stall, or motor ESC latency.
-            - **Analytical Raycasts**: The 16-ray spherical LiDAR uses geometric ray-sphere and ray-box intersections without sensor noise or atmospheric scattering.
+            - **Educational Platform**: Designed for algorithmic benchmarking and educational demonstration.
+            - **Theoretical Simulation**: Canonical rigid-body quadrotor and point-mass physics without hardware validation claims.
+            - **Analytical Raycasts**: The 16-ray spherical LiDAR calculates geometric ray-sphere and ray-box intersections.
             - **No Real Drone Autopilot**: Not intended for direct deployment on physical UAV flight controllers (PX4/ArduPilot).
             """
         )

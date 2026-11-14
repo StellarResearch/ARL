@@ -19,17 +19,36 @@ src/adaptive_rl/
 ## Component Details
 
 ### 1. Environments (`adaptive_rl.environments`)
-- **`DroneNavigation3DEnv` (`drone`, `drone_3d`)**: Point-mass 3-DOF kinematic translation with semi-implicit Euler stepping and linear aerodynamic drag ($c_{\text{drag}} = 0.05$).
-- **`Drone6DOFEnv` (`drone-6dof`, `drone_6dof`)**: Rigid-body 6-DOF quadrotor dynamics with quaternion attitude kinematics, Euler rotational equations, 4-rotor "X" configuration thrusts, and RK4 multi-substep numerical integration.
+
+| Property | 3-DOF | 6-DOF |
+|---|---|---|
+| Observation dimensions | 29 | 36 |
+| Action dimensions | 3 | 4 |
+| Control | Acceleration | Motor thrust |
+| Attitude | Not modeled | Quaternion |
+| Angular velocity | Not modeled | 3-axis |
+
+- **`DroneNavigation3DEnv` (`drone`, `drone_3d`)**: Point-mass 3-DOF kinematic translation with semi-implicit Euler stepping and linear aerodynamic drag ($c_{\text{drag}} = 0.05$). Continuous 3D acceleration commands $a \in [-1.0, 1.0]^3$ and 29-dimensional observation space.
+- **`Drone6DOFEnv` (`drone-6dof`, `drone_6dof`)**: Rigid-body 6-DOF quadrotor flight dynamics featuring:
+  - Unit quaternion attitude kinematics ($\mathbf{q} \in \mathbb{R}^4, \|\mathbf{q}\|=1.0$).
+  - Euler rigid-body rotational equations with gyroscopic cross-coupling and rotational damping.
+  - 4-rotor "X" configuration mapping motor thrusts to collective thrust and body roll, pitch, and yaw torques.
+  - Runge-Kutta 4th-order (RK4) integration with 5 internal substeps and per-substep quaternion re-normalization.
+  - Continuous swept-sphere and swept-box collision checking preventing high-speed obstacle tunneling.
+  - 4 continuous motor thrust actions $a \in [-1.0, 1.0]^4 \to [0, F_{\max}]^4$ and 36-dimensional observation space.
+  - Fully inspectable decomposed reward terms (progress, step, effort, angular rate, tilt, terminal).
 - **`DroneDisturbed3DEnv` (`drone_disturbed`, `drone_disturbance`)**: 3D drone navigation subject to steady prevailing wind, stochastic Ornstein-Uhlenbeck (OU) gusts, moving dynamic obstacles with boundary reflection, and step-indexed disturbance recovery tracking.
-- **Observations (Standard 29 Dims)**:
-  - Relative target vector (3 dims)
-  - Drone velocity (3 dims)
-  - Normalized drone position (3 dims)
-  - Normalized target position (3 dims)
-  - Target distance scalar (1 dim)
-  - 16-ray spherical LiDAR rangefinder readings (16 dims) with configurable Gaussian noise and dropout.
-- **Actions**: Continuous 3D acceleration commands $a \in [-1.0, 1.0]^3$ (or 4-motor thrusts in 6-DOF).
+
+### 2. Visualization & Flight Deck (`adaptive_rl.gui`)
+- **Interactive 3D Arena Plotly Visualizer**:
+  - Full 3D quadrotor geometric model: central fuselage hub, four arms in X configuration, four rotor assemblies, and circular propeller blade paths.
+  - Distinct front/rear visual identification (front red arms/rotors, rear blue arms/rotors, and forward heading nosecone pointer along $+X_B$).
+  - Exact body-to-world rigid-body coordinate transformation: $\mathbf{p}_W = \mathbf{p}_{\text{drone}} + R(\mathbf{q}) \mathbf{p}_B$.
+  - 16-ray spherical LiDAR beams and contact points.
+  - Trajectory playback scrubber slider with telemetry (altitude, speed, Euler roll/pitch/yaw, angular velocity, goal distance, obstacle clearance).
+- **Streamlit Application (`app.py`)**:
+  - Dynamics model selector supporting both 3-DOF Kinematic Drone and 6-DOF Quadrotor.
+  - Playback mode distinction with educational simulation disclaimer.
 
 ### 2. Algorithms & Training (`adaptive_rl.algorithms`, `adaptive_rl.training`)
 - **PPO (`PPOAlgorithm`)**: On-policy actor-critic algorithm wrapped from Stable-Baselines3.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 from gymnasium.utils.env_checker import check_env
 
 from adaptive_rl.environments import get, make_env
@@ -238,3 +239,58 @@ def test_drone_6dof_deterministic_reset() -> None:
     )
     env1.close()
     env2.close()
+
+
+@pytest.mark.parametrize(
+    "invalid_kwargs,match_str",
+    [
+        ({"bounds": (30.0, 30.0)}, "Bounds"),
+        ({"bounds": (30.0, 30.0, -5.0)}, "Bounds"),
+        ({"bounds": (float("nan"), 30.0, 15.0)}, "Bounds"),
+        ({"bounds": (float("inf"), 30.0, 15.0)}, "Bounds"),
+        ({"start_pos": (5.0, 5.0)}, "start_pos"),
+        ({"start_pos": (float("nan"), 5.0, 5.0)}, "start_pos"),
+        ({"start_pos": (-1.0, 5.0, 5.0)}, "outside valid arena bounds"),
+        ({"start_pos": (50.0, 5.0, 5.0)}, "outside valid arena bounds"),
+        ({"goal_pos": (5.0, 5.0)}, "goal_pos"),
+        ({"goal_pos": (5.0, float("inf"), 5.0)}, "goal_pos"),
+        ({"goal_pos": (5.0, -2.0, 5.0)}, "outside valid arena bounds"),
+        ({"num_obstacles": -1}, "Obstacle count"),
+        ({"num_obstacles": True}, "Obstacle count"),
+        ({"num_obstacles": 2.5}, "Obstacle count"),
+        ({"obstacle_radius": 0.0}, "Obstacle radius"),
+        ({"obstacle_radius": float("nan")}, "Obstacle radius"),
+        ({"obstacle_radius": -1.0}, "Obstacle radius"),
+        ({"target_radius": 0.0}, "target_radius"),
+        ({"collision_radius": -1.0}, "collision_radius"),
+        ({"num_lidar_rays": 0}, "LiDAR ray count"),
+        ({"num_lidar_rays": True}, "LiDAR ray count"),
+        ({"num_lidar_rays": -5}, "LiDAR ray count"),
+        ({"lidar_range": 0.0}, "LiDAR range"),
+        ({"lidar_range": float("inf")}, "LiDAR range"),
+        ({"lidar_noise_std": -0.1}, "lidar_noise_std"),
+        ({"lidar_noise_std": float("nan")}, "lidar_noise_std"),
+        ({"lidar_dropout_prob": 1.5}, "lidar_dropout_prob"),
+        ({"lidar_dropout_prob": float("nan")}, "lidar_dropout_prob"),
+        ({"lidar_min_range": -0.1}, "lidar_min_range"),
+        ({"lidar_min_range": 25.0}, "lidar_min_range"),
+        ({"max_steps": 0}, "max_steps"),
+        ({"max_steps": True}, "max_steps"),
+        ({"max_steps": -10}, "max_steps"),
+        ({"step_penalty": float("nan")}, "step_penalty"),
+        ({"goal_reward": float("inf")}, "goal_reward"),
+        ({"collision_reward": float("nan")}, "collision_reward"),
+        ({"progress_weight": float("nan")}, "progress_weight"),
+        ({"action_penalty_weight": -0.01}, "action_penalty_weight"),
+        ({"angular_rate_penalty_weight": float("nan")}, "angular_rate_penalty_weight"),
+        ({"tilt_penalty_weight": -0.5}, "tilt_penalty_weight"),
+        ({"inertia": (0.01, 0.01)}, "Inertia"),
+        ({"inertia": (0.01, 0.01, 0.02, 0.03)}, "Inertia"),
+        ({"inertia": (0.01, -0.01, 0.02)}, "Inertia"),
+        ({"inertia": (0.01, float("nan"), 0.02)}, "Inertia"),
+    ],
+)
+def test_drone_6dof_invalid_input_validation(invalid_kwargs: dict, match_str: str) -> None:
+    """Verify that invalid shapes, non-finite values, and out-of-range inputs raise ValueError."""
+    with pytest.raises(ValueError, match=match_str):
+        Drone6DOFEnv(**invalid_kwargs)

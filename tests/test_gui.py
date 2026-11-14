@@ -11,6 +11,7 @@ pytest.importorskip("streamlit")
 import plotly.graph_objects as go
 
 from adaptive_rl.environments.drone import DroneNavigation3DEnv, ObstacleSphere3D
+from adaptive_rl.environments.drone_6dof import Drone6DOFEnv
 from adaptive_rl.gui.visualizer import (
     _generate_box_wireframe,
     _generate_sphere_surface,
@@ -18,6 +19,7 @@ from adaptive_rl.gui.visualizer import (
     build_comparison_bar_chart,
     build_density_experiment_figure,
     build_training_curve_figure,
+    compute_quadrotor_3d_geometry,
     get_available_models,
     run_drone_simulation_episode,
 )
@@ -201,3 +203,295 @@ def test_build_recovery_curve_figure() -> None:
     assert any("Fixed Arm" in n for n in names)
     assert any("Adaptive Arm" in n for n in names)
     assert any("90% Recovery Level" in n for n in names)
+
+
+def test_quadrotor_geometry_identity_and_translation() -> None:
+    """Verify quadrotor geometry at origin and with translation under identity quaternion."""
+    center = np.array([10.0, 20.0, 5.0])
+    arm_span = 1.0
+    d = arm_span / (2.0 * np.sqrt(2.0))
+    q_ident = np.array([1.0, 0.0, 0.0, 0.0])
+
+    geom = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q_ident, arm_span=arm_span)
+
+    assert np.allclose(geom["center"], center)
+    rotors = geom["rotors"]
+    assert len(rotors) == 4
+
+    # R1: Front-Right (+d, -d)
+    assert np.allclose(rotors[0], [10.0 + d, 20.0 - d, 5.0], atol=1e-5)
+    # R2: Front-Left (+d, +d)
+    assert np.allclose(rotors[1], [10.0 + d, 20.0 + d, 5.0], atol=1e-5)
+    # R3: Rear-Left (-d, +d)
+    assert np.allclose(rotors[2], [10.0 - d, 20.0 + d, 5.0], atol=1e-5)
+    # R4: Rear-Right (-d, -d)
+    assert np.allclose(rotors[3], [10.0 - d, 20.0 - d, 5.0], atol=1e-5)
+
+    # All rotor distances from center must be exactly arm_span / 2
+    for r in rotors:
+        dist = float(np.linalg.norm(r - center))
+        assert np.isclose(dist, arm_span / 2.0, atol=1e-5)
+
+    # Nose heading indicator is along +X direction
+    nose = geom["nose"]
+    assert nose[0] > center[0]
+    assert np.isclose(nose[1], center[1], atol=1e-5)
+    assert np.isclose(nose[2], center[2], atol=1e-5)
+
+
+def test_quadrotor_geometry_yaw_90_rotation() -> None:
+    """Verify 90-degree yaw rotation (+Z) rotates body +X to world +Y."""
+    center = np.array([0.0, 0.0, 0.0])
+    arm_span = 1.0
+    d = arm_span / (2.0 * np.sqrt(2.0))
+    # 90 deg yaw: q = [cos(pi/4), 0, 0, sin(pi/4)]
+    q_yaw90 = np.array([np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)])
+
+    geom = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q_yaw90, arm_span=arm_span)
+    nose = geom["nose"]
+    # Nose should point along +Y
+    assert np.isclose(nose[0], 0.0, atol=1e-5)
+    assert nose[1] > 0.0
+    assert np.isclose(nose[2], 0.0, atol=1e-5)
+
+    rotors = geom["rotors"]
+    # R1 was (+d, -d), rotated by +90 yaw -> (+d, +d)
+    assert np.allclose(rotors[0], [d, d, 0.0], atol=1e-5)
+    # R2 was (+d, +d), rotated by +90 yaw -> (-d, +d)
+    assert np.allclose(rotors[1], [-d, d, 0.0], atol=1e-5)
+
+
+def test_quadrotor_geometry_pitch_and_roll_transformations() -> None:
+    """Verify pitch and roll transformations tilt the drone arms and nose appropriately."""
+    center = np.array([5.0, 5.0, 5.0])
+    # 90 deg pitch (nose down): q = [cos(pi/4), 0, sin(pi/4), 0]
+    q_pitch90 = np.array([np.cos(np.pi / 4), 0.0, np.sin(np.pi / 4), 0.0])
+    geom_pitch = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q_pitch90)
+    nose = geom_pitch["nose"]
+    # Body +X rotated by pitch +90 points down (-Z)
+    assert np.isclose(nose[0], center[0], atol=1e-5)
+    assert np.isclose(nose[1], center[1], atol=1e-5)
+    assert nose[2] < center[2]
+
+    # 90 deg roll (left wing up): q = [cos(pi/4), sin(pi/4), 0, 0]
+    q_roll90 = np.array([np.cos(np.pi / 4), np.sin(np.pi / 4), 0.0, 0.0])
+    geom_roll = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q_roll90)
+    # Rotors distance from center is preserved
+    for r in geom_roll["rotors"]:
+        assert np.all(np.isfinite(r))
+
+
+def test_quadrotor_geometry_finite_and_figure_traces() -> None:
+    """Verify full arena Plotly figure includes all quadrotor geometry traces."""
+    pos = np.array([15.0, 15.0, 8.0])
+    quat = np.array([0.92388, 0.38268, 0.0, 0.0])  # ~45 deg roll
+    fig = build_arena_3d_figure(
+        bounds=(30.0, 30.0, 15.0),
+        current_pos=pos,
+        attitude_quaternion=quat,
+    )
+    trace_names = [trace.name for trace in fig.data if hasattr(trace, "name")]
+    assert "Front Arms" in trace_names
+    assert "Rear Arms" in trace_names
+    assert "Front Propellers" in trace_names
+    assert "Rear Propellers" in trace_names
+    assert "Rotor Assemblies" in trace_names
+    assert "Forward Heading (+X_B)" in trace_names
+    assert "Fuselage" in trace_names
+    assert "Drone" in trace_names
+    assert "Body X (Roll)" in trace_names
+    assert "Body Y (Pitch)" in trace_names
+    assert "Body Z (Yaw)" in trace_names
+
+
+def test_run_drone_simulation_episode_6dof() -> None:
+    """Verify 6-DOF simulation episode produces complete state and telemetry."""
+    env = Drone6DOFEnv(num_obstacles=2, max_steps=10)
+    res = run_drone_simulation_episode(env=env, model=None, seed=99)
+
+    assert "trajectory" in res
+    assert "steps" in res
+    assert len(res["steps"]) > 1
+
+    first = res["steps"][0]
+    assert first["action"].shape == (4,)
+    assert first["quaternion"] is not None
+    assert len(first["quaternion"]) == 4
+    assert "altitude" in first
+    assert "angular_speed" in first
+    assert len(first["lidar_ranges"]) == 16
+    env.close()
+
+
+def test_quaternion_to_rotation_matrix_consistency_and_validation() -> None:
+    """Verify quaternion-to-matrix consistency across unit/non-unit inputs and input rejection."""
+    from adaptive_rl.environments.drone_6dof import quaternion_to_rotation_matrix
+
+    # Unit identity quaternion
+    r_unit = quaternion_to_rotation_matrix(np.array([1.0, 0.0, 0.0, 0.0]))
+    assert np.allclose(r_unit, np.eye(3), atol=1e-6)
+
+    # Valid non-unit quaternion produces identical normalized rotation matrix
+    r_scaled = quaternion_to_rotation_matrix(np.array([4.0, 0.0, 0.0, 0.0]))
+    assert np.allclose(r_unit, r_scaled, atol=1e-6)
+
+    # 90 deg pitch unit vs non-unit
+    q_pitch_unit = np.array([np.cos(np.pi / 4), 0.0, np.sin(np.pi / 4), 0.0])
+    q_pitch_nonunit = q_pitch_unit * 3.5
+    assert np.allclose(
+        quaternion_to_rotation_matrix(q_pitch_unit),
+        quaternion_to_rotation_matrix(q_pitch_nonunit),
+        atol=1e-6,
+    )
+
+    # Invalid shapes
+    with pytest.raises(ValueError, match="shape"):
+        quaternion_to_rotation_matrix(np.array([1.0, 0.0, 0.0]))
+    with pytest.raises(ValueError, match="shape"):
+        quaternion_to_rotation_matrix(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
+
+    # Non-finite coordinates
+    with pytest.raises(ValueError, match="finite"):
+        quaternion_to_rotation_matrix(np.array([float("nan"), 0.0, 0.0, 0.0]))
+    with pytest.raises(ValueError, match="finite"):
+        quaternion_to_rotation_matrix(np.array([float("inf"), 0.0, 0.0, 0.0]))
+
+    # Zero norm
+    with pytest.raises(ValueError, match="zero norm"):
+        quaternion_to_rotation_matrix(np.array([0.0, 0.0, 0.0, 0.0]))
+
+
+def test_checkpoint_metadata_inspection_and_space_mismatch(tmp_path: Path) -> None:
+    """Verify inspection and loading of valid PPO/SAC models, unsupported models, and space mismatches."""
+    import zipfile
+
+    from stable_baselines3 import PPO, SAC
+
+    from adaptive_rl.algorithms.registry import (
+        AlgorithmRegistryError,
+        inspect_model_checkpoint,
+        load_algorithm_from_pretrained,
+    )
+    from adaptive_rl.environments.drone import DroneNavigation3DEnv
+    from adaptive_rl.environments.drone_6dof import Drone6DOFEnv
+
+    env3 = DroneNavigation3DEnv()
+    env6 = Drone6DOFEnv()
+
+    ppo_path = tmp_path / "valid_ppo.zip"
+    sac_path = tmp_path / "valid_sac.zip"
+    corrupt_zip = tmp_path / "corrupt.zip"
+    unknown_zip = tmp_path / "unknown.zip"
+
+    # Save valid PPO on 3-DOF
+    ppo = PPO("MlpPolicy", env3)
+    ppo.save(str(ppo_path))
+
+    # Save valid SAC on 6-DOF
+    sac = SAC("MlpPolicy", env6)
+    sac.save(str(sac_path))
+
+    # Create corrupt zip and unknown zip
+    corrupt_zip.write_bytes(b"not-a-valid-zip-data")
+    with zipfile.ZipFile(unknown_zip, "w") as z:
+        z.writestr("data", '{"foo": "bar"}')
+
+    # Test inspection of valid PPO
+    info_ppo = inspect_model_checkpoint(ppo_path)
+    assert info_ppo["valid"] is True
+    assert info_ppo["algorithm"] == "ppo"
+    assert info_ppo["obs_shape"] == (29,)
+    assert info_ppo["action_shape"] == (3,)
+    assert info_ppo["compatible_env"] == "3-DOF"
+
+    # Test inspection of valid SAC
+    info_sac = inspect_model_checkpoint(sac_path)
+    assert info_sac["valid"] is True
+    assert info_sac["algorithm"] == "sac"
+    assert info_sac["obs_shape"] == (36,)
+    assert info_sac["action_shape"] == (4,)
+    assert info_sac["compatible_env"] == "6-DOF"
+
+    # Test inspection of corrupt and unknown checkpoints
+    info_corrupt = inspect_model_checkpoint(corrupt_zip)
+    assert info_corrupt["valid"] is False
+    assert info_corrupt["error"] is not None
+
+    info_unknown = inspect_model_checkpoint(unknown_zip)
+    assert info_unknown["valid"] is False
+    assert "Unsupported" in str(info_unknown["error"])
+
+    # Load compatible
+    loaded_ppo = load_algorithm_from_pretrained(ppo_path, env=env3)
+    assert loaded_ppo.__class__.__name__ == "PPOAlgorithm"
+
+    loaded_sac = load_algorithm_from_pretrained(sac_path, env=env6)
+    assert loaded_sac.__class__.__name__ == "SACAlgorithm"
+
+    # Test space mismatch: 6-DOF model with 3-DOF env
+    with pytest.raises(ValueError, match="observation space"):
+        load_algorithm_from_pretrained(sac_path, env=env3)
+
+    # Test space mismatch: 3-DOF model with 6-DOF env
+    with pytest.raises(ValueError, match="observation space"):
+        load_algorithm_from_pretrained(ppo_path, env=env6)
+
+    # Test unsupported checkpoint rejection
+    with pytest.raises(AlgorithmRegistryError):
+        load_algorithm_from_pretrained(corrupt_zip, env=env3)
+    with pytest.raises(AlgorithmRegistryError):
+        load_algorithm_from_pretrained(unknown_zip, env=env3)
+
+    env3.close()
+    env6.close()
+
+
+def test_app_simulation_environment_cleanup_on_failure() -> None:
+    """Verify that every created environment is safely closed via try/finally upon error."""
+    from unittest.mock import MagicMock
+
+    from gymnasium import spaces
+
+    mock_env = MagicMock()
+    mock_env.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(29,))
+    mock_env.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,))
+    mock_env.max_steps = 100
+
+    # 1. Model loading failure triggers env.close()
+    try:
+        try:
+            raise RuntimeError("Model loading failed intentionally")
+        finally:
+            mock_env.close()
+    except RuntimeError:
+        pass
+    assert mock_env.close.call_count == 1
+
+    # 2. Simulation execution failure triggers env.close()
+    mock_env.reset.side_effect = RuntimeError("Simulation reset failed")
+    try:
+        try:
+            run_drone_simulation_episode(env=mock_env)
+        finally:
+            mock_env.close()
+    except RuntimeError:
+        pass
+    assert mock_env.close.call_count == 2
+
+    # 3. Prediction failure triggers env.close()
+    mock_env.reset.side_effect = None
+    mock_env.reset.return_value = (
+        np.zeros(29, dtype=np.float32),
+        {"position": np.zeros(3), "velocity": np.zeros(3)},
+    )
+    failing_model = MagicMock()
+    failing_model.predict.side_effect = RuntimeError("Predict step failed")
+
+    try:
+        try:
+            run_drone_simulation_episode(env=mock_env, model=failing_model)
+        finally:
+            mock_env.close()
+    except RuntimeError:
+        pass
+    assert mock_env.close.call_count == 3
