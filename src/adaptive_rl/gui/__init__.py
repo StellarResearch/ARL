@@ -8,6 +8,7 @@ from adaptive_rl.gui.visualizer import (
     build_recovery_curve_figure,
     build_training_curve_figure,
     get_available_models,
+    inspect_model_checkpoint,
     run_drone_simulation_episode,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "build_recovery_curve_figure",
     "build_training_curve_figure",
     "get_available_models",
+    "inspect_model_checkpoint",
     "run_drone_simulation_episode",
 ]

@@ -19,6 +19,15 @@ src/adaptive_rl/
 ## Component Details
 
 ### 1. Environments (`adaptive_rl.environments`)
+
+| Property | 3-DOF | 6-DOF |
+|---|---|---|
+| Observation dimensions | 29 | 36 |
+| Action dimensions | 3 | 4 |
+| Control | Acceleration | Motor thrust |
+| Attitude | Not modeled | Quaternion |
+| Angular velocity | Not modeled | 3-axis |
+
 - **`DroneNavigation3DEnv` (`drone`, `drone_3d`)**: Point-mass 3-DOF kinematic translation with semi-implicit Euler stepping and linear aerodynamic drag ($c_{\text{drag}} = 0.05$). Continuous 3D acceleration commands $a \in [-1.0, 1.0]^3$ and 29-dimensional observation space.
 - **`Drone6DOFEnv` (`drone-6dof`, `drone_6dof`)**: Rigid-body 6-DOF quadrotor flight dynamics featuring:
   - Unit quaternion attitude kinematics ($\mathbf{q} \in \mathbb{R}^4, \|\mathbf{q}\|=1.0$).

@@ -687,3 +687,52 @@ def test_cli_demo_help() -> None:
     assert result.exit_code == 0
     clean_output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.output)
     assert "--seed" in clean_output
+
+
+def test_cli_demo_drone_edge_cases(tmp_path: Path) -> None:
+    """Verify demo-drone rejects max_steps <= 0, missing config, and non-file models."""
+    model_file = tmp_path / "dummy_model.zip"
+    model_file.write_bytes(b"dummy")
+
+    # 1. max_steps <= 0
+    res_zero_steps = runner.invoke(
+        app,
+        ["demo-drone", "--model", str(model_file), "--max-steps", "0"],
+    )
+    assert res_zero_steps.exit_code == 1
+    clean_z = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_zero_steps.output)
+    assert "Invalid max_steps" in clean_z
+
+    res_neg_steps = runner.invoke(
+        app,
+        ["demo-drone", "--model", str(model_file), "--max-steps", "-5"],
+    )
+    assert res_neg_steps.exit_code == 1
+    clean_n = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_neg_steps.output)
+    assert "Invalid max_steps" in clean_n
+
+    # 2. Nonexistent --config
+    res_missing_config = runner.invoke(
+        app,
+        [
+            "demo-drone",
+            "--model",
+            str(model_file),
+            "--config",
+            str(tmp_path / "nonexistent.yaml"),
+        ],
+    )
+    assert res_missing_config.exit_code == 1
+    clean_c = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_missing_config.output)
+    assert "Configuration file not found" in clean_c
+
+    # 3. Model is a directory (not an actual file)
+    dummy_dir = tmp_path / "dir_model.zip"
+    dummy_dir.mkdir()
+    res_dir_model = runner.invoke(
+        app,
+        ["demo-drone", "--model", str(dummy_dir)],
+    )
+    assert res_dir_model.exit_code == 1
+    clean_m = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_dir_model.output)
+    assert "Model file not found" in clean_m

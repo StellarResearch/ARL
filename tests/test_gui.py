@@ -299,6 +299,9 @@ def test_quadrotor_geometry_finite_and_figure_traces() -> None:
     assert "Forward Heading (+X_B)" in trace_names
     assert "Fuselage" in trace_names
     assert "Drone" in trace_names
+    assert "Body X (Roll)" in trace_names
+    assert "Body Y (Pitch)" in trace_names
+    assert "Body Z (Yaw)" in trace_names
 
 
 def test_run_drone_simulation_episode_6dof() -> None:
@@ -318,3 +321,177 @@ def test_run_drone_simulation_episode_6dof() -> None:
     assert "angular_speed" in first
     assert len(first["lidar_ranges"]) == 16
     env.close()
+
+
+def test_quaternion_to_rotation_matrix_consistency_and_validation() -> None:
+    """Verify quaternion-to-matrix consistency across unit/non-unit inputs and input rejection."""
+    from adaptive_rl.environments.drone_6dof import quaternion_to_rotation_matrix
+
+    # Unit identity quaternion
+    r_unit = quaternion_to_rotation_matrix(np.array([1.0, 0.0, 0.0, 0.0]))
+    assert np.allclose(r_unit, np.eye(3), atol=1e-6)
+
+    # Valid non-unit quaternion produces identical normalized rotation matrix
+    r_scaled = quaternion_to_rotation_matrix(np.array([4.0, 0.0, 0.0, 0.0]))
+    assert np.allclose(r_unit, r_scaled, atol=1e-6)
+
+    # 90 deg pitch unit vs non-unit
+    q_pitch_unit = np.array([np.cos(np.pi / 4), 0.0, np.sin(np.pi / 4), 0.0])
+    q_pitch_nonunit = q_pitch_unit * 3.5
+    assert np.allclose(
+        quaternion_to_rotation_matrix(q_pitch_unit),
+        quaternion_to_rotation_matrix(q_pitch_nonunit),
+        atol=1e-6,
+    )
+
+    # Invalid shapes
+    with pytest.raises(ValueError, match="shape"):
+        quaternion_to_rotation_matrix(np.array([1.0, 0.0, 0.0]))
+    with pytest.raises(ValueError, match="shape"):
+        quaternion_to_rotation_matrix(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
+
+    # Non-finite coordinates
+    with pytest.raises(ValueError, match="finite"):
+        quaternion_to_rotation_matrix(np.array([float("nan"), 0.0, 0.0, 0.0]))
+    with pytest.raises(ValueError, match="finite"):
+        quaternion_to_rotation_matrix(np.array([float("inf"), 0.0, 0.0, 0.0]))
+
+    # Zero norm
+    with pytest.raises(ValueError, match="zero norm"):
+        quaternion_to_rotation_matrix(np.array([0.0, 0.0, 0.0, 0.0]))
+
+
+def test_checkpoint_metadata_inspection_and_space_mismatch(tmp_path: Path) -> None:
+    """Verify inspection and loading of valid PPO/SAC models, unsupported models, and space mismatches."""
+    import zipfile
+
+    from stable_baselines3 import PPO, SAC
+
+    from adaptive_rl.algorithms.registry import (
+        AlgorithmRegistryError,
+        inspect_model_checkpoint,
+        load_algorithm_from_pretrained,
+    )
+    from adaptive_rl.environments.drone import DroneNavigation3DEnv
+    from adaptive_rl.environments.drone_6dof import Drone6DOFEnv
+
+    env3 = DroneNavigation3DEnv()
+    env6 = Drone6DOFEnv()
+
+    ppo_path = tmp_path / "valid_ppo.zip"
+    sac_path = tmp_path / "valid_sac.zip"
+    corrupt_zip = tmp_path / "corrupt.zip"
+    unknown_zip = tmp_path / "unknown.zip"
+
+    # Save valid PPO on 3-DOF
+    ppo = PPO("MlpPolicy", env3)
+    ppo.save(str(ppo_path))
+
+    # Save valid SAC on 6-DOF
+    sac = SAC("MlpPolicy", env6)
+    sac.save(str(sac_path))
+
+    # Create corrupt zip and unknown zip
+    corrupt_zip.write_bytes(b"not-a-valid-zip-data")
+    with zipfile.ZipFile(unknown_zip, "w") as z:
+        z.writestr("data", '{"foo": "bar"}')
+
+    # Test inspection of valid PPO
+    info_ppo = inspect_model_checkpoint(ppo_path)
+    assert info_ppo["valid"] is True
+    assert info_ppo["algorithm"] == "ppo"
+    assert info_ppo["obs_shape"] == (29,)
+    assert info_ppo["action_shape"] == (3,)
+    assert info_ppo["compatible_env"] == "3-DOF"
+
+    # Test inspection of valid SAC
+    info_sac = inspect_model_checkpoint(sac_path)
+    assert info_sac["valid"] is True
+    assert info_sac["algorithm"] == "sac"
+    assert info_sac["obs_shape"] == (36,)
+    assert info_sac["action_shape"] == (4,)
+    assert info_sac["compatible_env"] == "6-DOF"
+
+    # Test inspection of corrupt and unknown checkpoints
+    info_corrupt = inspect_model_checkpoint(corrupt_zip)
+    assert info_corrupt["valid"] is False
+    assert info_corrupt["error"] is not None
+
+    info_unknown = inspect_model_checkpoint(unknown_zip)
+    assert info_unknown["valid"] is False
+    assert "Unsupported" in str(info_unknown["error"])
+
+    # Load compatible
+    loaded_ppo = load_algorithm_from_pretrained(ppo_path, env=env3)
+    assert loaded_ppo.__class__.__name__ == "PPOAlgorithm"
+
+    loaded_sac = load_algorithm_from_pretrained(sac_path, env=env6)
+    assert loaded_sac.__class__.__name__ == "SACAlgorithm"
+
+    # Test space mismatch: 6-DOF model with 3-DOF env
+    with pytest.raises(ValueError, match="observation space"):
+        load_algorithm_from_pretrained(sac_path, env=env3)
+
+    # Test space mismatch: 3-DOF model with 6-DOF env
+    with pytest.raises(ValueError, match="observation space"):
+        load_algorithm_from_pretrained(ppo_path, env=env6)
+
+    # Test unsupported checkpoint rejection
+    with pytest.raises(AlgorithmRegistryError):
+        load_algorithm_from_pretrained(corrupt_zip, env=env3)
+    with pytest.raises(AlgorithmRegistryError):
+        load_algorithm_from_pretrained(unknown_zip, env=env3)
+
+    env3.close()
+    env6.close()
+
+
+def test_app_simulation_environment_cleanup_on_failure() -> None:
+    """Verify that every created environment is safely closed via try/finally upon error."""
+    from unittest.mock import MagicMock
+
+    from gymnasium import spaces
+
+    mock_env = MagicMock()
+    mock_env.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(29,))
+    mock_env.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,))
+    mock_env.max_steps = 100
+
+    # 1. Model loading failure triggers env.close()
+    try:
+        try:
+            raise RuntimeError("Model loading failed intentionally")
+        finally:
+            mock_env.close()
+    except RuntimeError:
+        pass
+    assert mock_env.close.call_count == 1
+
+    # 2. Simulation execution failure triggers env.close()
+    mock_env.reset.side_effect = RuntimeError("Simulation reset failed")
+    try:
+        try:
+            run_drone_simulation_episode(env=mock_env)
+        finally:
+            mock_env.close()
+    except RuntimeError:
+        pass
+    assert mock_env.close.call_count == 2
+
+    # 3. Prediction failure triggers env.close()
+    mock_env.reset.side_effect = None
+    mock_env.reset.return_value = (
+        np.zeros(29, dtype=np.float32),
+        {"position": np.zeros(3), "velocity": np.zeros(3)},
+    )
+    failing_model = MagicMock()
+    failing_model.predict.side_effect = RuntimeError("Predict step failed")
+
+    try:
+        try:
+            run_drone_simulation_episode(env=mock_env, model=failing_model)
+        finally:
+            mock_env.close()
+    except RuntimeError:
+        pass
+    assert mock_env.close.call_count == 3

@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from gymnasium import spaces
@@ -75,18 +75,21 @@ from adaptive_rl.environments.drone import (
 )
 
 
-def quaternion_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
+def quaternion_to_rotation_matrix(q: np.ndarray | Sequence[float]) -> np.ndarray:
     """Convert a unit quaternion [qw, qx, qy, qz] to a 3x3 rotation matrix (body to world)."""
-    qw, qx, qy, qz = float(q[0]), float(q[1]), float(q[2]), float(q[3])
-    # Normalize for safety
+    q_arr = np.asarray(q, dtype=np.float64)
+    if q_arr.shape != (4,):
+        raise ValueError(f"quaternion must have shape (4,), got {q_arr.shape}")
+    if not np.all(np.isfinite(q_arr)):
+        raise ValueError(f"quaternion must have finite coordinates, got {q}")
+    qw, qx, qy, qz = float(q_arr[0]), float(q_arr[1]), float(q_arr[2]), float(q_arr[3])
     norm = math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
-    if norm > 1e-12:
-        qw /= norm
-        qx /= norm
-        qy /= norm
-        qz /= norm
-    else:
-        qw, qx, qy, qz = 1.0, 0.0, 0.0, 0.0
+    if norm < 1e-12:
+        raise ValueError("quaternion cannot have zero norm")
+    qw /= norm
+    qx /= norm
+    qy /= norm
+    qz /= norm
 
     return np.array(
         [
@@ -238,6 +241,8 @@ class DroneDynamics6DOF:
         if inertia is None:
             self.inertia_diag = np.array([0.01, 0.01, 0.02], dtype=np.float64)
         else:
+            if not isinstance(inertia, (tuple, list, np.ndarray)) or len(inertia) != 3:
+                raise ValueError(f"Inertia must have exactly three components, got {inertia}")
             self.inertia_diag = np.array(
                 [float(inertia[0]), float(inertia[1]), float(inertia[2])], dtype=np.float64
             )
@@ -477,39 +482,112 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
     ) -> None:
         super().__init__()
 
-        if any(b <= 0.0 for b in bounds):
-            raise ValueError(f"Bounds must be strictly positive, got {bounds}")
-        if max_steps < 1:
-            raise ValueError(f"max_steps must be >= 1, got {max_steps}")
-        if target_radius <= 0.0:
-            raise ValueError(f"target_radius must be positive, got {target_radius}")
-        if collision_radius <= 0.0:
-            raise ValueError(f"collision_radius must be positive, got {collision_radius}")
-        if lidar_noise_std < 0.0:
-            raise ValueError(f"lidar_noise_std cannot be negative, got {lidar_noise_std}")
-        if not (0.0 <= lidar_dropout_prob <= 1.0):
+        # Bounds: three finite positive dimensions
+        if (
+            not isinstance(bounds, (tuple, list, np.ndarray))
+            or len(bounds) != 3
+            or not all(math.isfinite(float(b)) and float(b) > 0.0 for b in bounds)
+        ):
+            raise ValueError(f"Bounds must be three finite positive numbers, got {bounds}")
+        self.bounds = (float(bounds[0]), float(bounds[1]), float(bounds[2]))
+
+        # Start and Goal positions: three finite coordinates inside valid arena limits
+        if start_pos is not None:
+            s_arr = np.asarray(start_pos, dtype=np.float64)
+            if s_arr.shape != (3,) or not np.all(np.isfinite(s_arr)):
+                raise ValueError(f"start_pos must be a finite 3-element vector, got {start_pos}")
+            if any(s_arr[i] < 0.0 or s_arr[i] > self.bounds[i] for i in range(3)):
+                raise ValueError(f"start_pos {s_arr} is outside valid arena bounds {self.bounds}")
+            self.default_start = s_arr
+        else:
+            self.default_start = np.array([5.0, 5.0, 5.0], dtype=np.float64)
+
+        if goal_pos is not None:
+            g_arr = np.asarray(goal_pos, dtype=np.float64)
+            if g_arr.shape != (3,) or not np.all(np.isfinite(g_arr)):
+                raise ValueError(f"goal_pos must be a finite 3-element vector, got {goal_pos}")
+            if any(g_arr[i] < 0.0 or g_arr[i] > self.bounds[i] for i in range(3)):
+                raise ValueError(f"goal_pos {g_arr} is outside valid arena bounds {self.bounds}")
+            self.default_goal = g_arr
+        else:
+            self.default_goal = np.array(
+                [self.bounds[0] - 5.0, self.bounds[1] - 5.0, self.bounds[2] - 5.0],
+                dtype=np.float64,
+            )
+
+        # Obstacle count: non-negative integer
+        if (
+            isinstance(num_obstacles, bool)
+            or not isinstance(num_obstacles, (int, np.integer))
+            or num_obstacles < 0
+        ):
+            raise ValueError(f"Obstacle count must be a non-negative integer, got {num_obstacles}")
+
+        # Obstacle radius: positive finite value
+        if not math.isfinite(obstacle_radius) or obstacle_radius <= 0.0:
+            raise ValueError(
+                f"Obstacle radius must be a positive finite float, got {obstacle_radius}"
+            )
+
+        # Target and collision radius: positive finite values
+        if not math.isfinite(target_radius) or target_radius <= 0.0:
+            raise ValueError(f"target_radius must be a positive finite float, got {target_radius}")
+        if not math.isfinite(collision_radius) or collision_radius <= 0.0:
+            raise ValueError(
+                f"collision_radius must be a positive finite float, got {collision_radius}"
+            )
+
+        # LiDAR ray count: positive integer
+        if (
+            isinstance(num_lidar_rays, bool)
+            or not isinstance(num_lidar_rays, (int, np.integer))
+            or num_lidar_rays < 1
+        ):
+            raise ValueError(f"LiDAR ray count must be a positive integer, got {num_lidar_rays}")
+
+        # LiDAR range: positive finite value
+        if not math.isfinite(lidar_range) or lidar_range <= 0.0:
+            raise ValueError(f"LiDAR range must be a positive finite float, got {lidar_range}")
+
+        # Sensor noise and dropout: finite valid values
+        if not math.isfinite(lidar_noise_std) or lidar_noise_std < 0.0:
+            raise ValueError(
+                f"lidar_noise_std must be a non-negative finite float, got {lidar_noise_std}"
+            )
+        if not math.isfinite(lidar_dropout_prob) or not (0.0 <= lidar_dropout_prob <= 1.0):
             raise ValueError(
                 f"lidar_dropout_prob must be between 0.0 and 1.0, got {lidar_dropout_prob}"
             )
-        if not (0.0 <= lidar_min_range < lidar_range):
+        if not math.isfinite(lidar_min_range) or not (0.0 <= lidar_min_range < lidar_range):
             raise ValueError(
                 f"lidar_min_range must be >= 0.0 and < lidar_range ({lidar_range}), got {lidar_min_range}"
             )
 
-        self.bounds = (float(bounds[0]), float(bounds[1]), float(bounds[2]))
-        self.default_start = (
-            np.asarray(start_pos, dtype=np.float64)
-            if start_pos is not None
-            else np.array([5.0, 5.0, 5.0], dtype=np.float64)
-        )
-        self.default_goal = (
-            np.asarray(goal_pos, dtype=np.float64)
-            if goal_pos is not None
-            else np.array(
-                [self.bounds[0] - 5.0, self.bounds[1] - 5.0, self.bounds[2] - 5.0],
-                dtype=np.float64,
-            )
-        )
+        # Episode limits: positive integer
+        if (
+            isinstance(max_steps, bool)
+            or not isinstance(max_steps, (int, np.integer))
+            or max_steps < 1
+        ):
+            raise ValueError(f"max_steps must be a positive integer, got {max_steps}")
+
+        # Reward coefficients: finite and mathematically valid
+        for r_name, r_val in [
+            ("step_penalty", step_penalty),
+            ("goal_reward", goal_reward),
+            ("collision_reward", collision_reward),
+            ("progress_weight", progress_weight),
+        ]:
+            if not math.isfinite(r_val):
+                raise ValueError(f"{r_name} must be a finite float, got {r_val}")
+
+        for p_name, p_val in [
+            ("action_penalty_weight", action_penalty_weight),
+            ("angular_rate_penalty_weight", angular_rate_penalty_weight),
+            ("tilt_penalty_weight", tilt_penalty_weight),
+        ]:
+            if not math.isfinite(p_val) or p_val < 0.0:
+                raise ValueError(f"{p_name} must be a non-negative finite float, got {p_val}")
 
         self.num_obstacles = int(num_obstacles)
         self.obstacle_radius = float(obstacle_radius)
@@ -781,21 +859,30 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
 
         num_obs = self.num_obstacles
         if options and "num_obstacles" in options:
-            num_obs = int(options["num_obstacles"])
+            raw_obs = options["num_obstacles"]
+            if (
+                isinstance(raw_obs, bool)
+                or not isinstance(raw_obs, (int, np.integer))
+                or raw_obs < 0
+            ):
+                raise ValueError(
+                    f"num_obstacles in options must be a non-negative integer, got {raw_obs}"
+                )
+            num_obs = int(raw_obs)
 
         if options and "lidar_noise_std" in options:
             n_std = float(options["lidar_noise_std"])
-            if n_std < 0.0:
-                raise ValueError(f"lidar_noise_std cannot be negative, got {n_std}")
+            if not math.isfinite(n_std) or n_std < 0.0:
+                raise ValueError(f"lidar_noise_std cannot be negative or non-finite, got {n_std}")
             self.lidar_noise_std = n_std
         if options and "lidar_dropout_prob" in options:
             d_prob = float(options["lidar_dropout_prob"])
-            if not (0.0 <= d_prob <= 1.0):
+            if not math.isfinite(d_prob) or not (0.0 <= d_prob <= 1.0):
                 raise ValueError(f"lidar_dropout_prob must be between 0.0 and 1.0, got {d_prob}")
             self.lidar_dropout_prob = d_prob
         if options and "lidar_min_range" in options:
             m_range = float(options["lidar_min_range"])
-            if not (0.0 <= m_range < self.lidar_range):
+            if not math.isfinite(m_range) or not (0.0 <= m_range < self.lidar_range):
                 raise ValueError(
                     f"lidar_min_range must be >= 0.0 and < lidar_range ({self.lidar_range}), got {m_range}"
                 )

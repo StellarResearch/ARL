@@ -1677,14 +1677,23 @@ def demo_drone(
     max_steps: int = typer.Option(150, "--max-steps", help="Maximum steps for demo episode"),
 ) -> None:
     """Run a deterministic, visual demonstration of the trained drone agent."""
-    if not model.exists():
-        console.print(f"[bold red]Model file not found:[/bold red] {model}")
+    if max_steps <= 0:
+        console.print(
+            f"[bold red]Invalid max_steps:[/bold red] max_steps must be > 0, got {max_steps}"
+        )
+        raise typer.Exit(code=1)
+
+    if not model.is_file():
+        console.print(f"[bold red]Model file not found:[/bold red] {model} is not a valid file")
         raise typer.Exit(code=1)
 
     env_name = "drone"
     env_kwargs = {}
     cfg = None
-    if config is not None and config.exists():
+    if config is not None:
+        if not config.is_file():
+            console.print(f"[bold red]Configuration file not found:[/bold red] {config}")
+            raise typer.Exit(code=1)
         cfg = load_config(config)
         env_kwargs = cfg.environment.parameters
         if hasattr(cfg.environment, "name") and cfg.environment.name:
@@ -1693,6 +1702,10 @@ def demo_drone(
     from adaptive_rl.algorithms.registry import load_algorithm_from_pretrained
 
     env = make_env(env_name, **env_kwargs)
+    step_info: Dict[str, Any] = {}
+    outcome = "UNKNOWN"
+    total_reward = 0.0
+    step_num = 0
     try:
         algo_hint = cfg.algorithm.name if cfg is not None else None
         algo = load_algorithm_from_pretrained(model, env=env, algorithm_name=algo_hint)
@@ -1734,10 +1747,6 @@ def demo_drone(
             rendered = env.render()
             if rendered:
                 console.print(rendered)
-
-        total_reward = 0.0
-        outcome = "UNKNOWN"
-        step_num = 0
 
         for step_num in range(1, max_steps + 1):
             action, _ = algo.predict(obs, deterministic=True)

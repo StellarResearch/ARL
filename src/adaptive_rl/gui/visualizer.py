@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import plotly.graph_objects as go
 
+from adaptive_rl.algorithms.registry import inspect_model_checkpoint
 from adaptive_rl.environments.drone import ObstacleSphere3D
 from adaptive_rl.environments.drone_6dof import (
     quaternion_to_rotation_matrix,
@@ -479,15 +480,8 @@ def build_arena_3d_figure(
             )
 
         # 6-DOF Rigid-body Attitude Coordinate Frame (Roll/Pitch/Yaw)
-        if attitude_quaternion is not None and len(attitude_quaternion) == 4:
-            qw, qx, qy, qz = [float(v) for v in attitude_quaternion]
-            rot_mat = np.array(
-                [
-                    [1 - 2 * (qy**2 + qz**2), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
-                    [2 * (qx * qy + qz * qw), 1 - 2 * (qx**2 + qz**2), 2 * (qy * qz - qx * qw)],
-                    [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx**2 + qy**2)],
-                ]
-            )
+        if attitude_quaternion is not None:
+            rot_mat = quaternion_to_rotation_matrix(attitude_quaternion)
             axis_len = 1.2
             axes_colors = [
                 ("#ef4444", "Body X (Roll)"),
@@ -1017,3 +1011,17 @@ def build_recovery_curve_figure(
     )
 
     return fig
+
+
+__all__ = [
+    "build_arena_3d_figure",
+    "build_comparison_bar_chart",
+    "build_density_experiment_figure",
+    "build_distribution_shift_trajectory_figure",
+    "build_recovery_curve_figure",
+    "build_training_curve_figure",
+    "compute_quadrotor_3d_geometry",
+    "get_available_models",
+    "inspect_model_checkpoint",
+    "run_drone_simulation_episode",
+]

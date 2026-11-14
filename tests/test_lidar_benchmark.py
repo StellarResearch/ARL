@@ -165,6 +165,8 @@ def test_frozen_policy_timeouts_are_classified() -> None:
 
 
 def test_lidar_cli_help_and_missing_checkpoint(tmp_path: Path) -> None:
+    import re
+
     from typer.testing import CliRunner
 
     from adaptive_rl.cli import app
@@ -173,8 +175,9 @@ def test_lidar_cli_help_and_missing_checkpoint(tmp_path: Path) -> None:
 
     help_result = runner.invoke(app, ["benchmark", "lidar", "--help"])
     assert help_result.exit_code == 0
-    assert "--model" in help_result.output
-    assert "--episodes" in help_result.output
+    clean_help = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", help_result.output)
+    assert "--model" in clean_help
+    assert "--episodes" in clean_help
 
     missing_result = runner.invoke(
         app,
@@ -186,7 +189,8 @@ def test_lidar_cli_help_and_missing_checkpoint(tmp_path: Path) -> None:
         ],
     )
     assert missing_result.exit_code == 1
-    assert "Model file not found" in missing_result.output
+    clean_missing = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", missing_result.output)
+    assert "Model file not found" in clean_missing
 
 
 def test_lidar_benchmark_rejects_invalid_protocol_inputs() -> None:

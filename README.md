@@ -68,6 +68,16 @@ AdaptiveRL is an educational reinforcement-learning project in which a PPO agent
 - **Dual Simulation Dynamics**:
   - **3-DOF Kinematic Drone** (`drone`, `drone_3d`): Fast point-mass kinematics with semi-implicit Euler integration, continuous 3D acceleration actions ($[-1, 1]^3$), and 29-dimensional observation space.
   - **6-DOF Quadrotor** (`drone-6dof`, `drone_6dof`): Theoretical rigid-body flight dynamics featuring unit quaternion attitude, Euler rotational dynamics, gyroscopic terms, 4-motor thrust control ($[-1, 1]^4 \to [0, F_{\max}]^4$), Runge-Kutta 4th-order (RK4) integration, continuous swept collision checking, and 36-dimensional observation space.
+
+### 3-DOF Kinematic vs. 6-DOF Rigid-Body Simulation Comparison
+
+| Property | 3-DOF | 6-DOF |
+|---|---|---|
+| Observation dimensions | 29 | 36 |
+| Action dimensions | 3 | 4 |
+| Control | Acceleration | Motor thrust |
+| Attitude | Not modeled | Quaternion |
+| Angular velocity | Not modeled | 3-axis |
 - **Proper 3D Quadrotor Geometry & Visualization**:
   - Full geometric airframe with central fuselage, 4 arms in X configuration, 4 rotor hub assemblies, and circular propeller blade paths.
   - Distinct front (red) and rear (blue) arm/rotor visual identification plus forward heading nosecone pointer (+X_B direction).
@@ -898,9 +908,10 @@ python -m pip install -e ".[all]"
 
 ## Limitations
 
-- **Kinematic Point Mass**: The drone is modeled as a 3-DOF translational point-mass with linear aerodynamic drag. It does not model 6-DOF rotational attitude dynamics, motor RPM lag, or gyroscopic effects.
-- **Analytical Rangefinder**: LiDAR sensing calculates exact geometric ray-sphere and ray-box intersections without simulated sensor noise, beam divergence, or surface reflection scattering.
-- **Simulation Only**: This project is built strictly as an academic educational demonstration and cannot be directly deployed onto real drone flight hardware without a low-level attitude controller.
+- **Simulation Only**: Designed strictly as an academic computer science and reinforcement learning demonstration project.
+- **No Hardware Validation**: This is a theoretical simulation model and has not been tuned or validated against physical UAV flight hardware telemetry.
+- **Analytical Rangefinder**: LiDAR sensing calculates geometric ray-sphere and ray-box intersections.
+- **No Real Drone Autopilot**: Not intended for direct deployment onto real drone flight hardware without a low-level attitude controller.
 
 ---
 
