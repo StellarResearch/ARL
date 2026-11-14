@@ -1,5 +1,6 @@
 """Tests for browser-based GUI visualizer and simulation playback."""
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,7 @@ from adaptive_rl.gui.visualizer import (
     build_comparison_bar_chart,
     build_density_experiment_figure,
     build_training_curve_figure,
+    compute_camera_preset,
     compute_quadrotor_3d_geometry,
     get_available_models,
     run_drone_simulation_episode,
@@ -495,3 +497,236 @@ def test_app_simulation_environment_cleanup_on_failure() -> None:
     except RuntimeError:
         pass
     assert mock_env.close.call_count == 3
+
+
+def test_detailed_quadrotor_mesh_geometry_components() -> None:
+    """Verify that compute_quadrotor_3d_geometry generates complete 3D mesh components."""
+    center = np.array([12.0, 14.0, 6.0])
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    geom = compute_quadrotor_3d_geometry(center_pos=center, quaternion=quat, arm_span=1.6)
+
+    # Required mesh keys
+    required_mesh_keys = [
+        "mesh_fuselage",
+        "mesh_arms",
+        "mesh_front_arms",
+        "mesh_rear_arms",
+        "mesh_motors_front",
+        "mesh_motors_rear",
+        "mesh_rotor_hubs",
+        "mesh_rotor_assemblies",
+        "mesh_props_front",
+        "mesh_props_rear",
+        "mesh_landing_gear",
+        "mesh_camera",
+        "mesh_heading_indicator",
+    ]
+    for key in required_mesh_keys:
+        assert key in geom, f"Missing mesh component key: {key}"
+        mesh = geom[key]
+        assert "x" in mesh and "y" in mesh and "z" in mesh
+        assert "i" in mesh and "j" in mesh and "k" in mesh
+        assert len(mesh["x"]) > 0, f"Empty vertex array for {key}"
+        assert len(mesh["i"]) > 0, f"Empty triangle array for {key}"
+        # Triangular indices must be within bounds of vertices
+        n_verts = len(mesh["x"])
+        assert np.all(mesh["i"] < n_verts)
+        assert np.all(mesh["j"] < n_verts)
+        assert np.all(mesh["k"] < n_verts)
+
+
+def test_quadrotor_mesh_translation_and_rotation_invariance() -> None:
+    """Verify that drone mesh coordinates strictly translate with center and rotate with quaternion."""
+    c1 = np.array([0.0, 0.0, 0.0])
+    c2 = np.array([25.0, 30.0, 10.0])
+    q_ident = np.array([1.0, 0.0, 0.0, 0.0])
+
+    g1 = compute_quadrotor_3d_geometry(center_pos=c1, quaternion=q_ident, arm_span=1.5)
+    g2 = compute_quadrotor_3d_geometry(center_pos=c2, quaternion=q_ident, arm_span=1.5)
+
+    # Translation offset must be exact across all fuselage vertices
+    diff = np.column_stack([
+        g2["mesh_fuselage"]["x"] - g1["mesh_fuselage"]["x"],
+        g2["mesh_fuselage"]["y"] - g1["mesh_fuselage"]["y"],
+        g2["mesh_fuselage"]["z"] - g1["mesh_fuselage"]["z"],
+    ])
+    assert np.allclose(diff, c2 - c1, atol=1e-5)
+
+    # 180-deg Yaw rotation around Z axis: [0, 0, 1, 0] in (w, x, y, z) or [0, 0, 0, 1]
+    q_yaw180 = np.array([0.0, 0.0, 0.0, 1.0])
+    g_rot = compute_quadrotor_3d_geometry(center_pos=c1, quaternion=q_yaw180, arm_span=1.5)
+
+    # Rotors rotated 180 deg around Z: R1 (+d, -d) rotates to R3 (-d, +d)
+    d = 1.5 / (2.0 * np.sqrt(2.0))
+    assert np.allclose(g1["rotors"][0], [d, -d, 0.0])
+    assert np.allclose(g_rot["rotors"][0], [-d, d, 0.0], atol=1e-5)
+
+
+def test_drone_distinguishable_from_obstacles_in_plotly_figure() -> None:
+    """Verify that drone mesh traces and obstacle surfaces are visually and structurally distinct."""
+    bounds = (40.0, 40.0, 20.0)
+    obstacles = [
+        ObstacleSphere3D(center=np.array([10.0, 10.0, 5.0]), radius=2.0),
+        ObstacleSphere3D(center=np.array([20.0, 20.0, 8.0]), radius=2.5),
+    ]
+    drone_pos = np.array([15.0, 15.0, 6.0])
+    fig = build_arena_3d_figure(
+        bounds=bounds,
+        obstacles=obstacles,
+        current_pos=drone_pos,
+        attitude_quaternion=[1.0, 0.0, 0.0, 0.0],
+    )
+
+    # Collect trace types
+    mesh_traces = [t for t in fig.data if isinstance(t, go.Mesh3d)]
+    surface_traces = [t for t in fig.data if isinstance(t, go.Surface) and "Obstacle" in getattr(t, "name", "")]
+
+    assert len(mesh_traces) >= 6, "Expected at least 6 distinct 3D drone mesh components"
+    assert len(surface_traces) == 2, "Expected 2 obstacle sphere surfaces"
+
+    # Drone mesh traces have names matching quadrotor parts
+    mesh_names = [t.name for t in mesh_traces if hasattr(t, "name")]
+    assert "Fuselage" in mesh_names
+    assert "Front Arms" in mesh_names
+    assert "Rear Arms" in mesh_names
+    assert "Front Propellers" in mesh_names
+    assert "Rear Propellers" in mesh_names
+    assert "Landing Gear" in mesh_names
+
+    # Obstacle surfaces are named Obstacle 1, Obstacle 2
+    surface_names = [t.name for t in surface_traces if hasattr(t, "name")]
+    assert "Obstacle 1" in surface_names
+    assert "Obstacle 2" in surface_names
+
+
+def test_3dof_vs_6dof_representations_remain_distinct() -> None:
+    """Verify distinction between 3-DOF kinematic point-mass and 6-DOF rigid-body outputs."""
+    env3 = DroneNavigation3DEnv(num_obstacles=1, max_steps=5)
+    env6 = Drone6DOFEnv(num_obstacles=1, max_steps=5)
+
+    res3 = run_drone_simulation_episode(env=env3, seed=123)
+    res6 = run_drone_simulation_episode(env=env6, seed=123)
+
+    # 3-DOF does not simulate quaternion attitude
+    assert res3["steps"][0]["quaternion"] is None
+    assert res3["steps"][0]["action"].shape == (3,)
+
+    # 6-DOF provides 4-element unit quaternion and 4 rotor thrust actions
+    q6 = res6["steps"][0]["quaternion"]
+    assert q6 is not None
+    assert len(q6) == 4
+    assert np.isclose(np.linalg.norm(q6), 1.0, atol=1e-4)
+    assert res6["steps"][0]["action"].shape == (4,)
+
+    env3.close()
+    env6.close()
+
+
+def test_telemetry_consistency_with_simulation_steps() -> None:
+    """Verify that playback step info perfectly correlates with trajectory positions and sensor ranges."""
+    env = Drone6DOFEnv(num_obstacles=2, max_steps=12)
+    episode = run_drone_simulation_episode(env=env, seed=77)
+    steps = episode["steps"]
+
+    for idx, s in enumerate(steps):
+        assert s["step"] == idx
+        assert np.allclose(s["position"], episode["trajectory"][idx])
+        assert s["altitude"] == s["position"][2]
+        assert s["speed"] >= 0.0
+        assert s["distance_to_goal"] >= 0.0
+        assert len(s["lidar_ranges"]) == 16
+        assert np.all(s["lidar_ranges"] >= 0.0)
+
+    env.close()
+
+
+def test_camera_preset_configuration() -> None:
+    """Verify camera presets calculate appropriate viewport center and eye vectors."""
+    bounds = (30.0, 30.0, 15.0)
+    drone_pos = np.array([10.0, 20.0, 8.0])
+    target_pos = np.array([25.0, 25.0, 10.0])
+
+    # 1. Overview
+    cam_over = compute_camera_preset("Arena Overview", bounds=bounds, drone_pos=drone_pos)
+    assert "center" in cam_over and "eye" in cam_over and "up" in cam_over
+    assert cam_over["up"]["z"] == 1
+
+    # 2. Drone Inspection: closer to drone than overview
+    cam_insp = compute_camera_preset("Drone Inspection", bounds=bounds, drone_pos=drone_pos)
+    xn = float((drone_pos[0] - bounds[0] / 2.0) / bounds[0])
+    yn = float((drone_pos[1] - bounds[1] / 2.0) / bounds[1])
+    zn = float((drone_pos[2] - bounds[2] / 2.0) / bounds[2])
+    assert np.isclose(cam_insp["center"]["x"], xn)
+    assert np.isclose(cam_insp["center"]["y"], yn)
+    assert np.isclose(cam_insp["center"]["z"], zn)
+
+    # 3. Target View: centered on target normalized position
+    cam_tgt = compute_camera_preset("Target View", bounds=bounds, target_pos=target_pos)
+    xt = float((target_pos[0] - bounds[0] / 2.0) / bounds[0])
+    yt = float((target_pos[1] - bounds[1] / 2.0) / bounds[1])
+    zt = float((target_pos[2] - bounds[2] / 2.0) / bounds[2])
+    assert np.isclose(cam_tgt["center"]["x"], xt)
+    assert np.isclose(cam_tgt["center"]["y"], yt)
+    assert np.isclose(cam_tgt["center"]["z"], zt)
+
+
+def test_propeller_phase_and_blade_rotation() -> None:
+    """Verify that propeller blades rotate with propeller_phase parameter."""
+    center = np.array([0.0, 0.0, 0.0])
+    q_ident = np.array([1.0, 0.0, 0.0, 0.0])
+
+    g0 = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q_ident, propeller_phase=0.0)
+    g1 = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q_ident, propeller_phase=math.pi / 2.0)
+
+    p0 = g0["mesh_props_front"]
+    p1 = g1["mesh_props_front"]
+
+    # Blade vertices must differ when phase changes
+    assert not np.allclose(p0["x"], p1["x"])
+    assert not np.allclose(p0["y"], p1["y"])
+    # Blade vertices must remain finite
+    assert np.all(np.isfinite(p1["x"]))
+    assert np.all(np.isfinite(p1["y"]))
+
+
+def test_roll_pitch_full_body_rotation() -> None:
+    """Verify that pure roll and pitch quaternions transform all drone mesh components."""
+    center = np.array([0.0, 0.0, 5.0])
+    # 45-deg Roll around X: q = [cos(pi/8), sin(pi/8), 0, 0]
+    q_roll45 = np.array([math.cos(math.pi / 8.0), math.sin(math.pi / 8.0), 0.0, 0.0])
+    # 45-deg Pitch around Y: q = [cos(pi/8), 0, sin(pi/8), 0]
+    q_pitch45 = np.array([math.cos(math.pi / 8.0), 0.0, math.sin(math.pi / 8.0), 0.0])
+
+    g_roll = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q_roll45, arm_span=1.6)
+    g_pitch = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q_pitch45, arm_span=1.6)
+
+    # In 45-deg roll, body Y changes altitude (Z coordinates of left and right rotors differ)
+    r_roll = g_roll["rotors"]
+    assert not np.isclose(r_roll[0][2], r_roll[1][2], atol=1e-2)
+
+    # In 45-deg pitch, body X changes altitude (Z coordinates of front and rear rotors differ)
+    r_pitch = g_pitch["rotors"]
+    assert not np.isclose(r_pitch[0][2], r_pitch[3][2], atol=1e-2)
+
+
+def test_arena_floor_and_waypoint_beacons() -> None:
+    """Verify that 3D arena includes chamber floor, ground pads, and vertical waypoint beacon."""
+    bounds = (30.0, 30.0, 15.0)
+    target = np.array([20.0, 20.0, 8.0])
+    start = np.array([5.0, 5.0, 3.0])
+
+    fig = build_arena_3d_figure(
+        bounds=bounds,
+        target=target,
+        start_pos=start,
+        current_pos=np.array([5.0, 5.0, 3.0]),
+        show_floor=True,
+    )
+    trace_names = [t.name for t in fig.data if hasattr(t, "name")]
+
+    assert "Chamber Floor" in trace_names
+    assert "Arena Center Grid" in trace_names
+    assert "Waypoint Ground Pad" in trace_names
+    assert "Waypoint Beacon Column" in trace_names
+    assert "Target Waypoint" in trace_names
+    assert "Start Position" in trace_names
