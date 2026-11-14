@@ -536,36 +536,43 @@ adaptive-rl gui --port 8502
 
 ## GUI Walkthrough
 
-The browser GUI is organized into 5 dedicated demonstration panels:
+The browser GUI is organized into 6 dedicated demonstration panels (see full details in [`docs/GUI.md`](docs/GUI.md)):
 
-### 1. 🎮 Live 3D Flight Demo
-- **3D Flight Arena**: Renders bounding arena wireframes, red obstacle spheres, green diamond target, initial launch position, and continuous 3D flight trajectory.
-- **LiDAR Visualization**: Visualizes 16-ray spherical rangefinder beams cast from the drone.
-- **Trajectory Playback Scrubber**: Scrub forward and backward in time to inspect obstacle clearances, velocity vectors, and altitude changes step-by-step.
-- **Controls**: Choose policy checkpoint, adjust procedural obstacle count (0 to 8), toggle LiDAR beams, and set deterministic seeds.
+### 1. 🚁 Live 3D Flight Demo
+- **Dual Dynamics Selection**: Switch seamlessly between 6-DOF rigid-body quadrotor simulation (quaternion attitude, RK4) and 3-DOF kinematic point-mass flight.
+- **3D Flight Arena**: Renders bounding arena wireframes, red obstacle spheres with safety zones, green diamond target, initial launch position, and continuous 3D flight trajectory.
+- **Detailed 3D Airframe**: Features procedural carbon fuselage, 4 arms in X configuration, front/rear color accents, rotor hubs, spinning propeller paths, landing gear struts, and forward heading nosecone.
+- **LiDAR Visualization**: Visualizes 16-ray spherical rangefinder beams with distance color-coding (cyan/amber/crimson) and contact hit points.
+- **Telemetry Organization**: Telemetry is structured into Navigation, Attitude, Kinematics, Perception, and Return.
+- **Trajectory Playback Scrubber**: Scrub forward and backward in time to inspect obstacle clearances, velocity vectors, and attitude changes step-by-step.
 
-### 2. 📈 Train PPO
+### 2. ⚡ Train Policy
 - **Interactive Controls**: Select training budget (5k, 10k, 25k, 50k steps), learning rate, and random seed.
-- **CPU Execution**: Executes real Stable-Baselines3 PPO training with live status indicators.
+- **CPU Execution**: Executes real Stable-Baselines3 PPO or SAC training with live status indicators.
 - **Training Curve**: Displays an interactive Plotly chart of raw episode returns and 10-episode moving averages.
 - **Safety**: Automatically disables simultaneous training jobs to prevent resource contention.
 
 ### 3. 📊 Benchmark Evaluation & Baseline
-- **Head-to-Head Comparison**: Evaluates the trained PPO agent against the untrained Random Policy baseline under identical random seeds.
+- **Head-to-Head Comparison**: Evaluates the trained PPO/SAC agent against the untrained Random Policy baseline under identical random seeds.
 - **Metric Summaries**: Displays Success Rate, Collision Rate, Mean Return, and Episode Length.
 - **Visual Comparison**: Interactive grouped bar chart comparing survival and collision rates.
 - **Export**: Saves formal benchmark reports to `artifacts/evaluation.json`.
 
-### 4. 🎯 Difficulty Experiment (Obstacle Density)
+### 4. 🎯 Clutter Stress Testing (Obstacle Density)
 - **Difficulty Scaling**: Evaluates the policy across **4, 6, and 8 obstacles** under controlled seeds.
 - **Empirical Demonstration**: Shows how increasing obstacle density constrains safe flight corridors, leading to higher collision rates.
 - **Honest Display**: Displays "Not evaluated" until executed by the user; no placeholder or fake numbers.
 - **Export**: Exports results to `artifacts/obstacle_density_experiment.json`.
 
-### 5. 📘 About & Architecture
-- **Step-by-Step "How It Works"**: Beginner- and professor-friendly 7-step explanation of the RL control loop.
-- **Technical Specifications**: Full 29-dimensional observation breakdown, 3D continuous acceleration space, and kinematic state formulas.
-- **Honest Academic Scope**: Explicit documentation of point-mass kinematics, geometric raycasts, and simulation boundaries.
+### 5. 🔬 Research Evidence Dashboard
+- **Provenance Overview**: Inspects Git commit SHA, branch name, dirty working tree status, logical CPU core count, and pinned library dependencies.
+- **Cryptographic SHA-256 Checksum Verification**: Computes real-time SHA-256 checksums of model checkpoints and logs, validating them against the logged manifest record with verified indicators.
+- **Empirical Reports**: Visualizes genuine evaluation and clutter stress test metrics directly from disk artifacts.
+
+### 6. 📘 Architecture & Specifications
+- **Step-by-Step Overview**: Comprehensive explanation of the RL control loop and observation-action cycle.
+- **Mathematical Specifications**: Full 29-D (3-DOF) and 36-D (6-DOF) state breakdown, Euler vs. RK4 integration equations, and quaternion kinematics.
+- **Honest Academic Scope**: Explicit documentation of theoretical physics models, geometric raycasts, and non-hardware simulation boundaries.
 
 ---
 
