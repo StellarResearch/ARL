@@ -94,6 +94,17 @@ def compute_quadrotor_3d_geometry(
         ring_pts_w = np.array([c_pos + rot_mat @ pt for pt in ring_pts_b])
         propellers_w.append(ring_pts_w)
 
+    # 4 Landing gear struts under the arm roots
+    landing_gear_w: List[Tuple[np.ndarray, np.ndarray]] = []
+    for r_b in body_rotors:
+        top_pt = c_pos + rot_mat @ (r_b * 0.65)
+        foot_pt = c_pos + rot_mat @ (r_b * 0.70 + np.array([0.0, 0.0, -0.16]))
+        landing_gear_w.append((top_pt, foot_pt))
+
+    # Forward optical sensor / camera pod at nose (+X_B direction)
+    cam_pod_b = np.array([d * 0.55, 0.0, -0.04], dtype=np.float64)
+    cam_pod_w = c_pos + rot_mat @ cam_pod_b
+
     return {
         "center": c_pos,
         "rotors": world_rotors,
@@ -102,6 +113,8 @@ def compute_quadrotor_3d_geometry(
         "propellers": propellers_w,
         "front_arms": (world_rotors[0], c_pos, world_rotors[1]),
         "rear_arms": (world_rotors[2], c_pos, world_rotors[3]),
+        "landing_gear": landing_gear_w,
+        "camera_pod": cam_pod_w,
     }
 
 
@@ -324,6 +337,37 @@ def build_arena_3d_figure(
             )
         )
 
+        # LiDAR Hit Contact Points on obstacles or bounding walls
+        hx: List[float] = []
+        hy: List[float] = []
+        hz: List[float] = []
+        hc: List[str] = []
+        for ray_dir, dist in zip(lidar_rays, lidar_ranges):
+            if dist < 19.9:
+                pt = c_pos + ray_dir * dist
+                hx.append(float(pt[0]))
+                hy.append(float(pt[1]))
+                hz.append(float(pt[2]))
+                if dist < 4.0:
+                    hc.append("#ef4444")
+                elif dist < 10.0:
+                    hc.append("#f59e0b")
+                else:
+                    hc.append("#00f2fe")
+
+        if hx:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=hx,
+                    y=hy,
+                    z=hz,
+                    mode="markers",
+                    marker=dict(size=4, color=hc),
+                    name="LiDAR Contacts",
+                    hoverinfo="skip",
+                )
+            )
+
     # 7. Current Drone Quadrotor Geometry, Attitude & Velocity
     if current_pos is not None:
         geom = compute_quadrotor_3d_geometry(
@@ -438,6 +482,42 @@ def build_arena_3d_figure(
                 hoverinfo="skip",
             )
         )
+
+        # 4 Carbon Landing Gear Struts
+        if "landing_gear" in geom and geom["landing_gear"]:
+            lg_x: List[Optional[float]] = []
+            lg_y: List[Optional[float]] = []
+            lg_z: List[Optional[float]] = []
+            for top_p, foot_p in geom["landing_gear"]:
+                lg_x.extend([top_p[0], foot_p[0], None])
+                lg_y.extend([top_p[1], foot_p[1], None])
+                lg_z.extend([top_p[2], foot_p[2], None])
+            fig.add_trace(
+                go.Scatter3d(
+                    x=lg_x,
+                    y=lg_y,
+                    z=lg_z,
+                    mode="lines",
+                    line=dict(color="#64748b", width=4),
+                    name="Landing Gear",
+                    hoverinfo="skip",
+                )
+            )
+
+        # Forward Optical Sensor Gimbal / Camera Assembly
+        if "camera_pod" in geom:
+            cp = geom["camera_pod"]
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[cp[0]],
+                    y=[cp[1]],
+                    z=[cp[2]],
+                    mode="markers",
+                    marker=dict(symbol="square", size=5, color="#38bdf8"),
+                    name="Sensor Gimbal",
+                    hoverinfo="skip",
+                )
+            )
 
         fig.add_trace(
             go.Scatter3d(

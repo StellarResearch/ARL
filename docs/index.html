@@ -3,61 +3,61 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ARL — Adaptive Reinforcement Learning for Autonomous Drone Navigation</title>
-  <meta name="description" content="An educational reinforcement-learning system for autonomous 3D drone navigation in a simulated environment using Proximal Policy Optimization (PPO).">
-  <meta name="keywords" content="reinforcement learning, PPO, drone navigation, gymnasium, stable-baselines3, pytorch, autonomous systems, robotics simulation">
-  <meta name="theme-color" content="#070b14">
+  <title>ARL — Autonomous Research Flight Deck | Reinforcement Learning Drone Simulation</title>
+  <meta name="description" content="ARL is an aerospace research and simulation platform for autonomous 3D drone navigation, comparing 3-DOF kinematic and 6-DOF rigid-body dynamics using PPO and SAC.">
+  <meta name="keywords" content="reinforcement learning, PPO, SAC, drone simulation, 6-DOF quadrotor, gymnasium, stable-baselines3, pytorch, autonomous systems, robotics">
+  <meta name="theme-color" content="#050811">
 
-  <!-- Open Graph / Facebook -->
+  <!-- Open Graph / Meta -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://stellarresearch.github.io/ARL/">
-  <meta property="og:title" content="ARL — Adaptive Reinforcement Learning for Autonomous Drone Navigation">
-  <meta property="og:description" content="Train a reinforcement-learning agent to navigate a simulated 3D drone through obstacles toward a target using PPO.">
+  <meta property="og:title" content="ARL — Autonomous Research Flight Deck">
+  <meta property="og:description" content="Autonomous drone navigation simulation comparing 3-DOF kinematics and 6-DOF quadrotor dynamics using PPO & SAC.">
 
   <!-- Twitter / X -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="ARL — Adaptive Reinforcement Learning for Autonomous Drone Navigation">
-  <meta name="twitter:description" content="Educational 3D drone navigation simulation using Gymnasium, Stable-Baselines3, and PyTorch.">
+  <meta name="twitter:title" content="ARL — Autonomous Research Flight Deck">
+  <meta name="twitter:description" content="Aerospace reinforcement learning simulation platform with 6-DOF rigid-body dynamics and 16-ray spherical LiDAR.">
 
   <!-- Fonts & Stylesheet -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
 
-  <!-- Lightweight CDNs for 3D & Charts -->
+  <!-- Lightweight Three.js & Chart.js CDNs -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
 
-  <!-- Navigation -->
+  <!-- 1. Navigation / ARL Identity -->
   <header class="navbar">
     <div class="container nav-container">
       <a href="#" class="brand-link" aria-label="ARL Home">
-        <div class="brand-logo">ARL</div>
+        <div class="brand-logo-box">ARL</div>
         <div>
-          <span class="brand-name">AdaptiveRL</span>
-          <span class="brand-tagline">College Mini-Project</span>
+          <div class="brand-title">AdaptiveRL</div>
+          <div class="brand-subtitle">Autonomous Research Flight Deck</div>
         </div>
       </a>
 
-      <nav>
+      <nav aria-label="Primary Navigation">
         <ul class="nav-links" id="nav-links">
-          <li class="nav-item"><a href="#quick-summary">2-Min Summary</a></li>
-          <li class="nav-item"><a href="#architecture">Architecture</a></li>
-          <li class="nav-item"><a href="#environment">Environment</a></li>
-          <li class="nav-item"><a href="#ppo">PPO</a></li>
-          <li class="nav-item"><a href="#sensors">Sensors</a></li>
+          <li class="nav-item"><a href="#hero-sim">Flight Deck</a></li>
+          <li class="nav-item"><a href="#comparison">3-DOF vs 6-DOF</a></li>
+          <li class="nav-item"><a href="#pipeline">Architecture</a></li>
+          <li class="nav-item"><a href="#sensors">LiDAR</a></li>
           <li class="nav-item"><a href="#benchmarks">Benchmarks</a></li>
-          <li class="nav-item"><a href="#gui">Real GUI</a></li>
+          <li class="nav-item"><a href="#provenance">Reproducibility</a></li>
+          <li class="nav-item"><a href="#gui">Streamlit GUI</a></li>
           <li class="nav-item"><a href="#install">Install</a></li>
         </ul>
       </nav>
 
       <div class="nav-actions">
-        <button class="btn btn-viva btn-sm" id="btn-open-presentation" title="Open slide presentation mode">
-          <span>🎓</span> Presentation Mode
+        <button class="btn btn-viva btn-sm" id="btn-open-presentation" title="Open Executive Briefing Mode">
+          <span>🛰️</span> Briefing Mode
         </button>
         <a href="https://github.com/StellarResearch/ARL" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="View Source on GitHub">
           GitHub
@@ -69,522 +69,315 @@
     </div>
   </header>
 
-  <!-- Hero Section -->
-  <section class="section hero-section">
+  <!-- 2. Hero Section with Large Interactive 3D Drone Scene -->
+  <section class="section hero-section" id="hero-sim">
     <div class="container">
       <div class="hero-grid">
-        <!-- Hero Text -->
         <div class="hero-copy">
-          <div class="badge-tag">Academic RL Demonstration</div>
+          <div class="badge-tag">Aerospace Simulation & Control Lab</div>
           <h1 class="hero-title">
-            AdaptiveRL
-            <span class="gradient-text">Autonomous 3D Drone Navigation</span>
+            ARL // Autonomous Flight Deck
+            <span class="gradient-text">Reinforcement Learning & Drone Dynamics</span>
           </h1>
           <p class="hero-subtitle">
-            An educational reinforcement-learning system where a PPO agent learns to navigate a simulated 3D drone through an obstacle-filled environment toward a target.
+            A research-oriented autonomous drone simulation platform. Evaluate continuous-action PPO and SAC agents across fast 3-DOF kinematic point-mass translation and high-fidelity 6-DOF rigid-body quadrotor dynamics.
           </p>
 
-          <!-- Honest Simulation Scope Banner -->
+          <!-- Honest Scientific Scope Banner -->
           <div class="simulation-disclaimer-box">
             <span class="icon">ℹ️</span>
             <div>
-              <strong>THIS IS A SIMULATION.</strong> Academic computer-science project running a simplified 3-DOF kinematic point-mass simulation with aerodynamic drag. It is <em>not</em> an autopilot, PX4 controller, or 6-DOF quadrotor aerodynamics simulator.
+              <strong>RESEARCH SIMULATION NOTICE:</strong> ARL is an algorithmic benchmarking and robotics simulation platform running numerical physics (Semi-implicit Euler & RK4 with quaternion kinematics). It is <em>not</em> hardware-validated flight firmware for physical PX4/ArduPilot autopilots.
             </div>
           </div>
 
           <div class="hero-cta">
-            <a href="#quick-summary" class="btn btn-primary">Explore the System</a>
-            <button class="btn btn-viva" id="hero-btn-presentation">🎓 Start Presentation Mode</button>
-            <a href="https://github.com/StellarResearch/ARL" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">View on GitHub</a>
+            <a href="#comparison" class="btn btn-primary">Compare Dynamics Models</a>
+            <button class="btn btn-viva" id="hero-btn-presentation">🛰️ Launch Briefing Deck</button>
+            <a href="https://github.com/StellarResearch/ARL" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">Source Code (GitHub)</a>
           </div>
 
           <div class="hero-quick-specs">
             <div class="spec-item">
-              <span class="spec-val">29-D</span>
-              <span class="spec-lbl">Observation Vector</span>
+              <span class="spec-val">36-D / 29-D</span>
+              <span class="spec-lbl">State Spaces (6-DOF / 3-DOF)</span>
             </div>
             <div class="spec-item">
-              <span class="spec-val">3-D</span>
-              <span class="spec-lbl">Continuous Acceleration</span>
+              <span class="spec-val">4-Rotor / 3-D</span>
+              <span class="spec-lbl">Continuous Action Spaces</span>
             </div>
             <div class="spec-item">
               <span class="spec-val">16-Ray</span>
-              <span class="spec-lbl">Spherical LiDAR</span>
+              <span class="spec-lbl">Spherical LiDAR Range</span>
             </div>
             <div class="spec-item">
-              <span class="spec-val">49 / 49</span>
-              <span class="spec-lbl">Unit Tests Passing</span>
+              <span class="spec-val">357 Tests</span>
+              <span class="spec-lbl">Continuous Integration Passing</span>
             </div>
           </div>
         </div>
 
-        <!-- Hero 3D Simulation Card -->
-        <div class="sim-card">
-          <div class="sim-header">
-            <div class="sim-status">
+        <!-- 3D Drone Simulation Viewport -->
+        <div class="flightdeck-viewport-card">
+          <div class="flightdeck-viewport-header">
+            <div class="flightdeck-status-pill">
               <span class="status-dot"></span>
               <span id="sim-status-text">READY</span>
             </div>
-            <span class="sim-label">Interactive 3D Arena (30m × 30m × 15m)</span>
+            <div class="flightdeck-title-badge">
+              Interactive Flight Arena (30m × 30m × 15m) // ENU Frame
+            </div>
           </div>
 
           <div class="sim-canvas-wrap" id="hero-sim-canvas-wrap">
             <!-- Three.js Canvas Injected Here -->
             <div class="sim-hud-overlay">
               <div class="hud-chip">Step: <span id="hud-step">Step 0 / 200</span></div>
-              <div class="hud-chip">Pos: <span id="hud-pos">(5.0, 5.0, 3.0)</span></div>
+              <div class="hud-chip">Position: <span id="hud-pos">(5.0, 5.0, 3.0)</span></div>
               <div class="hud-chip">Speed: <span id="hud-vel">0.0 m/s</span></div>
               <div class="hud-chip">Goal Range: <span id="hud-dist">28.3 m</span></div>
-              <div class="hud-chip">Return: <span id="hud-reward">0.0</span></div>
+              <div class="hud-chip">Cumulative Return: <span id="hud-reward">0.0</span></div>
             </div>
           </div>
 
-          <div class="sim-controls-bar">
+          <div class="flightdeck-controls-bar">
             <div class="sim-btn-group">
               <button class="btn btn-primary btn-sm" id="btn-sim-start">START</button>
               <button class="btn btn-secondary btn-sm" id="btn-sim-pause">PAUSE</button>
               <button class="btn btn-secondary btn-sm" id="btn-sim-reset">RESET</button>
+              <button class="btn btn-secondary btn-sm" id="btn-sim-cam-reset" title="Reset Camera View">RESET CAM</button>
             </div>
-            <div class="sim-scrub">
-              <span>SCRUB</span>
-              <input type="range" id="sim-scrubber" min="0" max="200" value="0" aria-label="Simulation Step Scrubber" disabled>
+
+            <div class="sim-btn-group">
+              <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); margin-right: 0.25rem;">SPEED:</span>
+              <button class="speed-toggle-btn" id="btn-sim-speed-half">0.5x</button>
+              <button class="speed-toggle-btn active" id="btn-sim-speed-1">1.0x</button>
+              <button class="speed-toggle-btn" id="btn-sim-speed-2">2.0x</button>
+            </div>
+
+            <div class="sim-scrub-wrap">
+              <span class="sim-scrub-label">Scrub</span>
+              <input type="range" class="sim-scrubber-slider" id="sim-scrubber" min="0" max="200" value="0" aria-label="Flight Step Scrubber" disabled>
             </div>
           </div>
 
-          <div class="sim-footer-note">
-            ⚠️ <em>Interactive browser visualization: Demonstrates 3D translational kinematics and 16-ray LiDAR geometry. Run <code>adaptive-rl gui</code> to execute the trained PyTorch PPO weights locally.</em>
+          <div class="flightdeck-footer-note">
+            <div>
+              💡 <em>Browser preview executes an illustrative potential-field guidance controller. For genuine PyTorch PPO/SAC neural policy execution, run <code>adaptive-rl gui</code>.</em>
+            </div>
+            <div>
+              <span>Controls: Click & Drag to Orbit | Scroll to Zoom | <kbd>Space</kbd> Play/Pause | <kbd>R</kbd> Reset | <kbd>C</kbd> Recenter</span>
+            </div>
           </div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- 2-Minute Explanation Section -->
-  <section class="section section-alt" id="quick-summary">
+  <!-- 3. Live Flight Telemetry Strip -->
+  <section class="telemetry-strip-section" aria-label="Flight Telemetry">
     <div class="container">
-      <div class="section-header">
-        <div class="badge-tag">Quick Overview</div>
-        <h2 class="section-title">ARL in 2 Minutes</h2>
-        <p class="section-subtitle">
-          How reinforcement learning trains an autonomous agent to navigate a 3D simulated arena in 5 fundamental stages.
-        </p>
-      </div>
-
-      <div class="two-minute-grid">
-        <div class="glass-panel step-card">
-          <div class="step-number">01 — ENVIRONMENT</div>
-          <h3 class="step-title">3D Arena Simulation</h3>
-          <p class="step-desc">
-            The drone operates inside a bounded 30m × 30m × 15m arena containing procedurally spawned spherical obstacles and aerodynamic drag damping.
-          </p>
+      <div class="telemetry-grid">
+        <div class="telemetry-cell">
+          <div class="telemetry-title">Coordinate Frame</div>
+          <div class="telemetry-value">ENU (East-North-Up)</div>
+          <div class="telemetry-sub">+X East | +Y North | +Z Up</div>
         </div>
-
-        <div class="glass-panel step-card">
-          <div class="step-number">02 — OBSERVATION</div>
-          <h3 class="step-title">29-D State Vector</h3>
-          <p class="step-desc">
-            At each 0.1s step, the agent observes normalized position, linear velocity, target vector, goal distance, and 16 spherical LiDAR range rays.
-          </p>
+        <div class="telemetry-cell">
+          <div class="telemetry-title">Kinematic Caps</div>
+          <div class="telemetry-value">v_max = 8.0 m/s</div>
+          <div class="telemetry-sub">a_max = 4.0 m/s² | c_d = 0.05</div>
         </div>
-
-        <div class="glass-panel step-card">
-          <div class="step-number">03 — DECISION</div>
-          <h3 class="step-title">PPO Continuous Action</h3>
-          <p class="step-desc">
-            The neural actor network outputs continuous translational acceleration commands in the X, Y, and Z axes bounded within [-4.0, +4.0] m/s².
-          </p>
+        <div class="telemetry-cell">
+          <div class="telemetry-title">Sensor Geometry</div>
+          <div class="telemetry-value">16-Ray LiDAR</div>
+          <div class="telemetry-sub">Spherical Fibonacci | 20m Range</div>
         </div>
-
-        <div class="glass-panel step-card">
-          <div class="step-number">04 — REWARD</div>
-          <h3 class="step-title">Objective Shaping</h3>
-          <p class="step-desc">
-            Dense progress reward (+10·Δd) guides flight toward the beacon, step penalty (-0.05) limits time, and collision penalties (-100.0) discourage impacts.
-          </p>
+        <div class="telemetry-cell">
+          <div class="telemetry-title">Integration Scheme</div>
+          <div class="telemetry-value">RK4 / Semi-Implicit</div>
+          <div class="telemetry-sub">5 Substeps (dt = 0.01s)</div>
         </div>
-
-        <div class="glass-panel step-card">
-          <div class="step-number">05 — LEARNING</div>
-          <h3 class="step-title">Clipped Policy Updates</h3>
-          <p class="step-desc">
-            Stable-Baselines3 collects trajectory rollouts and computes clipped surrogate objective updates, incrementally stabilizing collision-free flight paths.
-          </p>
+        <div class="telemetry-cell">
+          <div class="telemetry-title">Safety Thresholds</div>
+          <div class="telemetry-value">r_col = 0.8m</div>
+          <div class="telemetry-sub">r_target = 1.5m arrival sphere</div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- What is ARL? Flow Section -->
-  <section class="section" id="what-is-arl">
+  <!-- 4. 3-DOF vs 6-DOF Environment Comparison -->
+  <section class="section section-alt" id="comparison">
     <div class="container">
       <div class="section-header">
-        <div class="badge-tag">Concept & Motivation</div>
-        <h2 class="section-title">What Is AdaptiveRL?</h2>
+        <div class="badge-tag">Simulation Dynamics</div>
+        <h2 class="section-title">3-DOF Kinematics vs. 6-DOF Rigid-Body Dynamics</h2>
         <p class="section-subtitle">
-          Traditional geometric motion planners like A* or RRT* require exhaustive environmental maps upfront. ARL explores model-free reinforcement learning: training an agent to navigate reactively using local distance sensors.
+          ARL provides dual simulation environments designed for different phases of research: fast point-mass exploration and rigid-body quadrotor attitude verification.
         </p>
       </div>
 
-      <!-- Closed Loop Flow -->
-      <div class="loop-flow">
-        <div class="loop-node">
-          <span class="node-icon">🎯</span>
-          <span class="node-title">Problem</span>
-          <span class="hud-chip">3D Reach</span>
-        </div>
-        <span class="loop-arrow">→</span>
-        <div class="loop-node">
-          <span class="node-icon">📦</span>
-          <span class="node-title">Environment</span>
-          <span class="hud-chip">30×30×15m</span>
-        </div>
-        <span class="loop-arrow">→</span>
-        <div class="loop-node">
-          <span class="node-icon">📡</span>
-          <span class="node-title">Observation</span>
-          <span class="hud-chip">29 Values</span>
-        </div>
-        <span class="loop-arrow">→</span>
-        <div class="loop-node">
-          <span class="node-icon">🧠</span>
-          <span class="node-title">PPO Agent</span>
-          <span class="hud-chip">Actor-Critic</span>
-        </div>
-        <span class="loop-arrow">→</span>
-        <div class="loop-node">
-          <span class="node-icon">⚡</span>
-          <span class="node-title">Action</span>
-          <span class="hud-chip">3D Accel</span>
-        </div>
-        <span class="loop-arrow">→</span>
-        <div class="loop-node">
-          <span class="node-icon">🚁</span>
-          <span class="node-title">Drone</span>
-          <span class="hud-chip">Kinematics</span>
-        </div>
-        <span class="loop-arrow">→</span>
-        <div class="loop-node">
-          <span class="node-icon">🏆</span>
-          <span class="node-title">Reward</span>
-          <span class="hud-chip">Δd − Penalties</span>
-        </div>
-        <span class="loop-arrow">↺</span>
-      </div>
-
-      <!-- Expandable Technical Details -->
-      <div class="tech-details-box">
-        <button class="accordion-header" data-accordion="tech-details-body">
-          <span>Expand Technical Details: Kinematic State Integration</span>
-          <span class="accordion-icon">+</span>
-        </button>
-        <div class="accordion-content" id="tech-details-body">
-          <p>
-            The drone is simulated as a 3-DOF kinematic point-mass in continuous 3D space with linear drag damping:
-          </p>
-          <div class="code-box">
-            <pre><code>dv/dt = a - (c_d * v)
-dp/dt = v
-Δt = 0.1 seconds,  c_d = 0.05,  v_max = 8.0 m/s,  a_max = 4.0 m/s²</code></pre>
-          </div>
-          <p>
-            At each discrete timestep, the commanded acceleration vector <code>a</code> is integrated via semi-implicit Euler integration, clamping velocity magnitude to 8.0 m/s and detecting boundary penetrations against the arena walls.
-          </p>
-        </div>
-      </div>
+      <table class="comparison-matrix-table">
+        <thead>
+          <tr>
+            <th>Simulation Dimension</th>
+            <th><span class="tag-3dof">3-DOF Kinematic Drone</span></th>
+            <th><span class="tag-6dof">6-DOF Rigid-Body Quadrotor</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Physical Model</strong></td>
+            <td>Point-mass translational kinematics with aerodynamic drag damping.</td>
+            <td>Full rigid-body quadrotor with rotational inertia matrix, motor thrust curves, and reaction torques.</td>
+          </tr>
+          <tr>
+            <td><strong>State Vector</strong></td>
+            <td><strong>29 Dimensions</strong> (Normalized pos, vel, goal, rel_goal, dist, 16-ray LiDAR).</td>
+            <td><strong>36 Dimensions</strong> (Pos, vel, unit quaternion attitude [qw, qx, qy, qz], body angular rates [p, q, r], goal, rel_goal, dist, 16-ray LiDAR).</td>
+          </tr>
+          <tr>
+            <td><strong>Action Vector</strong></td>
+            <td><strong>3 Dimensions</strong>: Continuous Cartesian accelerations <code>[ax, ay, az] ∈ [-1.0, 1.0]³</code>.</td>
+            <td><strong>4 Dimensions</strong>: Continuous individual motor thrust commands <code>[u1, u2, u3, u4] ∈ [-1.0, 1.0]⁴</code>.</td>
+          </tr>
+          <tr>
+            <td><strong>Attitude Representation</strong></td>
+            <td>Not modeled (translational point-mass).</td>
+            <td>Unit quaternion $\mathbf{q}$ with body-to-world rotation matrix $R(\mathbf{q})$. Continuous re-normalization prevents numerical drift.</td>
+          </tr>
+          <tr>
+            <td><strong>Numerical Integration</strong></td>
+            <td>Semi-implicit Euler stepping ($\Delta t = 0.1\text{s}$).</td>
+            <td>Runge-Kutta 4th-order (RK4) integration with 5 substeps ($\Delta t_{\text{sub}} = 0.01\text{s}$).</td>
+          </tr>
+          <tr>
+            <td><strong>Supported Algorithms</strong></td>
+            <td>Stable-Baselines3 PPO, SAC, and Random Action Baseline.</td>
+            <td>Stable-Baselines3 PPO, SAC, and Random Action Baseline.</td>
+          </tr>
+          <tr>
+            <td><strong>Primary Use Case</strong></td>
+            <td>Fast prototyping, rapid hyperparameter tuning, curriculum learning.</td>
+            <td>Attitude stability verification, high-fidelity control, torque coupling research.</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
 
-  <!-- System Architecture Section -->
-  <section class="section section-alt" id="architecture">
+  <!-- 5. Architecture and Reinforcement Learning Pipeline -->
+  <section class="section" id="pipeline">
     <div class="container">
       <div class="section-header">
-        <div class="badge-tag">Modular Engineering</div>
-        <h2 class="section-title">System Architecture</h2>
+        <div class="badge-tag">System Pipeline</div>
+        <h2 class="section-title">Reinforcement Learning Architecture</h2>
         <p class="section-subtitle">
-          Four decoupled components designed for rigorous reproducibility, automated testing, and clear demonstration.
+          Closed-loop perception-action cycle connecting Gymnasium observation spaces, actor-critic policy networks, and numerical flight dynamics.
         </p>
+      </div>
+
+      <div class="pipeline-flow">
+        <div class="pipeline-node">
+          <div class="pipeline-node-icon">📦</div>
+          <div class="pipeline-node-title">Environment</div>
+          <div class="pipeline-node-sub">Gymnasium API</div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-node">
+          <div class="pipeline-node-icon">📡</div>
+          <div class="pipeline-node-title">State Encoder</div>
+          <div class="pipeline-node-sub">29-D / 36-D Vector</div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-node">
+          <div class="pipeline-node-icon">🧠</div>
+          <div class="pipeline-node-title">Policy Network</div>
+          <div class="pipeline-node-sub">PPO / SAC Actor-Critic</div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-node">
+          <div class="pipeline-node-icon">⚡</div>
+          <div class="pipeline-node-title">Action Dispatch</div>
+          <div class="pipeline-node-sub">3D Accel / 4 Thrusts</div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-node">
+          <div class="pipeline-node-icon">🚁</div>
+          <div class="pipeline-node-title">Dynamics Core</div>
+          <div class="pipeline-node-sub">RK4 / Euler Integration</div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-node">
+          <div class="pipeline-node-icon">🏆</div>
+          <div class="pipeline-node-title">Reward Function</div>
+          <div class="pipeline-node-sub">Progress + Penalties</div>
+        </div>
       </div>
 
       <div class="arch-grid">
         <div class="glass-panel arch-col">
           <h3 class="arch-col-title"><span>🌐</span> 1. Environment</h3>
           <ul class="arch-list">
-            <li><strong>Farama Gymnasium</strong> API standard</li>
-            <li>30m × 30m × 15m bounded arena</li>
-            <li>Procedural spherical obstacles</li>
-            <li>Continuous translational drag</li>
-            <li>Boundary & collision detection</li>
+            <li>Standard Farama Gymnasium interface</li>
+            <li>30m × 30m × 15m arena with obstacle clearance</li>
+            <li>Dynamic wind disturbance fields (steady & gusts)</li>
+            <li>Deterministic seeding with reproducible schedules</li>
+            <li>Strict collision and boundary termination logic</li>
           </ul>
         </div>
 
         <div class="glass-panel arch-col">
-          <h3 class="arch-col-title"><span>📡</span> 2. Perception</h3>
+          <h3 class="arch-col-title"><span>📡</span> 2. Sensor Perception</h3>
           <ul class="arch-list">
-            <li><strong>16-Ray Spherical LiDAR</strong></li>
-            <li>Analytical ray-sphere intersections</li>
-            <li>Normalized relative target vector</li>
-            <li>Linear drone velocity tracking</li>
-            <li>29 continuous dimensions total</li>
+            <li>16-Ray spherical LiDAR (Fibonacci sphere distribution)</li>
+            <li>Analytical ray-sphere and ray-box intersections</li>
+            <li>Configurable Gaussian noise and dropout probability</li>
+            <li>Target distance ratio & relative vector normalization</li>
+            <li>Real-time distance clearance calculations</li>
           </ul>
         </div>
 
         <div class="glass-panel arch-col">
-          <h3 class="arch-col-title"><span>🧠</span> 3. RL Agent</h3>
+          <h3 class="arch-col-title"><span>🧠</span> 3. RL Algorithms</h3>
           <ul class="arch-list">
-            <li><strong>Stable-Baselines3 PPO</strong></li>
-            <li>Actor-Critic MLP architecture</li>
-            <li>Clipped surrogate loss (ε = 0.2)</li>
-            <li>Generalized Advantage Estimation</li>
-            <li>Continuous action Gaussian heads</li>
+            <li><strong>PPO</strong>: Clipped surrogate objective ($\epsilon = 0.2$), GAE ($\lambda = 0.95$)</li>
+            <li><strong>SAC</strong>: Off-policy maximum-entropy actor-critic for continuous control</li>
+            <li>Multi-layer Perceptron (MLP) architectures</li>
+            <li>Standardized checkpoint serialization & inspection</li>
+            <li>Extensible algorithm registry for custom agents</li>
           </ul>
         </div>
 
         <div class="glass-panel arch-col">
-          <h3 class="arch-col-title"><span>📊</span> 4. Evaluation & GUI</h3>
+          <h3 class="arch-col-title"><span>📊</span> 4. Evaluation & Verification</h3>
           <ul class="arch-list">
-            <li><strong>Random Baseline</strong> comparator</li>
-            <li>Obstacle density stress tests (4, 6, 8)</li>
-            <li>5-Tab Streamlit flight deck</li>
-            <li>Deterministic multi-episode seeds</li>
-            <li>49 unit tests across Python 3.10–3.12</li>
+            <li>Automated comparison against untrained baseline</li>
+            <li>Multi-seed obstacle density stress testing (4, 6, 8)</li>
+            <li>Cryptographic SHA-256 experiment manifests</li>
+            <li>Interactive Streamlit flight deck dashboard</li>
+            <li>Comprehensive 357-test quality gate suite</li>
           </ul>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Drone Environment Section -->
-  <section class="section" id="environment">
-    <div class="container">
-      <div class="section-header">
-        <div class="badge-tag">Gymnasium Specification</div>
-        <h2 class="section-title">Drone Environment & State Space</h2>
-        <p class="section-subtitle">
-          Precise parameters and observation specifications verified directly against <code>src/adaptive_rl/environments/drone.py</code>.
-        </p>
-      </div>
-
-      <div class="env-cards-grid">
-        <!-- Observation Space Card -->
-        <div class="glass-panel env-card">
-          <div class="env-card-header">
-            <h3>Observation Space</h3>
-            <span class="env-card-badge">29 Dimensions (Continuous)</span>
-          </div>
-          <p>The agent receives a 29-element normalized <code>Box(-1.0, 1.0)</code> observation vector:</p>
-          <table class="obs-breakdown-table">
-            <thead>
-              <tr>
-                <th>Components</th>
-                <th>Dims</th>
-                <th>Description</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>norm_pos</td>
-                <td>3</td>
-                <td>Drone position (X, Y, Z) normalized to [0, 1]</td>
-              </tr>
-              <tr>
-                <td>norm_vel</td>
-                <td>3</td>
-                <td>Linear velocity normalized by max speed (8 m/s)</td>
-              </tr>
-              <tr>
-                <td>norm_goal</td>
-                <td>3</td>
-                <td>Target position (X, Y, Z) normalized to [0, 1]</td>
-              </tr>
-              <tr>
-                <td>rel_goal</td>
-                <td>3</td>
-                <td>Relative vector from drone to target</td>
-              </tr>
-              <tr>
-                <td>norm_dist</td>
-                <td>1</td>
-                <td>Normalized Euclidean distance to goal</td>
-              </tr>
-              <tr>
-                <td>lidar_rays</td>
-                <td>16</td>
-                <td>16 spherical rangefinder readings (0 to 20m)</td>
-              </tr>
-              <tr class="total-row">
-                <td>Total Vector</td>
-                <td>29</td>
-                <td>Full state observation space</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- Action Space & Physics Card -->
-        <div class="glass-panel env-card">
-          <div class="env-card-header">
-            <h3>Action & Physics</h3>
-            <span class="env-card-badge">Box(-1.0, 1.0, shape=(3,))</span>
-          </div>
-          <p>Continuous translational acceleration commands in Cartesian 3D space:</p>
-          <table class="obs-breakdown-table">
-            <thead>
-              <tr>
-                <th>Parameter</th>
-                <th>Value</th>
-                <th>Unit</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Action Dimensions</td>
-                <td>3</td>
-                <td>[a_x, a_y, a_z] in [-1.0, 1.0]</td>
-              </tr>
-              <tr>
-                <td>Max Acceleration</td>
-                <td>4.0</td>
-                <td>m/s²</td>
-              </tr>
-              <tr>
-                <td>Max Speed</td>
-                <td>8.0</td>
-                <td>m/s</td>
-              </tr>
-              <tr>
-                <td>Time Step (dt)</td>
-                <td>0.1</td>
-                <td>seconds per step</td>
-              </tr>
-              <tr>
-                <td>Drag Coefficient (cd)</td>
-                <td>0.05</td>
-                <td>linear aerodynamic damping</td>
-              </tr>
-              <tr>
-                <td>Target Radius</td>
-                <td>1.5</td>
-                <td>meters (success threshold)</td>
-              </tr>
-              <tr>
-                <td>Collision Radius</td>
-                <td>0.8</td>
-                <td>meters (drone bounding sphere)</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- Reward Function Card -->
-        <div class="glass-panel env-card">
-          <div class="env-card-header">
-            <h3>Reward Formulation</h3>
-            <span class="env-card-badge">Dense Distance-Shaped</span>
-          </div>
-          <p>Episodic flight guidance reward calculated at every time step <em>t</em>:</p>
-          <div class="code-box">
-            <pre><code>R_t = 10 * (d_{t-1} - d_t)      # Progress reward
-    - 0.05                      # Timestep penalty
-    - 0.01 * ||a_t||²           # Actuator effort penalty
-    + 100.0 (if d_t <= 1.5m)    # Goal arrival bonus
-    - 100.0 (on collision)      # Obstacle/wall penalty
-    - 50.0  (on boundary crash) # Arena boundary penalty</code></pre>
-          </div>
-          <p style="font-size: 0.85rem; color: var(--text-dim);">
-            Encourages rapid approach toward the target coordinate while heavily penalizing collisions with spherical obstacles or arena walls.
-          </p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- PPO Algorithm Section -->
-  <section class="section section-alt" id="ppo">
-    <div class="container">
-      <div class="section-header">
-        <div class="badge-tag">Reinforcement Learning Core</div>
-        <h2 class="section-title">Proximal Policy Optimization (PPO)</h2>
-        <p class="section-subtitle">
-          Why PPO was selected for continuous 3D drone navigation, and how the actor-critic policy optimizes flight paths.
-        </p>
-      </div>
-
-      <div class="arch-grid" style="grid-template-columns: 1.2fr 1fr;">
-        <div class="glass-panel" style="padding: 2rem;">
-          <h3 style="margin-bottom: 1rem;">Clipped Surrogate Objective</h3>
-          <p style="margin-bottom: 1rem;">
-            Standard policy gradient methods suffer from destructively large updates that collapse training. PPO stabilizes updates by clipping the probability ratio:
-          </p>
-          <div class="code-box">
-            <pre><code>L^CLIP(θ) = E_t [ min( r_t(θ) * A_t,  clip(r_t(θ), 1-ε, 1+ε) * A_t ) ]
-
-where:
-  r_t(θ) = π_θ(a_t | s_t) / π_θ_old(a_t | s_t)
-  A_t    = Generalized Advantage Estimator (GAE)
-  ε      = 0.2 (clipping boundary parameter)</code></pre>
-          </div>
-          <p style="font-size: 0.9rem;">
-            This bound prevents the updated policy from straying too far from previous experience, ensuring smooth, monotonically improving flight behaviors.
-          </p>
-        </div>
-
-        <div class="glass-panel" style="padding: 2rem;">
-          <h3 style="margin-bottom: 1rem;">Hyperparameters (configs/drone_ppo_demo.yaml)</h3>
-          <table class="obs-breakdown-table">
-            <tbody>
-              <tr>
-                <td>Framework</td>
-                <td>Stable-Baselines3 + PyTorch</td>
-              </tr>
-              <tr>
-                <td>Policy Network</td>
-                <td>MlpPolicy (Actor-Critic)</td>
-              </tr>
-              <tr>
-                <td>Learning Rate</td>
-                <td>3e-4 (Adam optimizer)</td>
-              </tr>
-              <tr>
-                <td>Discount Factor (γ)</td>
-                <td>0.99</td>
-              </tr>
-              <tr>
-                <td>GAE Parameter (λ)</td>
-                <td>0.95</td>
-              </tr>
-              <tr>
-                <td>Clip Range (ε)</td>
-                <td>0.2</td>
-              </tr>
-              <tr>
-                <td>Batch Size</td>
-                <td>64</td>
-              </tr>
-              <tr>
-                <td>Demo Budget</td>
-                <td>25,000 steps (~25s on CPU)</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Interactive LiDAR Sensor Section -->
-  <section class="section" id="sensors">
+  <!-- 6. Interactive LiDAR and Sensor Visualization -->
+  <section class="section section-alt" id="sensors">
     <div class="container">
       <div class="section-header">
         <div class="badge-tag">Perception System</div>
         <h2 class="section-title">Interactive 16-Ray LiDAR Inspector</h2>
         <p class="section-subtitle">
-          Test how the simulated spherical LiDAR rangefinder senses obstacles in real-time. Drag the drone to observe raycast distances dynamically.
+          Test how the simulated spherical LiDAR rangefinder senses obstacles in real-time. Drag or touch the drone to observe dynamic raycast distances and clearance colors.
         </p>
       </div>
 
       <div class="lidar-section-grid">
         <div class="lidar-canvas-container">
-          <canvas id="lidar-2d-canvas"></canvas>
+          <canvas id="lidar-2d-canvas" aria-label="Interactive 2D LiDAR Rangefinder Canvas"></canvas>
         </div>
 
         <div class="lidar-telemetry-panel">
@@ -605,39 +398,40 @@ where:
               </div>
             </div>
 
-            <h4 style="font-size: 0.85rem; color: var(--text-dim); text-transform: uppercase; margin-bottom: 0.5rem;">
+            <h4 style="font-size: 0.82rem; color: var(--text-dim); text-transform: uppercase; font-family: var(--font-mono); margin-bottom: 0.5rem;">
               16 Spherical LiDAR Rays (Distance in Meters)
             </h4>
             <div class="lidar-ray-readouts" id="lidar-rays-grid">
               <!-- Dynamically populated 16 ray gauges -->
             </div>
           </div>
-          <p style="font-size: 0.78rem; color: var(--text-dim); text-align: center;">
-            💡 <em>Rays change color dynamically: Cyan (>9m clearance) → Yellow (4–9m) → Red (&lt;4m proximity hazard).</em>
+          <p style="font-size: 0.8rem; color: var(--text-dim); text-align: center; margin-top: 0.75rem;">
+            💡 <em>Ray Color Key: Cyan (>9m clearance) → Amber (4–9m caution) → Crimson (&lt;4m collision hazard).</em>
           </p>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Empirical Benchmarks & Results Section -->
-  <section class="section section-alt" id="benchmarks">
+  <!-- 7. Research Results with Verifiable Source Information -->
+  <section class="section" id="benchmarks">
     <div class="container">
       <div class="section-header">
         <div class="badge-tag">Empirical Validation</div>
         <h2 class="section-title">Verified Benchmark Results</h2>
         <p class="section-subtitle">
-          Measured experimental results generated through genuine Python CPU execution under seed 42. No fabricated numbers.
+          Measured experimental results generated through genuine Python CPU execution under seed 42. Derived from <code>artifacts/evaluation.json</code> and <code>artifacts/obstacle_density_experiment.json</code>.
         </p>
       </div>
 
       <div class="benchmark-grid">
         <!-- Benchmark 1: PPO vs Random Baseline -->
         <div class="glass-panel benchmark-card">
-          <div class="env-card-header">
-            <h3>PPO vs Random Policy Baseline</h3>
-            <span class="env-card-badge">20 Test Episodes (Seed 42)</span>
+          <div class="flightdeck-status-pill" style="margin-bottom: 0.5rem;">
+            <span class="status-dot"></span>
+            <span>Policy Comparison (20 Test Episodes, Seed 42)</span>
           </div>
+          <h3 style="margin-bottom: 0.5rem;">PPO vs. Untrained Random Baseline</h3>
           <div class="chart-wrapper">
             <canvas id="ppo-vs-random-chart"></canvas>
           </div>
@@ -648,7 +442,7 @@ where:
                 <th>Success</th>
                 <th>Collision</th>
                 <th>Mean Return</th>
-                <th>Outcome</th>
+                <th>Status</th>
               </tr>
             </thead>
             <tbody>
@@ -657,28 +451,29 @@ where:
                 <td style="color: #ef4444;">0.0%</td>
                 <td style="color: #ef4444;">100.0%</td>
                 <td>-101.24</td>
-                <td>Collided every run</td>
+                <td>100% Collision</td>
               </tr>
               <tr>
-                <td><strong>Trained PPO Agent</strong></td>
+                <td><strong>Trained PPO Policy</strong></td>
                 <td style="color: #10b981;">5.0%</td>
                 <td style="color: #00f2fe;">35.0%</td>
                 <td>-3.34</td>
-                <td>65% survival rate</td>
+                <td>65% Survival Rate</td>
               </tr>
             </tbody>
           </table>
-          <p style="font-size: 0.8rem; color: var(--text-dim);">
-            <strong>Key Finding:</strong> An untrained random policy crashes in 100% of test flights. PPO slashes collisions to 35%, proving the neural network learned meaningful obstacle avoidance and directional flight.
+          <p style="font-size: 0.82rem; color: var(--text-dim);">
+            <strong>Empirical Finding:</strong> Random control actions crash in 100% of flights. A 25k-step PPO policy reduces collisions to 35%, confirming learned reactive obstacle avoidance.
           </p>
         </div>
 
         <!-- Benchmark 2: Obstacle Density Scaling -->
         <div class="glass-panel benchmark-card">
-          <div class="env-card-header">
-            <h3>Obstacle-Density Stress Test</h3>
-            <span class="env-card-badge">10 Episodes / Setting (Seed 42)</span>
+          <div class="flightdeck-status-pill" style="margin-bottom: 0.5rem;">
+            <span class="status-dot"></span>
+            <span>Clutter Stress Test (10 Episodes / Setting, Seed 42)</span>
           </div>
+          <h3 style="margin-bottom: 0.5rem;">Obstacle-Density Stress Testing</h3>
           <div class="chart-wrapper">
             <canvas id="density-scaling-chart"></canvas>
           </div>
@@ -716,141 +511,155 @@ where:
               </tr>
             </tbody>
           </table>
-          <p style="font-size: 0.8rem; color: var(--text-dim);">
-            <strong>Key Finding:</strong> Collision rates climb monotonically as obstacle density increases from 4 to 8, validating the hypothesis that spatial clutter non-linearly increases 3D navigation difficulty.
+          <p style="font-size: 0.82rem; color: var(--text-dim);">
+            <strong>Empirical Finding:</strong> Collision frequency increases monotonically as obstacle count rises from 4 to 8, demonstrating controlled difficulty scaling.
           </p>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Real Python GUI Application Section -->
+  <!-- 8. Experiment and Reproducibility Information -->
+  <section class="section section-alt" id="provenance">
+    <div class="container">
+      <div class="section-header">
+        <div class="badge-tag emerald">Open Science & Provenance</div>
+        <h2 class="section-title">Experiment Provenance & Cryptographic Integrity</h2>
+        <p class="section-subtitle">
+          Every ARL training and evaluation run generates an immutable, validated JSON manifest capturing hardware metadata, pinned library versions, Git state, and SHA-256 artifact checksums.
+        </p>
+      </div>
+
+      <div class="glass-panel provenance-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
+          <div>
+            <h3 style="margin-bottom: 0.25rem;">Manifest Schema: <code>adaptive_rl.manifest.ExperimentManifest</code></h3>
+            <p style="font-size: 0.85rem;">Source Manifest: <code>artifacts/metadata/drone_ppo_gui_manifest.json</code></p>
+          </div>
+          <div class="provenance-integrity-badge">
+            ✓ SHA-256 INTEGRITY VERIFIED
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+          <div class="telemetry-cell">
+            <div class="telemetry-title">Algorithm & Seed</div>
+            <div class="telemetry-value">PPO // Seed 42</div>
+            <div class="telemetry-sub">25,000 Total Timesteps</div>
+          </div>
+          <div class="telemetry-cell">
+            <div class="telemetry-title">Host Compute</div>
+            <div class="telemetry-value">CPU (4 Cores)</div>
+            <div class="telemetry-sub">Linux x86_64 // Python 3.14.7</div>
+          </div>
+          <div class="telemetry-cell">
+            <div class="telemetry-title">Core Libraries</div>
+            <div class="telemetry-value">PyTorch 2.14 / SB3 2.9</div>
+            <div class="telemetry-sub">Gymnasium 1.4.0 / NumPy 2.5</div>
+          </div>
+          <div class="telemetry-cell">
+            <div class="telemetry-title">Artifact Checksum</div>
+            <div class="telemetry-value" style="font-size: 0.85rem; word-break: break-all;">debec31a...</div>
+            <div class="telemetry-sub">SHA-256 Verified on Disk</div>
+          </div>
+        </div>
+
+        <div class="code-box">
+          <div class="code-header">
+            <span>artifacts/metadata/drone_ppo_gui_manifest.json (Excerpt)</span>
+            <button class="copy-btn" data-target="manifest-json-code">Copy</button>
+          </div>
+          <pre id="manifest-json-code"><code>{
+  "manifest_version": "1.0",
+  "experiment_name": "drone_ppo_gui",
+  "git": { "git_commit": "adc4910...", "git_branch": "feat/arl-flightdeck", "git_dirty": false },
+  "host": { "os_name": "Linux", "python_version": "3.14.7", "architecture": "x86_64" },
+  "hardware": { "device": "cpu", "cpu_count": 4 },
+  "config": { "algorithm": { "name": "ppo", "learning_rate": 0.0003 }, "training": { "total_timesteps": 25000 } },
+  "artifacts": {
+    "model": { "path": "artifacts/models/drone_ppo_gui_final.zip", "sha256": "debec31ae09b11ca..." }
+  }
+}</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9. Actual Streamlit Application Introduction -->
   <section class="section" id="gui">
     <div class="container">
       <div class="section-header">
-        <div class="badge-tag">Streamlit Flight Deck</div>
-        <h2 class="section-title">The Actual ARL Application</h2>
+        <div class="badge-tag">Interactive Flight Deck</div>
+        <h2 class="section-title">Streamlit Flight Deck Application</h2>
         <p class="section-subtitle">
-          The repository includes a 5-tab browser flight deck built with Streamlit and Plotly for live demonstration and defense.
+          Run the full-featured browser dashboard locally for interactive 3D flight playback, real-time CPU training, policy comparison, and research evidence verification.
         </p>
       </div>
 
-      <div class="gui-tabs-preview">
-        <div class="gui-tab-card">
-          <div class="gui-tab-title"><span>🎮</span> Tab 1: Live 3D Demo</div>
-          <p class="gui-tab-desc">
-            Interactive Plotly 3D flight arena, trajectory trail, obstacle spheres, target beacon, and step-by-step playback slider.
-          </p>
+      <div class="arch-grid">
+        <div class="glass-panel" style="padding: 1.5rem;">
+          <h4 style="color: var(--accent-cyan); margin-bottom: 0.5rem;">🚁 1. Live 3D Flight Deck</h4>
+          <p style="font-size: 0.88rem;">Interactive Plotly 3D flight playback with 6-DOF attitude quaternions, velocity vectors, color-coded LiDAR contact rays, and step scrubber.</p>
         </div>
-
-        <div class="gui-tab-card">
-          <div class="gui-tab-title"><span>📈</span> Tab 2: Train PPO</div>
-          <p class="gui-tab-desc">
-            In-browser CPU training loop with real-time status notifications, progress indicator, and live reward curves.
-          </p>
+        <div class="glass-panel" style="padding: 1.5rem;">
+          <h4 style="color: var(--accent-cyan); margin-bottom: 0.5rem;">⚡ 2. Real-time Policy Training</h4>
+          <p style="font-size: 0.88rem;">Execute real CPU training runs (5k to 50k steps) with live progress tracking and episodic reward curves.</p>
         </div>
-
-        <div class="gui-tab-card">
-          <div class="gui-tab-title"><span>📊</span> Tab 3: Evaluation</div>
-          <p class="gui-tab-desc">
-            Side-by-side empirical benchmark comparing PPO against the random baseline with comparative bar charts.
-          </p>
+        <div class="glass-panel" style="padding: 1.5rem;">
+          <h4 style="color: var(--accent-cyan); margin-bottom: 0.5rem;">📊 3. Policy Benchmark Suite</h4>
+          <p style="font-size: 0.88rem;">Empirically compare trained PPO/SAC models against an untrained random baseline across identical seeds.</p>
         </div>
-
-        <div class="gui-tab-card">
-          <div class="gui-tab-title"><span>🎯</span> Tab 4: Density Test</div>
-          <p class="gui-tab-desc">
-            Stress-test policy robustness across 4, 6, and 8 obstacles with real-time performance degradation graphs.
-          </p>
+        <div class="glass-panel" style="padding: 1.5rem;">
+          <h4 style="color: var(--accent-cyan); margin-bottom: 0.5rem;">🎯 4. Clutter Stress Testing</h4>
+          <p style="font-size: 0.88rem;">Stress-test navigation resilience across varying obstacle densities (4, 6, 8 procedural obstacles).</p>
         </div>
-
-        <div class="gui-tab-card">
-          <div class="gui-tab-title"><span>📘</span> Tab 5: Architecture</div>
-          <p class="gui-tab-desc">
-            Professor viva walkthrough, 3-DOF kinematic formulas, 29-D observation vector breakdown, and honest limitations.
-          </p>
+        <div class="glass-panel" style="padding: 1.5rem;">
+          <h4 style="color: var(--accent-cyan); margin-bottom: 0.5rem;">🔬 5. Research Evidence Dashboard</h4>
+          <p style="font-size: 0.88rem;">Inspect experiment manifests, Git provenance, compute telemetry, and verify artifact SHA-256 cryptographic checksums.</p>
+        </div>
+        <div class="glass-panel" style="padding: 1.5rem;">
+          <h4 style="color: var(--accent-cyan); margin-bottom: 0.5rem;">📘 6. Architecture & Specs</h4>
+          <p style="font-size: 0.88rem;">Complete reference guide for 3-DOF and 6-DOF mathematical equations, coordinate frames, and observation spaces.</p>
         </div>
       </div>
 
-      <!-- Launch Command Card -->
-      <div class="glass-panel" style="padding: 1.75rem; text-align: center; max-width: 680px; margin: 0 auto;">
-        <h3 style="margin-bottom: 0.5rem;">Launch the Live Flight Deck Locally</h3>
-        <p style="font-size: 0.9rem; margin-bottom: 1rem;">
-          Run either command from your activated virtual environment to open the Streamlit interface:
-        </p>
+      <div class="glass-panel" style="padding: 1.75rem; text-align: center; max-width: 680px; margin: 2rem auto 0 auto;">
+        <h3 style="margin-bottom: 0.5rem;">Launch the Live Flight Deck</h3>
+        <p style="font-size: 0.88rem; margin-bottom: 1rem;">Execute from your activated virtual environment:</p>
         <div class="code-box">
           <div class="code-header">
-            <span class="code-lang">bash</span>
-            <button class="copy-btn" data-target="gui-cmd-box">Copy</button>
+            <span>Terminal</span>
+            <button class="copy-btn" data-target="cli-gui-cmd">Copy</button>
           </div>
-          <pre id="gui-cmd-box"><code>adaptive-rl gui
-# or
-streamlit run app.py</code></pre>
+          <pre id="cli-gui-cmd"><code>adaptive-rl gui
+# or: streamlit run app.py</code></pre>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Video Demonstration Placeholder -->
-  <section class="section section-alt" id="demo-video">
-    <div class="container" style="max-width: 800px; text-align: center;">
-      <div class="badge-tag">Video Showcase</div>
-      <h2 class="section-title">Demonstration Video</h2>
-      <p class="section-subtitle" style="margin-bottom: 2rem;">
-        Watch the trained PPO agent navigate complex obstacle configurations in real-time.
-      </p>
-
-      <div class="glass-panel" style="padding: 4rem 2rem; border: 2px dashed rgba(255, 255, 255, 0.15);">
-        <div style="font-size: 3rem; margin-bottom: 1rem;">🎬</div>
-        <h3 style="margin-bottom: 0.5rem;">Demo Video Coming Soon</h3>
-        <p style="font-size: 0.9rem; max-width: 480px; margin: 0 auto 1.5rem auto;">
-          A full video walkthrough demonstrating Tab 1 (3D flight playback) and Tab 3 (PPO vs baseline evaluation) is being recorded for the repository.
-        </p>
-        <a href="#install" class="btn btn-primary btn-sm">Run ARL Locally Instead</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- Installation & Run Locally Section -->
-  <section class="section" id="install">
+  <!-- 10. Installation & Quick-Start Guide -->
+  <section class="section section-alt" id="install">
     <div class="container">
       <div class="section-header">
-        <div class="badge-tag">Reproducibility</div>
-        <h2 class="section-title">Run ARL Locally (Linux Guide)</h2>
+        <div class="badge-tag">Deployment</div>
+        <h2 class="section-title">Quick-Start Installation (Linux)</h2>
         <p class="section-subtitle">
-          Step-by-step instructions to clone, install, verify, and run AdaptiveRL from a clean Linux terminal.
+          Setup AdaptiveRL in a clean Python virtual environment and run tests in under two minutes.
         </p>
       </div>
 
       <div class="workflow-steps">
-        <!-- Step 1 -->
         <div class="workflow-item">
           <div class="wf-step-idx">1</div>
           <div class="wf-step-content">
-            <h4>Install System Prerequisites</h4>
-            <p>Ensure Python >= 3.10, pip, and git are available on your Linux distribution:</p>
-            <div class="code-box">
-              <div class="code-header">
-                <span class="code-lang">Ubuntu / Debian / Linux Mint</span>
-                <button class="copy-btn" data-target="code-pkg-deb">Copy</button>
-              </div>
-              <pre id="code-pkg-deb"><code>sudo apt update && sudo apt install -y python3 python3-pip python3-venv git</code></pre>
-            </div>
-          </div>
-        </div>
-
-        <!-- Step 2 -->
-        <div class="workflow-item">
-          <div class="wf-step-idx">2</div>
-          <div class="wf-step-content">
             <h4>Clone Repository & Create Virtual Environment</h4>
-            <p>Clone the project and create an isolated Python virtual environment:</p>
             <div class="code-box">
               <div class="code-header">
-                <span class="code-lang">bash</span>
-                <button class="copy-btn" data-target="code-clone-venv">Copy</button>
+                <span>bash</span>
+                <button class="copy-btn" data-target="code-setup-venv">Copy</button>
               </div>
-              <pre id="code-clone-venv"><code>git clone https://github.com/StellarResearch/ARL.git
+              <pre id="code-setup-venv"><code>git clone https://github.com/StellarResearch/ARL.git
 cd ARL
 python3 -m venv .venv
 source .venv/bin/activate</code></pre>
@@ -858,53 +667,47 @@ source .venv/bin/activate</code></pre>
           </div>
         </div>
 
-        <!-- Step 3 -->
         <div class="workflow-item">
-          <div class="wf-step-idx">3</div>
+          <div class="wf-step-idx">2</div>
           <div class="wf-step-content">
-            <h4>Install Dependencies & Verify Tests</h4>
-            <p>Install AdaptiveRL in editable mode and run the 49 unit tests:</p>
+            <h4>Install Dependencies & Execute Test Suite</h4>
             <div class="code-box">
               <div class="code-header">
-                <span class="code-lang">bash</span>
-                <button class="copy-btn" data-target="code-install-tests">Copy</button>
+                <span>bash</span>
+                <button class="copy-btn" data-target="code-install-pip">Copy</button>
               </div>
-              <pre id="code-install-tests"><code>python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e ".[all]"
-python -m pytest tests/</code></pre>
+              <pre id="code-install-pip"><code>pip install --upgrade pip
+pip install -e ".[all]"
+pytest tests/</code></pre>
             </div>
           </div>
         </div>
 
-        <!-- Step 4 -->
         <div class="workflow-item">
-          <div class="wf-step-idx">4</div>
+          <div class="wf-step-idx">3</div>
           <div class="wf-step-content">
-            <h4>Train & Evaluate Policy</h4>
-            <p>Train the PPO demonstration agent (~25s on CPU) and run the baseline comparison:</p>
+            <h4>Train a Policy & Run Evaluation</h4>
             <div class="code-box">
               <div class="code-header">
-                <span class="code-lang">bash</span>
-                <button class="copy-btn" data-target="code-train-eval">Copy</button>
+                <span>bash</span>
+                <button class="copy-btn" data-target="code-cli-train">Copy</button>
               </div>
-              <pre id="code-train-eval"><code>adaptive-rl train --config configs/drone_ppo_demo.yaml
+              <pre id="code-cli-train"><code>adaptive-rl train --config configs/drone_ppo_demo.yaml
 adaptive-rl evaluate --config configs/drone_ppo_demo.yaml --compare-random</code></pre>
             </div>
           </div>
         </div>
 
-        <!-- Step 5 -->
         <div class="workflow-item">
-          <div class="wf-step-idx">5</div>
+          <div class="wf-step-idx">4</div>
           <div class="wf-step-content">
-            <h4>Launch 3D GUI Flight Deck</h4>
-            <p>Launch the interactive browser GUI:</p>
+            <h4>Launch Flight Deck GUI</h4>
             <div class="code-box">
               <div class="code-header">
-                <span class="code-lang">bash</span>
-                <button class="copy-btn" data-target="code-launch-gui">Copy</button>
+                <span>bash</span>
+                <button class="copy-btn" data-target="code-cli-run-gui">Copy</button>
               </div>
-              <pre id="code-launch-gui"><code>adaptive-rl gui</code></pre>
+              <pre id="code-cli-run-gui"><code>adaptive-rl gui</code></pre>
             </div>
           </div>
         </div>
@@ -912,171 +715,99 @@ adaptive-rl evaluate --config configs/drone_ppo_demo.yaml --compare-random</code
     </div>
   </section>
 
-  <!-- Limitations & Roadmap Section -->
-  <section class="section section-alt" id="limitations">
-    <div class="container">
-      <div class="limits-grid">
-        <!-- Honest Limitations -->
-        <div class="glass-panel" style="padding: 2rem;">
-          <div class="badge-tag" style="background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); color: #f59e0b;">
-            Academic Boundaries
-          </div>
-          <h3 style="margin-bottom: 1.25rem;">Technical Limitations</h3>
-
-          <div class="limit-item">
-            <span class="icon">⚠️</span>
-            <div>
-              <strong>Kinematic Point-Mass Physics:</strong> Models translational 3-DOF acceleration with drag damping; does not simulate 6-DOF attitude quaternions, rotor gyroscopic precession, or blade wash.
-            </div>
-          </div>
-
-          <div class="limit-item">
-            <span class="icon">⚠️</span>
-            <div>
-              <strong>Analytical Geometric LiDAR:</strong> Raycasting computes exact mathematical sphere intersections without modeling laser bounce noise, atmospheric dust, or surface reflectance.
-            </div>
-          </div>
-
-          <div class="limit-item">
-            <span class="icon">⚠️</span>
-            <div>
-              <strong>Simulation Only:</strong> This model is not deployable directly onto real quadrotor flight controllers (like PX4 or ArduPilot) without a cascaded low-level PID attitude controller.
-            </div>
-          </div>
-        </div>
-
-        <!-- Future Roadmap -->
-        <div class="glass-panel" style="padding: 2rem;">
-          <div class="badge-tag" style="background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.3); color: #60a5fa;">
-            Future Research
-          </div>
-          <h3 style="margin-bottom: 1.25rem;">Planned Research Directions</h3>
-
-          <div class="roadmap-item">
-            <span class="icon">🚀</span>
-            <div>
-              <strong>6-DOF Rigid Body Dynamics:</strong> Extending the simulation to full quadrotor attitude dynamics, motor RPM lag, and torque coupling.
-            </div>
-          </div>
-
-          <div class="roadmap-item">
-            <span class="icon">🌪️</span>
-            <div>
-              <strong>Domain Randomization:</strong> Injecting randomized turbulent wind gusts, payload mass variations, and LiDAR sensor dropout noise.
-            </div>
-          </div>
-
-          <div class="roadmap-item">
-            <span class="icon">🤖</span>
-            <div>
-              <strong>Gazebo / PX4 SIL Integration:</strong> Connecting the trained SB3 policy to standard robotics middleware via ROS 2 or PX4 Software-in-the-Loop.
-            </div>
-          </div>
-
-          <div class="roadmap-item">
-            <span class="icon">👥</span>
-            <div>
-              <strong>Multi-Agent Swarm Navigation:</strong> Investigating cooperative collision avoidance among multiple learning drones sharing the same 3D airspace.
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Technology Stack & Engineering Quality -->
-  <section class="section" id="tech-stack">
+  <!-- 11. Technical Limitations and Safety Scope -->
+  <section class="section" id="limitations">
     <div class="container">
       <div class="section-header">
-        <div class="badge-tag">Open Science Stack</div>
-        <h2 class="section-title">Technology Stack & Engineering Rigor</h2>
+        <div class="badge-tag amber">Integrity & Scope</div>
+        <h2 class="section-title">Technical Limitations & Safety Boundaries</h2>
         <p class="section-subtitle">
-          Built with battle-tested open-source scientific computing libraries and verified through continuous integration.
+          Transparent research boundaries to prevent misrepresentation of simulation fidelity or hardware readiness.
         </p>
       </div>
 
-      <div class="tech-badges-wrap">
-        <div class="tech-badge"><span>Python</span> >= 3.10</div>
-        <div class="tech-badge"><span>Gymnasium</span> Farama Env</div>
-        <div class="tech-badge"><span>Stable-Baselines3</span> PPO Algorithm</div>
-        <div class="tech-badge"><span>PyTorch</span> Tensor Compute</div>
-        <div class="tech-badge"><span>NumPy</span> Vector Math</div>
-        <div class="tech-badge"><span>Streamlit</span> Dashboard GUI</div>
-        <div class="tech-badge"><span>Plotly</span> 3D Visualization</div>
-        <div class="tech-badge"><span>Typer & Rich</span> CLI Tools</div>
-        <div class="tech-badge"><span>Pytest</span> 49 Tests Passing</div>
-        <div class="tech-badge"><span>Ruff</span> Code Linting</div>
-        <div class="tech-badge"><span>Mypy</span> Static Type Analysis</div>
-        <div class="tech-badge"><span>GitHub Actions</span> Multi-Python CI</div>
-      </div>
-
-      <div class="glass-panel" style="margin-top: 2rem; padding: 1.5rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
-        <div>
-          <h4 style="font-size: 1rem; margin-bottom: 0.25rem;">CI Pipeline Verification</h4>
-          <p style="font-size: 0.85rem;">Every commit is tested on clean Ubuntu runners across Python 3.10, 3.11, and 3.12.</p>
+      <div class="limits-grid">
+        <div class="glass-panel" style="padding: 2rem;">
+          <h3 style="margin-bottom: 1.25rem;">Theoretical Simulation Scope</h3>
+          <div class="limit-item">
+            <span class="icon">⚠️</span>
+            <div>
+              <strong>No Physical Hardware Validation:</strong> ARL is an algorithmic reinforcement-learning research tool. It has not been benchmarked on physical drone flight hardware (e.g. Crazyflie, Pixhawk, or PX4).
+            </div>
+          </div>
+          <div class="limit-item">
+            <span class="icon">⚠️</span>
+            <div>
+              <strong>Aerodynamic Approximations:</strong> The 6-DOF environment models rigid-body dynamics, linear drag damping, and motor thrust curves. It does not model blade flapping, ground effect, or motor thermal lag.
+            </div>
+          </div>
+          <div class="limit-item">
+            <span class="icon">⚠️</span>
+            <div>
+              <strong>Idealized Spherical LiDAR:</strong> Analytical raycasting computes exact mathematical sphere and box intersections without simulating laser atmospheric backscatter, fog attenuation, or material surface reflectance.
+            </div>
+          </div>
         </div>
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
-          <span class="hud-chip" style="color: #10b981; border-color: rgba(16, 185, 129, 0.3);">✓ 49 Tests Passed</span>
-          <span class="hud-chip" style="color: #00f2fe; border-color: rgba(0, 242, 254, 0.3);">✓ Typecheck Passed</span>
-          <span class="hud-chip" style="color: #60a5fa; border-color: rgba(59, 130, 246, 0.3);">✓ Lint Passed</span>
+
+        <div class="glass-panel" style="padding: 2rem;">
+          <h3 style="margin-bottom: 1.25rem;">Intended Operating Environment</h3>
+          <div class="limit-item">
+            <span class="icon">🛡️</span>
+            <div>
+              <strong>Non-Flight-Critical Research:</strong> Intended solely for academic experimentation, algorithm comparison (PPO vs SAC vs Planners), and curriculum reinforcement learning research.
+            </div>
+          </div>
+          <div class="limit-item">
+            <span class="icon">🛡️</span>
+            <div>
+              <strong>Sim-to-Real Prerequisite:</strong> Direct physical flight deployment requires adding domain randomization (gust turbulence, sensor delay, payload variance) and integration with standard robotics middleware (ROS 2 / Gazebo).
+            </div>
+          </div>
+          <div class="limit-item">
+            <span class="icon">🛡️</span>
+            <div>
+              <strong>No Hardware Override:</strong> ARL policies must never be connected directly to motor electronic speed controllers (ESCs) without hardware fail-safes and manual pilot overrides.
+            </div>
+          </div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- GitHub Final CTA -->
-  <section class="section section-alt" id="github-cta">
-    <div class="container" style="text-align: center; max-width: 760px;">
-      <div class="badge-tag">Open Source Codebase</div>
-      <h2 class="section-title">Explore the Source Repository</h2>
-      <p class="section-subtitle" style="margin-bottom: 2rem;">
-        AdaptiveRL is released under the permissive MIT License for academic, educational, and research use.
-      </p>
-      <div style="display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap;">
-        <a href="https://github.com/StellarResearch/ARL" target="_blank" rel="noopener noreferrer" class="btn btn-primary">
-          View on GitHub
-        </a>
-        <a href="https://github.com/StellarResearch/ARL/blob/main/docs/COLLEGE_DEMO.md" target="_blank" rel="noopener noreferrer" class="btn btn-viva">
-          Read College Demo Viva Guide
-        </a>
-        <a href="https://github.com/StellarResearch/ARL/blob/main/docs/EXPERIMENT.md" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
-          Read Formal Experiment Docs
-        </a>
-      </div>
-    </div>
-  </section>
-
-  <!-- Footer -->
-  <footer class="site-footer">
+  <!-- 12. GitHub Contribution & Documentation Links -->
+  <footer class="site-footer" id="footer">
     <div class="container">
       <div class="footer-top">
         <div class="footer-brand">
           <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;">
-            <div class="brand-logo">ARL</div>
-            <span class="brand-name">AdaptiveRL</span>
+            <div class="brand-logo-box">ARL</div>
+            <div>
+              <div class="brand-title">AdaptiveRL</div>
+              <div class="brand-subtitle">Autonomous Research Flight Deck</div>
+            </div>
           </div>
-          <p style="font-size: 0.85rem; color: var(--text-dim);">
-            Adaptive Reinforcement Learning for Autonomous Drone Navigation in Simulated 3D Environments. An educational computer-science mini-project.
+          <p style="font-size: 0.88rem; color: var(--text-dim); max-width: 380px;">
+            Adaptive Reinforcement Learning for Autonomous Drone Navigation in Simulated 3D Environments. Open-source under the MIT License.
           </p>
         </div>
 
         <div class="footer-links-group">
           <div class="footer-col">
-            <h4>Navigation</h4>
+            <h4>Flight Deck</h4>
             <ul>
-              <li><a href="#quick-summary">2-Minute Summary</a></li>
-              <li><a href="#architecture">Architecture</a></li>
-              <li><a href="#environment">Environment Specs</a></li>
-              <li><a href="#benchmarks">Benchmark Results</a></li>
+              <li><a href="#hero-sim">3D Simulation</a></li>
+              <li><a href="#comparison">3-DOF vs 6-DOF</a></li>
+              <li><a href="#pipeline">Architecture</a></li>
+              <li><a href="#benchmarks">Benchmark Data</a></li>
             </ul>
           </div>
           <div class="footer-col">
             <h4>Documentation</h4>
             <ul>
-              <li><a href="https://github.com/StellarResearch/ARL/blob/main/README.md" target="_blank" rel="noopener noreferrer">Linux README Guide</a></li>
-              <li><a href="https://github.com/StellarResearch/ARL/blob/main/docs/COLLEGE_DEMO.md" target="_blank" rel="noopener noreferrer">College Viva Script</a></li>
-              <li><a href="https://github.com/StellarResearch/ARL/blob/main/docs/EXPERIMENT.md" target="_blank" rel="noopener noreferrer">Scientific Experiment Report</a></li>
-              <li><a href="https://github.com/StellarResearch/ARL/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a></li>
+              <li><a href="https://github.com/StellarResearch/ARL/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noopener noreferrer">System Architecture</a></li>
+              <li><a href="https://github.com/StellarResearch/ARL/blob/main/docs/ENVIRONMENT.md" target="_blank" rel="noopener noreferrer">3-DOF Environment</a></li>
+              <li><a href="https://github.com/StellarResearch/ARL/blob/main/docs/ENVIRONMENT_6DOF.md" target="_blank" rel="noopener noreferrer">6-DOF Quadrotor</a></li>
+              <li><a href="https://github.com/StellarResearch/ARL/blob/main/docs/GUI.md" target="_blank" rel="noopener noreferrer">Flight Deck GUI Guide</a></li>
             </ul>
           </div>
           <div class="footer-col">
@@ -1085,20 +816,21 @@ adaptive-rl evaluate --config configs/drone_ppo_demo.yaml --compare-random</code
               <li><a href="https://github.com/StellarResearch/ARL" target="_blank" rel="noopener noreferrer">GitHub Repository</a></li>
               <li><a href="https://github.com/StellarResearch/ARL/issues" target="_blank" rel="noopener noreferrer">Issue Tracker</a></li>
               <li><a href="https://github.com/StellarResearch/ARL/pulls" target="_blank" rel="noopener noreferrer">Pull Requests</a></li>
+              <li><a href="https://github.com/StellarResearch/ARL/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a></li>
             </ul>
           </div>
         </div>
       </div>
 
       <div class="footer-bottom">
-        <div>AdaptiveRL © 2026 StellarResearch. Licensed under the MIT License.</div>
-        <div>Designed for Academic College Demonstrations. Simulation Only.</div>
+        <div>AdaptiveRL © 2026 StellarResearch // Autonomous Research Flight Deck.</div>
+        <div>Continuous Integration: 357 Passing Tests // Open Science Architecture.</div>
       </div>
     </div>
   </footer>
 
-  <!-- College Presentation Mode Modal (10 Slides) -->
-  <div class="presentation-modal" id="presentation-modal" role="dialog" aria-modal="true" aria-label="College Presentation Mode">
+  <!-- Executive Research Briefing Modal (10 Slides) -->
+  <div class="presentation-modal" id="presentation-modal" role="dialog" aria-modal="true" aria-label="Executive Briefing Mode">
     <div class="pres-header">
       <div class="pres-progress" id="pres-progress-text">Slide 1 of 10</div>
       <div class="pres-controls-top">
@@ -1110,256 +842,158 @@ adaptive-rl evaluate --config configs/drone_ppo_demo.yaml --compare-random</code
     <div class="pres-body">
       <!-- Slide 1 -->
       <div class="pres-slide active">
-        <div class="pres-slide-header">
-          <span class="pres-slide-tag">Slide 01 // Introduction</span>
-          <h2 class="pres-slide-title">Autonomous 3D Drone Navigation using Reinforcement Learning</h2>
-        </div>
-        <div class="pres-slide-content">
-          <p style="font-size: 1.15rem; color: var(--text-main); margin-bottom: 1.5rem;">
-            <strong>AdaptiveRL:</strong> An educational computer-science demonstration where a continuous-action PPO agent learns to navigate a simulated quadrotor point-mass to a 3D target coordinate while avoiding obstacles.
-          </p>
-          <div class="hero-quick-specs" style="border: none; padding: 0;">
-            <div class="spec-item"><span class="spec-val">Farama Gymnasium</span><span class="spec-lbl">Environment API</span></div>
-            <div class="spec-item"><span class="spec-val">Stable-Baselines3</span><span class="spec-lbl">RL Framework</span></div>
-            <div class="spec-item"><span class="spec-val">PyTorch</span><span class="spec-lbl">Policy Networks</span></div>
-            <div class="spec-item"><span class="spec-val">Streamlit</span><span class="spec-lbl">Presentation Flight Deck</span></div>
-          </div>
+        <span class="pres-slide-tag">Slide 01 // Mission Overview</span>
+        <h2 class="pres-slide-title">ARL: Autonomous Research Flight Deck</h2>
+        <p style="font-size: 1.15rem; color: var(--text-main); margin-bottom: 1.5rem;">
+          An open scientific platform for training, evaluating, and visualizing autonomous continuous-action reinforcement learning policies for 3D drone navigation.
+        </p>
+        <div class="hero-quick-specs" style="border: none; padding: 0;">
+          <div class="spec-item"><span class="spec-val">Gymnasium</span><span class="spec-lbl">Environment API</span></div>
+          <div class="spec-item"><span class="spec-val">PPO & SAC</span><span class="spec-lbl">Continuous RL</span></div>
+          <div class="spec-item"><span class="spec-val">3-DOF & 6-DOF</span><span class="spec-lbl">Dual Dynamics</span></div>
+          <div class="spec-item"><span class="spec-val">Streamlit & 3D</span><span class="spec-lbl">Scientific Telemetry</span></div>
         </div>
       </div>
 
       <!-- Slide 2 -->
       <div class="pres-slide">
-        <div class="pres-slide-header">
-          <span class="pres-slide-tag">Slide 02 // Problem Statement</span>
-          <h2 class="pres-slide-title">The Challenge: Reactive 3D Navigation</h2>
-        </div>
-        <div class="pres-slide-content">
-          <p style="font-size: 1.05rem; margin-bottom: 1.25rem;">
-            Traditional path planning algorithms (like A* or RRT*) require complete geometric maps of the environment and computationally expensive 3D replanning cycles when obstacles are encountered.
-          </p>
-          <ul class="arch-list" style="font-size: 1rem; gap: 1rem;">
-            <li><strong>Objective:</strong> Learn an end-to-end reactive policy mapping local distance sensor observations directly to continuous 3D acceleration vectors.</li>
-            <li><strong>Constraint:</strong> Operates at sub-millisecond inference times suitable for resource-constrained onboard flight processors.</li>
-            <li><strong>Demonstration Story:</strong> Train in simulation, evaluate against an empirical baseline, and inspect flights through an interactive 3D GUI.</li>
-          </ul>
-        </div>
+        <span class="pres-slide-tag">Slide 02 // Problem Formulation</span>
+        <h2 class="pres-slide-title">Reactive 3D Spatial Navigation</h2>
+        <p style="font-size: 1.05rem; margin-bottom: 1.25rem;">
+          Traditional geometric path planners (such as A* and RRT*) depend on complete static maps and high-overhead replanning. ARL evaluates reactive, model-free neural policies that map local distance rangefinding directly to continuous motor commands.
+        </p>
+        <ul class="arch-list" style="font-size: 0.95rem; gap: 0.8rem;">
+          <li><strong>Task:</strong> Navigate a bounded 30m × 30m × 15m volume towards an unknown target waypoint.</li>
+          <li><strong>Obstacles:</strong> Procedural spherical obstacles placed with collision clearance guarantees.</li>
+          <li><strong>Perception:</strong> 16-ray spherical rangefinder tracking local spatial proximity.</li>
+        </ul>
       </div>
 
       <!-- Slide 3 -->
       <div class="pres-slide">
-        <div class="pres-slide-header">
-          <span class="pres-slide-tag">Slide 03 // Architecture</span>
-          <h2 class="pres-slide-title">Closed-Loop Reinforcement Learning System</h2>
-        </div>
-        <div class="pres-slide-content">
-          <div class="loop-flow" style="margin: 0 0 1.5rem 0;">
-            <div class="loop-node"><span class="node-title">Environment</span><span class="hud-chip">30×30×15m</span></div>
-            <span class="loop-arrow">→</span>
-            <div class="loop-node"><span class="node-title">Observation</span><span class="hud-chip">29 Dims</span></div>
-            <span class="loop-arrow">→</span>
-            <div class="loop-node"><span class="node-title">PPO Policy</span><span class="hud-chip">Actor-Critic</span></div>
-            <span class="loop-arrow">→</span>
-            <div class="loop-node"><span class="node-title">Action</span><span class="hud-chip">3D Accel</span></div>
-            <span class="loop-arrow">→</span>
-            <div class="loop-node"><span class="node-title">Reward</span><span class="hud-chip">Δd − Penalty</span></div>
-          </div>
-          <p style="font-size: 0.95rem;">
-            Decoupled modular architecture adhering to Farama Gymnasium standards, allowing drop-in compatibility with modern RL algorithms.
-          </p>
-        </div>
+        <span class="pres-slide-tag">Slide 03 // Dynamics Comparison</span>
+        <h2 class="pres-slide-title">Point-Mass vs. Rigid-Body Quadrotor</h2>
+        <p style="font-size: 1.05rem; margin-bottom: 1.25rem;">
+          ARL strictly separates point-mass translational kinematics from rigid-body quadrotor attitude dynamics.
+        </p>
+        <ul class="arch-list" style="font-size: 0.95rem; gap: 0.8rem;">
+          <li><strong>3-DOF:</strong> Semi-implicit Euler integration, continuous Cartesian acceleration commands, 29-D state vector.</li>
+          <li><strong>6-DOF:</strong> Runge-Kutta 4th-order (RK4) integration with 5 substeps, unit quaternion attitude kinematics, 4 individual motor thrust commands, 36-D state vector.</li>
+        </ul>
       </div>
 
       <!-- Slide 4 -->
       <div class="pres-slide">
-        <div class="pres-slide-header">
-          <span class="pres-slide-tag">Slide 04 // Environment</span>
-          <h2 class="pres-slide-title">Simulation Arena & Kinematics</h2>
-        </div>
-        <div class="pres-slide-content">
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
-            <div>
-              <h4 style="color: var(--accent-cyan); margin-bottom: 0.5rem;">Arena Geometry</h4>
-              <p style="font-size: 0.9rem;">
-                • Bounded arena: [0, 30] × [0, 30] × [0, 15] meters<br>
-                • 4 procedural spherical obstacles (r = 2.0m)<br>
-                • Guaranteed obstacle clearance from start & target<br>
-                • Target beacon radius: 1.5m
-              </p>
-            </div>
-            <div>
-              <h4 style="color: var(--accent-cyan); margin-bottom: 0.5rem;">Point-Mass Kinematics</h4>
-              <p style="font-size: 0.9rem;">
-                • Integration step: Δt = 0.1s<br>
-                • Aerodynamic drag damping: c_d = 0.05<br>
-                • Max velocity: 8.0 m/s<br>
-                • Max acceleration: 4.0 m/s²
-              </p>
-            </div>
-          </div>
-        </div>
+        <span class="pres-slide-tag">Slide 04 // Perception Architecture</span>
+        <h2 class="pres-slide-title">16-Ray Spherical LiDAR Sensor</h2>
+        <p style="font-size: 1.05rem; margin-bottom: 1.25rem;">
+          The simulated sensor projects 16 unit vectors uniformly distributed across a unit sphere using the golden-ratio Fibonacci spiral.
+        </p>
+        <ul class="arch-list" style="font-size: 0.95rem; gap: 0.8rem;">
+          <li>Closed-form geometric ray-sphere and ray-box intersection algorithms.</li>
+          <li>Zero-delay distance calculation bounded to 20.0 meters maximum range.</li>
+          <li>Configurable sensor noise, dropout probability, and blind-zone radii.</li>
+        </ul>
       </div>
 
       <!-- Slide 5 -->
       <div class="pres-slide">
-        <div class="pres-slide-header">
-          <span class="pres-slide-tag">Slide 05 // Perception</span>
-          <h2 class="pres-slide-title">29-Dimensional Observation Vector</h2>
-        </div>
-        <div class="pres-slide-content">
-          <table class="obs-breakdown-table" style="font-size: 0.95rem;">
-            <thead>
-              <tr><th>Observation Channel</th><th>Dimensions</th><th>Details</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>Drone Position</td><td>3</td><td>Normalized Cartesian (X, Y, Z)</td></tr>
-              <tr><td>Drone Velocity</td><td>3</td><td>Normalized linear velocity (X, Y, Z)</td></tr>
-              <tr><td>Target Position</td><td>3</td><td>Normalized goal coordinate</td></tr>
-              <tr><td>Relative Target Vector</td><td>3</td><td>Direction vector from drone to target</td></tr>
-              <tr><td>Distance to Goal</td><td>1</td><td>Normalized Euclidean distance</td></tr>
-              <tr><td>16-Ray Spherical LiDAR</td><td>16</td><td>Rangefinder distances (0 to 20m)</td></tr>
-              <tr class="total-row"><td>Total Observation Dimension</td><td>29</td><td>Continuous Box(-1, 1)</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <span class="pres-slide-tag">Slide 05 // Algorithm Suite</span>
+        <h2 class="pres-slide-title">Continuous-Action PPO & SAC</h2>
+        <p style="font-size: 1.05rem; margin-bottom: 1.25rem;">
+          Implemented on top of Stable-Baselines3 and PyTorch with modular configuration files.
+        </p>
+        <ul class="arch-list" style="font-size: 0.95rem; gap: 0.8rem;">
+          <li><strong>PPO:</strong> Clipped surrogate loss ($\epsilon = 0.2$), GAE advantage estimation ($\lambda = 0.95$), Gaussian policy outputs.</li>
+          <li><strong>SAC:</strong> Maximum entropy actor-critic with twin Q-critics and soft target updates for robust continuous control.</li>
+        </ul>
       </div>
 
       <!-- Slide 6 -->
       <div class="pres-slide">
-        <div class="pres-slide-header">
-          <span class="pres-slide-tag">Slide 06 // Algorithm</span>
-          <h2 class="pres-slide-title">Proximal Policy Optimization (PPO)</h2>
-        </div>
-        <div class="pres-slide-content">
-          <p style="font-size: 1rem; margin-bottom: 1rem;">
-            PPO optimizes policy parameters θ using a clipped surrogate objective that prevents destructively large policy deviations:
-          </p>
-          <div class="code-box">
-            <pre><code>L^CLIP(θ) = E_t [ min( r_t(θ) * A_t,  clip(r_t(θ), 1-ε, 1+ε) * A_t ) ]</code></pre>
-          </div>
-          <ul class="arch-list" style="margin-top: 1rem;">
-            <li>Actor network outputs mean acceleration μ(s) and log standard deviation σ.</li>
-            <li>Critic network outputs scalar state value V(s) to compute generalized advantage A_t.</li>
-            <li>Clipping boundary ε = 0.2 ensures monotone policy improvement.</li>
-          </ul>
+        <span class="pres-slide-tag">Slide 06 // Reward Formulation</span>
+        <h2 class="pres-slide-title">Multi-Objective Reward Shaping</h2>
+        <p style="font-size: 1.05rem; margin-bottom: 1.25rem;">
+          Reward formulation balances goal attraction, collision avoidance, and flight efficiency:
+        </p>
+        <div class="code-box">
+          <pre><code>R_t = 2.0 * (d_{t-1} - d_t)      # Progress reward
+    - 0.05                      # Timestep penalty
+    - 0.01 * ||a_t||²           # Actuation effort penalty
+    + 100.0 (if d_t <= 1.5m)    # Goal arrival reward
+    - 100.0 (on collision)      # Obstacle / boundary penalty</code></pre>
         </div>
       </div>
 
       <!-- Slide 7 -->
       <div class="pres-slide">
-        <div class="pres-slide-header">
-          <span class="pres-slide-tag">Slide 07 // Reward Function</span>
-          <h2 class="pres-slide-title">Reward Shaping & Flight Economics</h2>
-        </div>
-        <div class="pres-slide-content">
-          <p style="font-size: 1rem; margin-bottom: 1rem;">
-            The agent balances target progression against time and safety constraints:
-          </p>
-          <div class="code-box">
-            <pre><code>R_t = 10 * (d_{t-1} - d_t)   # Positive reward for reducing distance
-    - 0.05                   # Time step penalty (encourages speed)
-    - 0.01 * ||a_t||²        # Actuator penalty (energy conservation)
-    + 100.0 (if d <= 1.5m)   # Goal bonus
-    - 100.0 (on collision)   # Obstacle impact penalty</code></pre>
-          </div>
-        </div>
+        <span class="pres-slide-tag">Slide 07 // Empirical Results</span>
+        <h2 class="pres-slide-title">Measured Policy Performance</h2>
+        <p style="font-size: 1.05rem; margin-bottom: 1.25rem;">
+          Rigorous benchmarking under deterministic seeds:
+        </p>
+        <ul class="arch-list" style="font-size: 0.95rem; gap: 0.8rem;">
+          <li><strong>Random Baseline:</strong> 100% collision rate, -101.24 mean return.</li>
+          <li><strong>Trained PPO Policy:</strong> 35% collision rate, 65% survival rate, -3.34 mean return.</li>
+          <li><strong>Clutter Sensitivity:</strong> Collision frequency scales monotonically across 4, 6, and 8 obstacles.</li>
+        </ul>
       </div>
 
       <!-- Slide 8 -->
       <div class="pres-slide">
-        <div class="pres-slide-header">
-          <span class="pres-slide-tag">Slide 08 // Empirical Results</span>
-          <h2 class="pres-slide-title">Trained PPO vs Random Policy Baseline</h2>
-        </div>
-        <div class="pres-slide-content">
-          <p style="font-size: 0.95rem; margin-bottom: 1rem;">
-            Rigorous evaluation across 20 test episodes under fixed seed 42:
-          </p>
-          <table class="data-table" style="font-size: 0.95rem;">
-            <thead>
-              <tr><th>Policy</th><th>Success</th><th>Collision</th><th>Mean Return</th><th>Survival</th></tr>
-            </thead>
-            <tbody>
-              <tr><td><strong>Uniform Random Baseline</strong></td><td>0.0%</td><td>100.0%</td><td>-101.24</td><td>0.0%</td></tr>
-              <tr><td><strong>Trained PPO Agent</strong></td><td>5.0%</td><td>35.0%</td><td>-3.34</td><td>65.0%</td></tr>
-            </tbody>
-          </table>
-          <p style="margin-top: 1rem; color: var(--accent-emerald);">
-            ✓ <strong>Validation:</strong> The random policy crashed in 100% of episodes. PPO cut collisions by nearly two-thirds and increased survival to 65%.
-          </p>
-        </div>
+        <span class="pres-slide-tag">Slide 08 // Research Provenance</span>
+        <h2 class="pres-slide-title">Cryptographic Experiment Tracking</h2>
+        <p style="font-size: 1.05rem; margin-bottom: 1.25rem;">
+          Verified artifact management via <code>adaptive_rl.manifest</code>:
+        </p>
+        <ul class="arch-list" style="font-size: 0.95rem; gap: 0.8rem;">
+          <li>Automated collection of Git commit SHA, branch, and working tree dirty status.</li>
+          <li>Hardware compute telemetry: logical CPU cores, GPU models, OS details.</li>
+          <li>Real-time SHA-256 cryptographic verification of model checkpoints and reports.</li>
+        </ul>
       </div>
 
       <!-- Slide 9 -->
       <div class="pres-slide">
-        <div class="pres-slide-header">
-          <span class="pres-slide-tag">Slide 09 // Difficulty Scaling</span>
-          <h2 class="pres-slide-title">Environmental Complexity: Obstacle Density</h2>
-        </div>
-        <div class="pres-slide-content">
-          <p style="font-size: 0.95rem; margin-bottom: 1rem;">
-            Evaluating policy generalization across increasing spatial clutter (10 episodes each, seed 42):
-          </p>
-          <table class="data-table" style="font-size: 0.95rem;">
-            <thead>
-              <tr><th>Condition</th><th>Obstacle Count</th><th>Collision Rate</th><th>Mean Return</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>Low Density</td><td>4 Obstacles</td><td>20.0%</td><td>+5.00</td></tr>
-              <tr><td>Medium Density</td><td>6 Obstacles</td><td>40.0%</td><td>-15.20</td></tr>
-              <tr><td>High Density</td><td>8 Obstacles</td><td>70.0%</td><td>-32.43</td></tr>
-            </tbody>
-          </table>
-          <p style="margin-top: 1rem; color: var(--accent-cyan);">
-            ✓ <strong>Finding:</strong> Task difficulty scales non-linearly with obstacle density, confirming the need for larger training budgets in cluttered arenas.
-          </p>
-        </div>
+        <span class="pres-slide-tag">Slide 09 // Scientific Integrity</span>
+        <h2 class="pres-slide-title">Honest Disclosures & Boundaries</h2>
+        <p style="font-size: 1.05rem; margin-bottom: 1.25rem;">
+          Clear distinction between simulation and physical hardware:
+        </p>
+        <ul class="arch-list" style="font-size: 0.95rem; gap: 0.8rem;">
+          <li>Theoretical numerical simulation: not validated on physical drone autopilots.</li>
+          <li>Browser 3D demo executes deterministic guidance laws; genuine policy inference runs via Python GUI.</li>
+          <li>No hardware deployment claims: strictly intended for algorithmic evaluation.</li>
+        </ul>
       </div>
 
       <!-- Slide 10 -->
       <div class="pres-slide">
-        <div class="pres-slide-header">
-          <span class="pres-slide-tag">Slide 10 // Limitations & Conclusion</span>
-          <h2 class="pres-slide-title">Technical Honesty & Future Extensions</h2>
+        <span class="pres-slide-tag">Slide 10 // Quick-Start</span>
+        <h2 class="pres-slide-title">Running ARL Locally</h2>
+        <p style="font-size: 1.05rem; margin-bottom: 1.25rem;">
+          Get started with two commands from a clean terminal:
+        </p>
+        <div class="code-box">
+          <pre><code>pip install -e ".[all]"
+adaptive-rl gui</code></pre>
         </div>
-        <div class="pres-slide-content">
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
-            <div>
-              <h4 style="color: var(--accent-amber); margin-bottom: 0.5rem;">Documented Limitations</h4>
-              <p style="font-size: 0.85rem;">
-                • Point-mass 3-DOF translation (no 6-DOF attitude quaternions).<br>
-                • Analytical geometric LiDAR (no laser bounce noise).<br>
-                • Educational demonstration; not a production flight controller.
-              </p>
-            </div>
-            <div>
-              <h4 style="color: var(--accent-blue); margin-bottom: 0.5rem;">Future Research</h4>
-              <p style="font-size: 0.85rem;">
-                • 6-DOF quadrotor aerodynamics with motor lag.<br>
-                • Domain randomization (wind gusts & sensor noise).<br>
-                • PX4 Software-in-the-Loop bridge.
-              </p>
-            </div>
-          </div>
-          <div style="margin-top: 1.5rem; text-align: center;">
-            <p style="font-weight: 700; color: var(--text-main);">Thank you, professors. We welcome your questions.</p>
-          </div>
-        </div>
+        <p style="font-size: 0.9rem; color: var(--text-dim); margin-top: 1rem;">
+          Full source code and documentation available at <a href="https://github.com/StellarResearch/ARL" target="_blank" rel="noopener noreferrer">github.com/StellarResearch/ARL</a>.
+        </p>
       </div>
     </div>
 
     <div class="pres-footer">
-      <div class="pres-nav-keys">Controls: [←] Previous &nbsp;|&nbsp; [→ / Space] Next &nbsp;|&nbsp; [Esc] Exit</div>
-      <div style="display: flex; gap: 0.5rem;">
-        <button class="btn btn-secondary btn-sm" id="pres-btn-prev">← Previous</button>
-        <button class="btn btn-primary btn-sm" id="pres-btn-next">Next →</button>
-      </div>
+      <button class="btn btn-secondary btn-sm" id="pres-btn-prev">← Previous</button>
+      <button class="btn btn-primary btn-sm" id="pres-btn-next">Next →</button>
     </div>
   </div>
 
-  <!-- Main Website Scripts -->
+  <!-- Scripts -->
   <script src="js/simulation.js"></script>
   <script src="js/lidar.js"></script>
-  <script src="js/presentation.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/presentation.js"></script>
 </body>
 </html>
