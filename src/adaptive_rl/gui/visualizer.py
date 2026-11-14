@@ -817,6 +817,7 @@ def build_arena_3d_figure(
     show_safety_zones: bool = True,
     show_trajectory: bool = True,
     propeller_phase: float = 0.0,
+    target_radius: float = 1.5,
 ) -> go.Figure:
     """Build an interactive 3D Plotly flight arena visualizer.
 
@@ -928,15 +929,17 @@ def build_arena_3d_figure(
                     )
                 )
 
-    # 4. Target Waypoint with Ground Pad and Altitude Beacon Column
+    # 4. Target Waypoint with Ground Pad, Altitude Beacon Column, and Arrival Radius Zone
     if target is not None:
+        t_arr = np.asarray(target, dtype=np.float64)
+        th_pad = np.linspace(0.0, 2.0 * math.pi, 36)
+        pad_r = float(target_radius)
+
         # Ground Landing Pad Ring at z = 0
-        th_pad = np.linspace(0.0, 2.0 * math.pi, 24)
-        pad_r = 1.5
         fig.add_trace(
             go.Scatter3d(
-                x=target[0] + pad_r * np.cos(th_pad),
-                y=target[1] + pad_r * np.sin(th_pad),
+                x=t_arr[0] + pad_r * np.cos(th_pad),
+                y=t_arr[1] + pad_r * np.sin(th_pad),
                 z=np.zeros_like(th_pad),
                 mode="lines",
                 line=dict(color="#10b981", width=2),
@@ -949,9 +952,9 @@ def build_arena_3d_figure(
         # Vertical Altitude Beacon Column from ground to waypoint
         fig.add_trace(
             go.Scatter3d(
-                x=[target[0], target[0]],
-                y=[target[1], target[1]],
-                z=[0.0, target[2] + 1.8],
+                x=[t_arr[0], t_arr[0]],
+                y=[t_arr[1], t_arr[1]],
+                z=[0.0, t_arr[2] + 1.8],
                 mode="lines",
                 line=dict(color="#10b981", width=2, dash="dot"),
                 name="Waypoint Beacon Column",
@@ -960,12 +963,26 @@ def build_arena_3d_figure(
             )
         )
 
+        # 3D Arrival Radius Circle at Target Altitude
+        fig.add_trace(
+            go.Scatter3d(
+                x=t_arr[0] + pad_r * np.cos(th_pad),
+                y=t_arr[1] + pad_r * np.sin(th_pad),
+                z=np.full_like(th_pad, t_arr[2]),
+                mode="lines",
+                line=dict(color="#10b981", width=2.5, dash="dash"),
+                name=f"Arrival Radius ({pad_r:.1f}m)",
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
         # Target Waypoint Marker
         fig.add_trace(
             go.Scatter3d(
-                x=[target[0]],
-                y=[target[1]],
-                z=[target[2]],
+                x=[t_arr[0]],
+                y=[t_arr[1]],
+                z=[t_arr[2]],
                 mode="markers+text",
                 marker=dict(
                     symbol="diamond",
@@ -973,12 +990,18 @@ def build_arena_3d_figure(
                     color="#10b981",
                     line=dict(color="#ffffff", width=2),
                 ),
-                text=["WAYPOINT GOAL"],
+                text=[f"TARGET [{t_arr[0]:.1f}, {t_arr[1]:.1f}, {t_arr[2]:.1f}]"],
                 textposition="top center",
                 textfont=dict(color="#10b981", size=13),
                 name="Target Waypoint",
                 hoverinfo="text",
-                hovertext=f"Target Goal<br>Pos: [{target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f}]",
+                hovertext=(
+                    f"<b>Target Waypoint Destination</b><br>"
+                    f"X: {t_arr[0]:.2f} m<br>"
+                    f"Y: {t_arr[1]:.2f} m<br>"
+                    f"Z: {t_arr[2]:.2f} m<br>"
+                    f"Arrival Radius: {pad_r:.2f} m"
+                ),
             )
         )
 
@@ -1478,6 +1501,7 @@ def run_drone_simulation_episode(
         "target": getattr(
             env, "target", getattr(env, "_goal", getattr(env, "goal", np.zeros(3)))
         ).copy(),
+        "target_radius": float(getattr(env, "target_radius", 1.5)),
         "bounds": env.bounds,
         "start_pos": getattr(env, "default_start", getattr(env, "_start_pos", np.zeros(3))).copy(),
         "lidar_rays": env.lidar_rays,

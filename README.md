@@ -87,6 +87,13 @@ AdaptiveRL is an educational reinforcement-learning project in which a PPO agent
   - Unified configuration pipelines (`configs/ppo_drone_6dof.yaml`, `configs/sac_drone_6dof.yaml`, `configs/drone_6dof.yaml`).
 - **Interactive Streamlit Flight Deck (`app.py`)**:
   - Dynamics model selector (3-DOF Kinematic Drone vs. 6-DOF Quadrotor).
+  - **User-Defined 3D Destination / Custom Target Selector**:
+    - Users can set custom destination coordinates (`Target X`, `Target Y`, `Target Z` in metres) or restore environment defaults.
+    - Pre-flight validation strictly checks finite numbers, arena boundary limits (`30.0 × 30.0 × 15.0 m`), boundary collision safety margins (`0.8 m`), and launch point separation (`> 1.5 m`). Invalid inputs block simulation launch without silent clamping.
+    - The physics environments (`DroneNavigation3DEnv` and `Drone6DOFEnv`) directly instantiate `goal_pos`, ensuring observations, relative goal vectors, progress rewards, obstacle generation clearance, and arrival detection use the exact user-defined waypoint.
+    - Trajectory visualization renders an emerald diamond destination waypoint with exact `[X, Y, Z]` metres annotations, a 3D arrival radius boundary (`1.5 m`), altitude beacon column, and ground projection pad.
+    - Coordinate-keyed state caching invalidates stale simulation trajectories when targets are changed.
+    - Custom targets are fully integrated into RL training (`EnvironmentConfig.parameters["goal_pos"]`) and comparative policy evaluation.
   - Trajectory playback scrubber updating quadrotor position, attitude, arm orientations, LiDAR, velocity, and telemetry (altitude, speed, Euler roll/pitch/yaw in degrees, angular velocity, goal distance).
   - Explicit simulation playback mode indicator distinguishing educational simulation playback from live physical hardware.
 - **16-Ray Simulated LiDAR**: Spherical rangefinder calculating analytical distances to obstacles and arena boundaries with configurable noise and dropout.

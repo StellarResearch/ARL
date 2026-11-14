@@ -8,6 +8,7 @@ from adaptive_rl.environments.drone import (
     DroneNavigation3DEnv,
     DroneState3D,
     ObstacleSphere3D,
+    validate_target_coordinates,
 )
 from adaptive_rl.environments.metadata import EnvironmentMetadata
 from adaptive_rl.environments.registry import (
@@ -195,4 +196,5 @@ __all__ = [
     "register",
     "register_default_environments",
     "registry",
+    "validate_target_coordinates",
 ]

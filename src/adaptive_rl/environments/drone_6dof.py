@@ -970,7 +970,19 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
             self.lidar_min_range = m_range
 
         self._position = self.default_start.copy()
-        self._goal = self.default_goal.copy()
+        if options and "goal_pos" in options and options["goal_pos"] is not None:
+            g_opt = np.asarray(options["goal_pos"], dtype=np.float64)
+            if g_opt.shape != (3,) or not np.all(np.isfinite(g_opt)):
+                raise ValueError(
+                    f"goal_pos in options must be a finite 3-element vector, got {options['goal_pos']}"
+                )
+            if any(g_opt[i] < 0.0 or g_opt[i] > self.bounds[i] for i in range(3)):
+                raise ValueError(
+                    f"goal_pos in options {g_opt} is outside valid arena bounds {self.bounds}"
+                )
+            self._goal = g_opt
+        else:
+            self._goal = self.default_goal.copy()
 
         self.dynamics.reset(position=self._position)
 

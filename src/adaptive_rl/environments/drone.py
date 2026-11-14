@@ -40,8 +40,9 @@ Mathematical Model & Architecture:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from gymnasium import spaces
@@ -395,6 +396,143 @@ def generate_drone_obstacles(
     return obstacles
 
 
+def validate_target_coordinates(
+    target: Any,
+    bounds: Tuple[float, float, float] = (30.0, 30.0, 15.0),
+    start_pos: Optional[Sequence[float] | np.ndarray] = None,
+    target_radius: float = 1.5,
+    collision_radius: float = 0.8,
+    raise_error: bool = False,
+) -> Tuple[bool, Optional[str]]:
+    """Validate user-selected 3D target coordinates against arena constraints.
+
+    Verification checks:
+    1. Dimension: Exactly three coordinates [X, Y, Z].
+    2. Finite: All coordinates are finite numbers (no NaN, no +/- inf).
+    3. Arena bounds: Coordinates lie within [0.0, bounds[i]] for all axes.
+    4. Collision margin: Target cannot lie within the boundary collision margin
+       (<= collision_radius or >= bounds[i] - collision_radius).
+    5. Starting separation: Target must not be within arrival radius (target_radius)
+       of the start position, preventing an already-succeeded initial state.
+
+    Args:
+        target: Sequence or array of target coordinates [x, y, z].
+        bounds: Arena dimensions (X_max, Y_max, Z_max).
+        start_pos: Optional starting position [x, y, z].
+        target_radius: Target arrival radius in meters.
+        collision_radius: Drone boundary collision radius in meters.
+        raise_error: If True, raises ValueError on failure instead of returning False.
+
+    Returns:
+        Tuple of (is_valid, error_message). If valid, error_message is None.
+
+    Raises:
+        ValueError: If raise_error is True and validation fails.
+    """
+    axis_names = ("X", "Y", "Z")
+
+    # 1. Coordinate count check
+    if target is None:
+        msg = "Target coordinates must not be None; expected three numbers [X, Y, Z]."
+        if raise_error:
+            raise ValueError(msg)
+        return False, msg
+
+    try:
+        t_arr = np.asarray(target, dtype=np.float64)
+    except (TypeError, ValueError) as err:
+        msg = f"Target coordinates must be numeric values: {err}"
+        if raise_error:
+            raise ValueError(msg)
+        return False, msg
+
+    if t_arr.shape != (3,):
+        msg = f"Target must contain exactly three coordinates [X, Y, Z], got shape {t_arr.shape}."
+        if raise_error:
+            raise ValueError(msg)
+        return False, msg
+
+    # 2. Finite numbers check (no NaN, no Inf)
+    for i in range(3):
+        val = float(t_arr[i])
+        axis = axis_names[i]
+        if math.isnan(val):
+            msg = f"Target coordinate {axis} is NaN (not a number)."
+            if raise_error:
+                raise ValueError(msg)
+            return False, msg
+        if math.isinf(val):
+            msg = f"Target coordinate {axis} is infinite."
+            if raise_error:
+                raise ValueError(msg)
+            return False, msg
+
+    # 3. Arena bounds check
+    for i in range(3):
+        val = float(t_arr[i])
+        b_val = float(bounds[i])
+        axis = axis_names[i]
+        if val < 0.0:
+            msg = (
+                f"Target coordinate {axis} ({val:.2f} m) cannot be negative; "
+                f"must be within arena bounds [0.0, {b_val:.2f}] m."
+            )
+            if raise_error:
+                raise ValueError(msg)
+            return False, msg
+        if val > b_val:
+            msg = (
+                f"Target coordinate {axis} ({val:.2f} m) exceeds arena bound ({b_val:.2f} m); "
+                f"must be within arena bounds [0.0, {b_val:.2f}] m."
+            )
+            if raise_error:
+                raise ValueError(msg)
+            return False, msg
+
+    # 4. Boundary collision margin check
+    for i in range(3):
+        val = float(t_arr[i])
+        b_val = float(bounds[i])
+        axis = axis_names[i]
+        if val <= collision_radius:
+            msg = (
+                f"Target coordinate {axis} ({val:.2f} m) violates arena boundary collision "
+                f"margin ({collision_radius:.2f} m); destination cannot be reached without boundary impact."
+            )
+            if raise_error:
+                raise ValueError(msg)
+            return False, msg
+        if val >= b_val - collision_radius:
+            msg = (
+                f"Target coordinate {axis} ({val:.2f} m) violates arena boundary collision "
+                f"margin ({b_val - collision_radius:.2f} m); destination cannot be reached without boundary impact."
+            )
+            if raise_error:
+                raise ValueError(msg)
+            return False, msg
+
+    # 5. Start position separation check
+    if start_pos is not None:
+        try:
+            s_arr = np.asarray(start_pos, dtype=np.float64)
+            if s_arr.shape == (3,) and np.all(np.isfinite(s_arr)):
+                dist = float(np.linalg.norm(t_arr - s_arr))
+                if dist <= target_radius:
+                    msg = (
+                        f"Target position [{t_arr[0]:.2f}, {t_arr[1]:.2f}, {t_arr[2]:.2f}] m is "
+                        f"too close to launch position [{s_arr[0]:.2f}, {s_arr[1]:.2f}, {s_arr[2]:.2f}] m "
+                        f"(distance {dist:.2f} m <= arrival radius {target_radius:.2f} m). "
+                        f"Destination is already satisfied at launch."
+                    )
+                    if raise_error:
+                        raise ValueError(msg)
+                    return False, msg
+        except Exception:
+            pass
+
+    return True, None
+
+
 class DroneNavigation3DEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
     """Gymnasium environment simulating kinematic 3D drone navigation.
 
@@ -467,19 +605,28 @@ class DroneNavigation3DEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         self._last_split_seed: Optional[int] = None
 
         self.bounds = (float(bounds[0]), float(bounds[1]), float(bounds[2]))
-        self.default_start = (
-            np.asarray(start_pos, dtype=np.float64)
-            if start_pos is not None
-            else np.array([5.0, 5.0, 5.0], dtype=np.float64)
-        )
-        self.default_goal = (
-            np.asarray(goal_pos, dtype=np.float64)
-            if goal_pos is not None
-            else np.array(
+        if start_pos is not None:
+            s_arr = np.asarray(start_pos, dtype=np.float64)
+            if s_arr.shape != (3,) or not np.all(np.isfinite(s_arr)):
+                raise ValueError(f"start_pos must be a finite 3-element vector, got {start_pos}")
+            if any(s_arr[i] < 0.0 or s_arr[i] > self.bounds[i] for i in range(3)):
+                raise ValueError(f"start_pos {s_arr} is outside valid arena bounds {self.bounds}")
+            self.default_start = s_arr
+        else:
+            self.default_start = np.array([5.0, 5.0, 5.0], dtype=np.float64)
+
+        if goal_pos is not None:
+            g_arr = np.asarray(goal_pos, dtype=np.float64)
+            if g_arr.shape != (3,) or not np.all(np.isfinite(g_arr)):
+                raise ValueError(f"goal_pos must be a finite 3-element vector, got {goal_pos}")
+            if any(g_arr[i] < 0.0 or g_arr[i] > self.bounds[i] for i in range(3)):
+                raise ValueError(f"goal_pos {g_arr} is outside valid arena bounds {self.bounds}")
+            self.default_goal = g_arr
+        else:
+            self.default_goal = np.array(
                 [self.bounds[0] - 5.0, self.bounds[1] - 5.0, self.bounds[2] - 5.0],
                 dtype=np.float64,
             )
-        )
         self.num_obstacles = num_obstacles
         self.obstacle_radius = float(obstacle_radius)
         self.target_radius = float(target_radius)
@@ -722,7 +869,19 @@ class DroneNavigation3DEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
 
         self._position = self.default_start.copy()
         self._velocity = np.zeros(3, dtype=np.float64)
-        self._goal = self.default_goal.copy()
+        if options and "goal_pos" in options and options["goal_pos"] is not None:
+            g_opt = np.asarray(options["goal_pos"], dtype=np.float64)
+            if g_opt.shape != (3,) or not np.all(np.isfinite(g_opt)):
+                raise ValueError(
+                    f"goal_pos in options must be a finite 3-element vector, got {options['goal_pos']}"
+                )
+            if any(g_opt[i] < 0.0 or g_opt[i] > self.bounds[i] for i in range(3)):
+                raise ValueError(
+                    f"goal_pos in options {g_opt} is outside valid arena bounds {self.bounds}"
+                )
+            self._goal = g_opt
+        else:
+            self._goal = self.default_goal.copy()
 
         self.kinematics.reset(self._position, self._velocity)
 

@@ -63,6 +63,13 @@ src/adaptive_rl/
 - **Streamlit Application (`app.py`)**:
   - Full aerospace mission-control styling: dark graphite background, navy telemetry panels, and high-contrast instruments.
   - Dynamics model selector supporting both 3-DOF Kinematic Drone and 6-DOF Quadrotor.
+  - **Custom Destination Selector & Target Validation (`validate_target_coordinates`)**:
+    - Real-time numerical X/Y/Z coordinate entry with units in metres.
+    - Pre-flight validation enforcing arena boundary limits, finite float checks, boundary collision margins ($d_{\\text{wall}} > r_{\\text{collision}} = 0.8\\text{ m}$), and initial separation ($d_{\\text{start}} > r_{\\text{target}} = 1.5\\text{ m}$).
+    - Direct parameter propagation to `DroneNavigation3DEnv(goal_pos=...)` and `Drone6DOFEnv(goal_pos=...)`, affecting observation vectors, progress rewards, obstacle procedural generation, and success criteria.
+    - 3D visual waypoint marker displaying exact coordinate text, arrival radius ring, altitude beacon column, and ground pad.
+    - Coordinate-keyed session state (`flight_data_{model}_{tx}_{ty}_{tz}`) invalidating stale trajectories upon destination changes.
+    - Generalization advisory notice for pretrained models navigating to out-of-distribution targets.
   - Checkpoint integrity inspection detecting verified vs unverified shape-matched models and displaying parameter fingerprints.
 
 ### 3. Architecture Distinction: Three.js Browser Demo vs Python 6-DOF Flight Deck

@@ -90,12 +90,14 @@ adaptive-rl gui
 ```
 
 ### Presentation Walkthrough:
-1. **Live Flight Demo**:
-   - Select model checkpoint `drone_ppo_demo_final.zip`.
-   - Set test seed `42` and max steps `100`.
-   - Click **Run Flight Simulation**.
-   - Use the **Step Scrubber** to inspect the drone navigating around obstacle spheres towards the green target diamond.
-   - Toggle **LiDAR sensor beams** to show real-time 16-ray geometric distance ray-casts.
+1. **Live Flight Demo & Custom Destination Selector**:
+   - Choose between **6-DOF Quadrotor** (rigid-body RK4) and **3-DOF Kinematic Drone**.
+   - Select model checkpoint or test an untrained baseline.
+   - **Custom Destination Selector**: Enter custom `[X, Y, Z]` target coordinates in metres (e.g. `[18.0, 22.0, 8.0] m`) or click **↺ Restore Default Target**.
+   - Observe live target validation: coordinates are checked against arena bounds (`30 × 30 × 15 m`), boundary collision margins, and launch point proximity.
+   - Click **🚀 Execute Sim**: the simulation initializes the environment with your exact target coordinates, recomputes obstacle clearances, and guides the drone to the custom destination.
+   - Use the **Step Scrubber** to inspect the drone navigating around obstacle spheres towards the emerald target waypoint with its arrival radius ring and altitude beacon column.
+   - Toggle **16-Ray LiDAR** to show analytical distance rangefinding beams.
 2. **Training Panel**:
    - Show how PPO hyperparameters (learning rate, timesteps, seed) can be tuned.
    - Run a short demo training loop directly inside the browser.

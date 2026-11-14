@@ -20,7 +20,10 @@ from adaptive_rl.algorithms.registry import (
     load_algorithm_from_pretrained,
 )
 from adaptive_rl.config import AlgorithmConfig, EnvironmentConfig, ExperimentConfig, TrainingConfig
-from adaptive_rl.environments.drone import DroneNavigation3DEnv
+from adaptive_rl.environments.drone import (
+    DroneNavigation3DEnv,
+    validate_target_coordinates,
+)
 from adaptive_rl.environments.drone_6dof import Drone6DOFEnv, quaternion_to_euler_angles
 from adaptive_rl.evaluation.evaluator import (
     Evaluator,
@@ -415,19 +418,228 @@ def main() -> None:
                 )
 
         is_6dof = "6-DOF" in env_choice
-        sim_key = f"flight_data_{'6dof' if is_6dof else '3dof'}"
+        active_bounds = (30.0, 30.0, 15.0)
+        default_start = np.array([5.0, 5.0, 5.0], dtype=np.float64)
+        default_goal = np.array(
+            [active_bounds[0] - 5.0, active_bounds[1] - 5.0, active_bounds[2] - 5.0],
+            dtype=np.float64,
+        )
+        target_radius_val = 1.5
+        collision_radius_val = 0.8
 
-        if launch_clicked or sim_key not in st.session_state:
-            with st.spinner(f"Executing {env_choice} numerical dynamics simulation..."):
-                env: Any = None
-                if is_6dof:
-                    env = Drone6DOFEnv(num_obstacles=int(num_obs))
-                else:
-                    env = DroneNavigation3DEnv(num_obstacles=int(num_obs))
+        # ====================================================
+        # CUSTOM DESTINATION / TARGET LOCATION SECTION
+        # ====================================================
+        st.markdown(
+            """
+            <div style="margin-top: 12px; margin-bottom: 6px; font-weight: 700; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase; color: #38bdf8; display: flex; align-items: center; gap: 8px;">
+                🎯 CUSTOM DESTINATION / TARGET LOCATION
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
+        with st.container():
+            dest_col1, dest_col2, dest_col3, dest_col4 = st.columns([1.1, 1.1, 1.1, 1.5])
+
+            with dest_col1:
+                input_tx = st.number_input(
+                    "Target X (m):",
+                    value=float(st.session_state.get("target_x", default_goal[0])),
+                    min_value=-15.0,
+                    max_value=float(active_bounds[0] + 15.0),
+                    step=1.0,
+                    format="%.2f",
+                    key="custom_target_x",
+                    help=f"Desired X coordinate in metres (valid range: [{collision_radius_val:.1f}, {active_bounds[0] - collision_radius_val:.1f}] m).",
+                )
+                st.session_state["target_x"] = float(input_tx)
+
+            with dest_col2:
+                input_ty = st.number_input(
+                    "Target Y (m):",
+                    value=float(st.session_state.get("target_y", default_goal[1])),
+                    min_value=-15.0,
+                    max_value=float(active_bounds[1] + 15.0),
+                    step=1.0,
+                    format="%.2f",
+                    key="custom_target_y",
+                    help=f"Desired Y coordinate in metres (valid range: [{collision_radius_val:.1f}, {active_bounds[1] - collision_radius_val:.1f}] m).",
+                )
+                st.session_state["target_y"] = float(input_ty)
+
+            with dest_col3:
+                input_tz = st.number_input(
+                    "Target Z (m):",
+                    value=float(st.session_state.get("target_z", default_goal[2])),
+                    min_value=-15.0,
+                    max_value=float(active_bounds[2] + 15.0),
+                    step=1.0,
+                    format="%.2f",
+                    key="custom_target_z",
+                    help=f"Desired Z coordinate in metres (valid range: [{collision_radius_val:.1f}, {active_bounds[2] - collision_radius_val:.1f}] m).",
+                )
+                st.session_state["target_z"] = float(input_tz)
+
+            with dest_col4:
+                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                if st.button(
+                    "↺ Restore Default Target",
+                    use_container_width=True,
+                    help="Restore environment's default destination coordinates",
+                ):
+                    st.session_state["target_x"] = float(default_goal[0])
+                    st.session_state["target_y"] = float(default_goal[1])
+                    st.session_state["target_z"] = float(default_goal[2])
+                    st.rerun()
+
+        selected_target = (float(input_tx), float(input_ty), float(input_tz))
+        is_target_valid, target_err_msg = validate_target_coordinates(
+            target=selected_target,
+            bounds=active_bounds,
+            start_pos=default_start,
+            target_radius=target_radius_val,
+            collision_radius=collision_radius_val,
+        )
+
+        if is_target_valid:
+            st.markdown(
+                f"""
+                <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 6px; padding: 10px 14px; margin-top: 4px; margin-bottom: 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div>
+                        <span style="color: #10b981; font-weight: 700;">● DESTINATION ACCEPTED</span>
+                        <span style="color: #64748b; margin: 0 6px;">|</span>
+                        <span style="color: #94a3b8;">Target:</span> <b style="color: #00f2fe;">[{selected_target[0]:.2f}, {selected_target[1]:.2f}, {selected_target[2]:.2f}] m</b>
+                        <span style="color: #64748b; margin: 0 6px;">|</span>
+                        <span style="color: #94a3b8;">Arena Bounds:</span> <span style="color: #f1f5f9;">{active_bounds[0]:.1f} × {active_bounds[1]:.1f} × {active_bounds[2]:.1f} m</span>
+                        <span style="color: #64748b; margin: 0 6px;">|</span>
+                        <span style="color: #94a3b8;">Target Radius:</span> <span style="color: #10b981;">{target_radius_val:.2f} m</span>
+                    </div>
+                    <div style="color: #10b981; font-size: 11px;">
+                        Simulation Ready
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"""
+                <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.45); border-left: 5px solid #ef4444; border-radius: 6px; padding: 10px 14px; margin-top: 4px; margin-bottom: 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px;">
+                    <div style="color: #ef4444; font-weight: 700; margin-bottom: 3px;">
+                        🚨 INVALID DESTINATION — SIMULATION BLOCKED
+                    </div>
+                    <div style="color: #fca5a5; font-size: 11px;">
+                        {target_err_msg}
+                    </div>
+                    <div style="color: #94a3b8; font-size: 10px; margin-top: 4px;">
+                        Arena: {active_bounds[0]:.1f} × {active_bounds[1]:.1f} × {active_bounds[2]:.1f} m | Collision Margin: {collision_radius_val:.2f} m | Target Radius: {target_radius_val:.2f} m
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        if (
+            not selected_policy.startswith("Random Action Baseline")
+            and is_target_valid
+            and (
+                abs(selected_target[0] - default_goal[0]) > 1e-4
+                or abs(selected_target[1] - default_goal[1]) > 1e-4
+                or abs(selected_target[2] - default_goal[2]) > 1e-4
+            )
+        ):
+            st.markdown(
+                f"<div class='baseline-disclaimer'>⚠️ <b>Generalization Notice:</b> Selected neural policy was trained "
+                f"on default target ({default_goal[0]:.1f}, {default_goal[1]:.1f}, {default_goal[2]:.1f}) m. "
+                f"Navigating to custom destination ({selected_target[0]:.1f}, {selected_target[1]:.1f}, {selected_target[2]:.1f}) m "
+                f"may result in suboptimal trajectories or failure to reach the target.</div>",
+                unsafe_allow_html=True,
+            )
+
+        sim_key = f"flight_data_{'6dof' if is_6dof else '3dof'}_{selected_target[0]:.2f}_{selected_target[1]:.2f}_{selected_target[2]:.2f}"
+
+        if launch_clicked:
+            if not is_target_valid:
+                st.error(f"Cannot execute simulation with invalid target: {target_err_msg}")
+            else:
+                with st.spinner(
+                    f"Executing {env_choice} numerical dynamics simulation to [{selected_target[0]:.2f}, {selected_target[1]:.2f}, {selected_target[2]:.2f}] m..."
+                ):
+                    env: Any = None
+                    if is_6dof:
+                        env = Drone6DOFEnv(goal_pos=selected_target, num_obstacles=int(num_obs))
+                    else:
+                        env = DroneNavigation3DEnv(
+                            goal_pos=selected_target, num_obstacles=int(num_obs)
+                        )
+
+                    try:
+                        model_to_use: Optional[Any] = None
+
+                        if (
+                            not selected_policy.startswith("Random Action Baseline")
+                            and available_models
+                        ):
+                            raw_name = selected_policy.split(": ", 1)[-1].strip()
+                            matching = [p for p in available_models if p.name == raw_name]
+                            if matching:
+                                target_p = matching[0]
+                                info = model_info_map[target_p.name]
+                                if not info["valid"]:
+                                    st.warning(
+                                        f"Checkpoint '{raw_name}' is unsupported: {info['error']}. "
+                                        "Falling back to Random Baseline."
+                                    )
+                                elif (
+                                    info["obs_shape"] != env.observation_space.shape
+                                    or info["action_shape"] != env.action_space.shape
+                                ):
+                                    st.warning(
+                                        f"Model '{raw_name}' expects observation shape {info['obs_shape']} and "
+                                        f"action shape {info['action_shape']}, but {env_choice} environment has "
+                                        f"observation shape {env.observation_space.shape} and action shape "
+                                        f"{env.action_space.shape}. Falling back to Random Baseline."
+                                    )
+                                else:
+                                    if info.get("compatibility_status") == "unverified_shape_match":
+                                        st.info(
+                                            f"ℹ️ Model '{raw_name}' matched {env_choice} by space dimensions "
+                                            f"({info['obs_shape']}/{info['action_shape']}). Training environment identity "
+                                            "was inferred from shapes rather than verified metadata."
+                                        )
+                                    try:
+                                        if info["algorithm"] == "sac":
+                                            from stable_baselines3 import SAC
+
+                                            model_to_use = SAC.load(str(target_p))
+                                        else:
+                                            from stable_baselines3 import PPO
+
+                                            model_to_use = PPO.load(str(target_p))
+                                    except Exception as exc:
+                                        st.warning(
+                                            f"Could not load checkpoint ({exc}); using random actions."
+                                        )
+
+                        st.session_state[sim_key] = run_drone_simulation_episode(
+                            env=env,
+                            model=model_to_use,
+                            seed=int(demo_seed),
+                        )
+                    finally:
+                        env.close()
+        elif sim_key not in st.session_state and is_target_valid:
+            with st.spinner(
+                f"Executing {env_choice} numerical dynamics simulation to [{selected_target[0]:.2f}, {selected_target[1]:.2f}, {selected_target[2]:.2f}] m..."
+            ):
+                env = (
+                    Drone6DOFEnv(goal_pos=selected_target, num_obstacles=int(num_obs))
+                    if is_6dof
+                    else DroneNavigation3DEnv(goal_pos=selected_target, num_obstacles=int(num_obs))
+                )
                 try:
-                    model_to_use: Optional[Any] = None
-
+                    model_to_use = None
                     if (
                         not selected_policy.startswith("Random Action Baseline")
                         and available_models
@@ -437,28 +649,11 @@ def main() -> None:
                         if matching:
                             target_p = matching[0]
                             info = model_info_map[target_p.name]
-                            if not info["valid"]:
-                                st.warning(
-                                    f"Checkpoint '{raw_name}' is unsupported: {info['error']}. "
-                                    "Falling back to Random Baseline."
-                                )
-                            elif (
-                                info["obs_shape"] != env.observation_space.shape
-                                or info["action_shape"] != env.action_space.shape
+                            if (
+                                info["valid"]
+                                and info["obs_shape"] == env.observation_space.shape
+                                and info["action_shape"] == env.action_space.shape
                             ):
-                                st.warning(
-                                    f"Model '{raw_name}' expects observation shape {info['obs_shape']} and "
-                                    f"action shape {info['action_shape']}, but {env_choice} environment has "
-                                    f"observation shape {env.observation_space.shape} and action shape "
-                                    f"{env.action_space.shape}. Falling back to Random Baseline."
-                                )
-                            else:
-                                if info.get("compatibility_status") == "unverified_shape_match":
-                                    st.info(
-                                        f"ℹ️ Model '{raw_name}' matched {env_choice} by space dimensions "
-                                        f"({info['obs_shape']}/{info['action_shape']}). Training environment identity "
-                                        "was inferred from shapes rather than verified metadata."
-                                    )
                                 try:
                                     if info["algorithm"] == "sac":
                                         from stable_baselines3 import SAC
@@ -468,10 +663,8 @@ def main() -> None:
                                         from stable_baselines3 import PPO
 
                                         model_to_use = PPO.load(str(target_p))
-                                except Exception as exc:
-                                    st.warning(
-                                        f"Could not load checkpoint ({exc}); using random actions."
-                                    )
+                                except Exception:
+                                    pass
 
                     st.session_state[sim_key] = run_drone_simulation_episode(
                         env=env,
@@ -481,331 +674,339 @@ def main() -> None:
                 finally:
                     env.close()
 
-        flight_data = st.session_state[sim_key]
-        steps = flight_data["steps"]
-        total_steps = len(steps) - 1
+        if sim_key in st.session_state:
+            flight_data = st.session_state[sim_key]
+            steps = flight_data["steps"]
+            total_steps = len(steps) - 1
 
-        # Flight Outcome Status Banner
-        outcome_status = flight_data["outcome"]
-        is_success = outcome_status == "SUCCESS"
-        is_collision = outcome_status == "COLLISION"
-        is_timeout = outcome_status == "TIMEOUT"
+            # Flight Outcome Status Banner
+            outcome_status = flight_data["outcome"]
+            is_success = outcome_status == "SUCCESS"
+            is_collision = outcome_status == "COLLISION"
+            is_timeout = outcome_status == "TIMEOUT"
 
-        if is_success:
-            banner_cls = "success"
-            badge_cls = "arl-pill-green"
-            outcome_banner_text = "MISSION SUCCESSFUL"
-        elif is_collision:
-            banner_cls = "failure"
-            badge_cls = "arl-pill-red"
-            coll_t = flight_data.get("collision_type", "impact")
-            outcome_banner_text = f"TERMINATION — COLLISION ({coll_t})"
-        elif is_timeout:
-            banner_cls = "timeout"
-            badge_cls = "arl-pill-amber"
-            outcome_banner_text = "MISSION EXPIRED — TIMEOUT"
-        else:
-            banner_cls = "failure"
-            badge_cls = "arl-pill-red"
-            outcome_banner_text = f"TERMINATED — {outcome_status}"
+            if is_success:
+                banner_cls = "success"
+                badge_cls = "arl-pill-green"
+                outcome_banner_text = "MISSION SUCCESSFUL"
+            elif is_collision:
+                banner_cls = "failure"
+                badge_cls = "arl-pill-red"
+                coll_t = flight_data.get("collision_type", "impact")
+                outcome_banner_text = f"TERMINATION — COLLISION ({coll_t})"
+            elif is_timeout:
+                banner_cls = "timeout"
+                badge_cls = "arl-pill-amber"
+                outcome_banner_text = "MISSION EXPIRED — TIMEOUT"
+            else:
+                banner_cls = "failure"
+                badge_cls = "arl-pill-red"
+                outcome_banner_text = f"TERMINATED — {outcome_status}"
 
-        coll_notice = ""
-        if flight_data.get("collision_occurred") and not is_collision:
-            coll_cnt = flight_data.get("collision_count", 1)
-            coll_notice = f"<span class='arl-pill arl-pill-amber'>⚠️ {coll_cnt} COLLISION(S)</span>"
+            coll_notice = ""
+            if flight_data.get("collision_occurred") and not is_collision:
+                coll_cnt = flight_data.get("collision_count", 1)
+                coll_notice = (
+                    f"<span class='arl-pill arl-pill-amber'>⚠️ {coll_cnt} COLLISION(S)</span>"
+                )
 
-        final_dist = steps[-1]["distance_to_goal"]
-        banner_html = (
-            f'<div class="arl-outcome-banner {banner_cls}">'
-            f"<div>"
-            f'<div style="display: flex; align-items: center; gap: 10px;">'
-            f'<span class="arl-pill {badge_cls}">● {outcome_banner_text}</span>'
-            f"{coll_notice}"
-            f'<span style="font-weight: 700; font-size: 15px; color: #f1f5f9;">{env_choice}</span>'
-            f'<span style="color: #64748b;">|</span>'
-            f'<span style="color: #94a3b8; font-size: 13px;">Policy: <b>{selected_policy.split(": ")[0]}</b></span>'
-            f"</div>"
-            f'<div style="margin-top: 4px; font-size: 13px; color: #cbd5e1;">'
-            f"Episode finished in <b>{flight_data['total_steps']}</b> timesteps with cumulative reward <b>{flight_data['total_reward']:.2f}</b> (Seed: {flight_data['seed']})."
-            f"</div>"
-            f"</div>"
-            f"<div style=\"text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #94a3b8;\">"
-            f'Final Goal Dist: <b style="color: #f8fafc;">{final_dist:.2f} m</b><br>'
-            f'Physics Mode: <b style="color: #38bdf8;">{"RK4 6-DOF" if is_6dof else "Kinematic 3-DOF"}</b>'
-            f"</div>"
-            f"</div>"
-        )
-        st.markdown(banner_html, unsafe_allow_html=True)
-
-        # Scrubber & Viewport Control Bar
-        vp_col1, vp_col2, vp_col3, vp_col4, vp_col5, vp_col6 = st.columns(
-            [2.4, 0.7, 1.4, 0.7, 0.7, 0.7]
-        )
-        with vp_col1:
-            selected_step = st.slider(
-                "Flight Step Playback Scrubber:",
-                min_value=0,
-                max_value=total_steps,
-                value=total_steps,
-                step=1,
-                help="Scrub through recorded flight timesteps to inspect 3D drone attitude, position, speed, and sensor range.",
+            final_dist = steps[-1]["distance_to_goal"]
+            banner_html = (
+                f'<div class="arl-outcome-banner {banner_cls}">'
+                f"<div>"
+                f'<div style="display: flex; align-items: center; gap: 10px;">'
+                f'<span class="arl-pill {badge_cls}">● {outcome_banner_text}</span>'
+                f"{coll_notice}"
+                f'<span style="font-weight: 700; font-size: 15px; color: #f1f5f9;">{env_choice}</span>'
+                f'<span style="color: #64748b;">|</span>'
+                f'<span style="color: #94a3b8; font-size: 13px;">Policy: <b>{selected_policy.split(": ")[0]}</b></span>'
+                f"</div>"
+                f'<div style="margin-top: 4px; font-size: 13px; color: #cbd5e1;">'
+                f"Episode finished in <b>{flight_data['total_steps']}</b> timesteps with cumulative reward <b>{flight_data['total_reward']:.2f}</b> (Seed: {flight_data['seed']})."
+                f"</div>"
+                f"</div>"
+                f"<div style=\"text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #94a3b8;\">"
+                f'Final Goal Dist: <b style="color: #f8fafc;">{final_dist:.2f} m</b><br>'
+                f'Physics Mode: <b style="color: #38bdf8;">{"RK4 6-DOF" if is_6dof else "Kinematic 3-DOF"}</b>'
+                f"</div>"
+                f"</div>"
             )
-        with vp_col2:
-            step_pct = (selected_step / max(1, total_steps)) * 100.0
-            dt_step = 0.05
-            sim_time_sec = selected_step * dt_step
-            st.markdown(
-                f"""
-                <div style="padding-top: 26px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #94a3b8; line-height: 1.2;">
-                    <b style="color: #00f2fe;">{selected_step}</b>/{total_steps} ({step_pct:.0f}%)<br>
-                    <b style="color: #38bdf8;">{sim_time_sec:.2f}s</b>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        with vp_col3:
-            camera_preset = st.selectbox(
-                "Camera Perspective / Preset:",
-                options=[
-                    "Arena Overview",
-                    "Drone Follow",
-                    "Drone Inspection",
-                    "Target View",
-                    "Free Orbit",
-                    "Reset Camera",
-                ],
-                index=0,
-                help="Select 3D viewport camera perspective. Use 'Drone Inspection' for detailed close-up examination of quadrotor airframe.",
-            )
-        with vp_col4:
-            st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-            show_floor = st.checkbox(
-                "Floor", value=True, help="Render 3D flight test chamber floor and grid."
-            )
-        with vp_col5:
-            st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-            show_safety = st.checkbox(
-                "Safety", value=True, help="Render obstacle safety proximity zones."
-            )
-        with vp_col6:
-            st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-            show_traj = st.checkbox(
-                "Path", value=True, help="Render recorded 3D flight trajectory."
-            )
+            st.markdown(banner_html, unsafe_allow_html=True)
 
-        step_info = steps[selected_step]
-        cur_pos = step_info["position"]
-        cur_vel = step_info["velocity"]
-        cur_lidar = step_info["lidar_ranges"]
-        cur_quat = step_info.get("quaternion")
-
-        # Telemetry calculations
-        if cur_quat is not None and len(cur_quat) == 4:
-            roll_rad, pitch_rad, yaw_rad = quaternion_to_euler_angles(np.asarray(cur_quat))
-            roll_deg = math.degrees(roll_rad)
-            pitch_deg = math.degrees(pitch_rad)
-            yaw_deg = math.degrees(yaw_rad)
-        else:
-            roll_deg, pitch_deg, yaw_deg = 0.0, 0.0, 0.0
-
-        omega_mag = step_info.get("angular_speed", 0.0)
-        ang_vel = step_info.get("angular_velocity")
-        if ang_vel is not None and len(ang_vel) == 3:
-            p_val, q_val, r_val = ang_vel
-        else:
-            p_val, q_val, r_val = 0.0, 0.0, 0.0
-
-        # Two-Column Master View: 3D Viewport on Left (dominant), Telemetry Console on Right
-        col_viewport, col_telemetry = st.columns([2.5, 1.0])
-
-        with col_viewport:
-            # Build Interactive 3D Plotly Arena
-            fig = build_arena_3d_figure(
-                bounds=flight_data["bounds"],
-                obstacles=flight_data["obstacles"],
-                target=flight_data["target"],
-                start_pos=flight_data["start_pos"],
-                trajectory=[s["position"] for s in steps[: selected_step + 1]],
-                current_pos=cur_pos,
-                current_vel=cur_vel,
-                attitude_quaternion=cur_quat,
-                lidar_rays=flight_data["lidar_rays"],
-                lidar_ranges=cur_lidar,
-                show_lidar=show_lidar_rays,
-                title=f"3D Flight Arena ({env_choice}) — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
-                camera_preset=camera_preset,
-                show_floor=show_floor,
-                show_safety_zones=show_safety,
-                show_trajectory=show_traj,
-                propeller_phase=selected_step * 0.45,
-                arm_span=flight_data.get("arm_span", 0.4),
-                rotor_radius=flight_data.get("rotor_radius", 0.09),
+            # Scrubber & Viewport Control Bar
+            vp_col1, vp_col2, vp_col3, vp_col4, vp_col5, vp_col6 = st.columns(
+                [2.4, 0.7, 1.4, 0.7, 0.7, 0.7]
             )
-            # Give viewport substantial height for dominance
-            fig.update_layout(height=660)
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col_telemetry:
-            # 1. NAVIGATION TELEMETRY
-            rel_target = flight_data["target"] - cur_pos
-            st.markdown(
-                f"""
-                <div class="telemetry-card">
-                    <div class="telemetry-header">📍 Navigation & Position</div>
-                    <div class="telemetry-grid">
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Altitude (Z)</span>
-                            <span class="telemetry-stat-val cyan">{cur_pos[2]:.2f}<span class="unit">m</span></span>
-                        </div>
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Range to Goal</span>
-                            <span class="telemetry-stat-val green">{step_info["distance_to_goal"]:.2f}<span class="unit">m</span></span>
-                        </div>
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Nearest Obstacle</span>
-                            <span class="telemetry-stat-val {"red" if step_info["min_obstacle_distance"] < 1.0 else "amber"}">{step_info["min_obstacle_distance"]:.2f}<span class="unit">m</span></span>
-                        </div>
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Rel Target [X,Y]</span>
-                            <span class="telemetry-stat-val">[{rel_target[0]:.1f}, {rel_target[1]:.1f}]</span>
-                        </div>
+            with vp_col1:
+                selected_step = st.slider(
+                    "Flight Step Playback Scrubber:",
+                    min_value=0,
+                    max_value=total_steps,
+                    value=total_steps,
+                    step=1,
+                    help="Scrub through recorded flight timesteps to inspect 3D drone attitude, position, speed, and sensor range.",
+                )
+            with vp_col2:
+                step_pct = (selected_step / max(1, total_steps)) * 100.0
+                dt_step = 0.05
+                sim_time_sec = selected_step * dt_step
+                st.markdown(
+                    f"""
+                    <div style="padding-top: 26px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #94a3b8; line-height: 1.2;">
+                        <b style="color: #00f2fe;">{selected_step}</b>/{total_steps} ({step_pct:.0f}%)<br>
+                        <b style="color: #38bdf8;">{sim_time_sec:.2f}s</b>
                     </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with vp_col3:
+                camera_preset = st.selectbox(
+                    "Camera Perspective / Preset:",
+                    options=[
+                        "Arena Overview",
+                        "Drone Follow",
+                        "Drone Inspection",
+                        "Target View",
+                        "Free Orbit",
+                        "Reset Camera",
+                    ],
+                    index=0,
+                    help="Select 3D viewport camera perspective. Use 'Drone Inspection' for detailed close-up examination of quadrotor airframe.",
+                )
+            with vp_col4:
+                st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+                show_floor = st.checkbox(
+                    "Floor", value=True, help="Render 3D flight test chamber floor and grid."
+                )
+            with vp_col5:
+                st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+                show_safety = st.checkbox(
+                    "Safety", value=True, help="Render obstacle safety proximity zones."
+                )
+            with vp_col6:
+                st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+                show_traj = st.checkbox(
+                    "Path", value=True, help="Render recorded 3D flight trajectory."
+                )
 
-            # 2. FLIGHT DYNAMICS
-            st.markdown(
-                f"""
-                <div class="telemetry-card">
-                    <div class="telemetry-header">⚡ Flight Dynamics</div>
-                    <div class="telemetry-grid">
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Linear Speed</span>
-                            <span class="telemetry-stat-val cyan">{step_info["speed"]:.2f}<span class="unit">m/s</span></span>
-                        </div>
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Angular Speed</span>
-                            <span class="telemetry-stat-val">{omega_mag:.2f}<span class="unit">rad/s</span></span>
-                        </div>
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Velocity [Vx, Vy]</span>
-                            <span class="telemetry-stat-val">[{cur_vel[0]:.1f}, {cur_vel[1]:.1f}]</span>
-                        </div>
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Climb Rate (Vz)</span>
-                            <span class="telemetry-stat-val">{cur_vel[2]:+.2f}<span class="unit">m/s</span></span>
-                        </div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            step_info = steps[selected_step]
+            cur_pos = step_info["position"]
+            cur_vel = step_info["velocity"]
+            cur_lidar = step_info["lidar_ranges"]
+            cur_quat = step_info.get("quaternion")
 
-            # 3. ATTITUDE & ORIENTATION (6-DOF) / KINEMATICS (3-DOF)
-            if is_6dof and cur_quat is not None:
+            # Telemetry calculations
+            if cur_quat is not None and len(cur_quat) == 4:
+                roll_rad, pitch_rad, yaw_rad = quaternion_to_euler_angles(np.asarray(cur_quat))
+                roll_deg = math.degrees(roll_rad)
+                pitch_deg = math.degrees(pitch_rad)
+                yaw_deg = math.degrees(yaw_rad)
+            else:
+                roll_deg, pitch_deg, yaw_deg = 0.0, 0.0, 0.0
+
+            omega_mag = step_info.get("angular_speed", 0.0)
+            ang_vel = step_info.get("angular_velocity")
+            if ang_vel is not None and len(ang_vel) == 3:
+                p_val, q_val, r_val = ang_vel
+            else:
+                p_val, q_val, r_val = 0.0, 0.0, 0.0
+
+            # Two-Column Master View: 3D Viewport on Left (dominant), Telemetry Console on Right
+            col_viewport, col_telemetry = st.columns([2.5, 1.0])
+
+            with col_viewport:
+                # Build Interactive 3D Plotly Arena
+                fig = build_arena_3d_figure(
+                    bounds=flight_data["bounds"],
+                    obstacles=flight_data["obstacles"],
+                    target=flight_data["target"],
+                    start_pos=flight_data["start_pos"],
+                    trajectory=[s["position"] for s in steps[: selected_step + 1]],
+                    current_pos=cur_pos,
+                    current_vel=cur_vel,
+                    attitude_quaternion=cur_quat,
+                    lidar_rays=flight_data["lidar_rays"],
+                    lidar_ranges=cur_lidar,
+                    show_lidar=show_lidar_rays,
+                    title=f"3D Flight Arena ({env_choice}) — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
+                    camera_preset=camera_preset,
+                    show_floor=show_floor,
+                    show_safety_zones=show_safety,
+                    show_trajectory=show_traj,
+                    propeller_phase=selected_step * 0.45,
+                    arm_span=flight_data.get("arm_span", 0.4),
+                    rotor_radius=flight_data.get("rotor_radius", 0.09),
+                    target_radius=flight_data.get("target_radius", 1.5),
+                )
+                # Give viewport substantial height for dominance
+                fig.update_layout(height=660)
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col_telemetry:
+                # 1. NAVIGATION TELEMETRY
+                rel_target = flight_data["target"] - cur_pos
                 st.markdown(
                     f"""
                     <div class="telemetry-card">
-                        <div class="telemetry-header">🧭 Attitude & Orientation (6-DOF)</div>
+                        <div class="telemetry-header">📍 Navigation & Position</div>
                         <div class="telemetry-grid">
                             <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Roll (φ)</span>
-                                <span class="telemetry-stat-val">{roll_deg:+.1f}<span class="unit">°</span></span>
+                                <span class="telemetry-stat-label">Altitude (Z)</span>
+                                <span class="telemetry-stat-val cyan">{cur_pos[2]:.2f}<span class="unit">m</span></span>
                             </div>
                             <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Pitch (θ)</span>
-                                <span class="telemetry-stat-val">{pitch_deg:+.1f}<span class="unit">°</span></span>
+                                <span class="telemetry-stat-label">Range to Goal</span>
+                                <span class="telemetry-stat-val green">{step_info["distance_to_goal"]:.2f}<span class="unit">m</span></span>
                             </div>
                             <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Yaw (ψ)</span>
-                                <span class="telemetry-stat-val">{yaw_deg:+.1f}<span class="unit">°</span></span>
+                                <span class="telemetry-stat-label">Nearest Obstacle</span>
+                                <span class="telemetry-stat-val {"red" if step_info["min_obstacle_distance"] < 1.0 else "amber"}">{step_info["min_obstacle_distance"]:.2f}<span class="unit">m</span></span>
                             </div>
                             <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Body Rates [p,q,r]</span>
-                                <span class="telemetry-stat-val">[{p_val:.1f}, {q_val:.1f}, {r_val:.1f}]</span>
+                                <span class="telemetry-stat-label">Rel Target [X,Y]</span>
+                                <span class="telemetry-stat-val">[{rel_target[0]:.1f}, {rel_target[1]:.1f}]</span>
                             </div>
                         </div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
-            else:
+
+                # 2. FLIGHT DYNAMICS
                 st.markdown(
-                    """
+                    f"""
                     <div class="telemetry-card">
-                        <div class="telemetry-header">🧭 Kinematic State (3-DOF)</div>
-                        <div style="font-size: 11px; color: #94a3b8; line-height: 1.4;">
-                            <b>Point-Mass Kinematics:</b> Continuous 3D acceleration control. Rotational torque and attitude dynamics are not simulated in 3-DOF mode.
+                        <div class="telemetry-header">⚡ Flight Dynamics</div>
+                        <div class="telemetry-grid">
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Linear Speed</span>
+                                <span class="telemetry-stat-val cyan">{step_info["speed"]:.2f}<span class="unit">m/s</span></span>
+                            </div>
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Angular Speed</span>
+                                <span class="telemetry-stat-val">{omega_mag:.2f}<span class="unit">rad/s</span></span>
+                            </div>
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Velocity [Vx, Vy]</span>
+                                <span class="telemetry-stat-val">[{cur_vel[0]:.1f}, {cur_vel[1]:.1f}]</span>
+                            </div>
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Climb Rate (Vz)</span>
+                                <span class="telemetry-stat-val">{cur_vel[2]:+.2f}<span class="unit">m/s</span></span>
+                            </div>
                         </div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-            # 4. SENSORS & LIDAR
-            min_lidar = float(np.min(cur_lidar)) if len(cur_lidar) > 0 else 0.0
-            st.markdown(
-                f"""
-                <div class="telemetry-card">
-                    <div class="telemetry-header">📡 Sensors & Perception</div>
-                    <div class="telemetry-grid">
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">LiDAR Rays</span>
-                            <span class="telemetry-stat-val cyan">16 <span class="unit">Beams</span></span>
+                # 3. ATTITUDE & ORIENTATION (6-DOF) / KINEMATICS (3-DOF)
+                if is_6dof and cur_quat is not None:
+                    st.markdown(
+                        f"""
+                        <div class="telemetry-card">
+                            <div class="telemetry-header">🧭 Attitude & Orientation (6-DOF)</div>
+                            <div class="telemetry-grid">
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Roll (φ)</span>
+                                    <span class="telemetry-stat-val">{roll_deg:+.1f}<span class="unit">°</span></span>
+                                </div>
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Pitch (θ)</span>
+                                    <span class="telemetry-stat-val">{pitch_deg:+.1f}<span class="unit">°</span></span>
+                                </div>
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Yaw (ψ)</span>
+                                    <span class="telemetry-stat-val">{yaw_deg:+.1f}<span class="unit">°</span></span>
+                                </div>
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Body Rates [p,q,r]</span>
+                                    <span class="telemetry-stat-val">[{p_val:.1f}, {q_val:.1f}, {r_val:.1f}]</span>
+                                </div>
+                            </div>
                         </div>
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Closest Return</span>
-                            <span class="telemetry-stat-val {"red" if min_lidar < 1.5 else "green"}">{min_lidar:.2f}<span class="unit">m</span></span>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        """
+                        <div class="telemetry-card">
+                            <div class="telemetry-header">🧭 Kinematic State (3-DOF)</div>
+                            <div style="font-size: 11px; color: #94a3b8; line-height: 1.4;">
+                                <b>Point-Mass Kinematics:</b> Continuous 3D acceleration control. Rotational torque and attitude dynamics are not simulated in 3-DOF mode.
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                # 4. SENSORS & LIDAR
+                min_lidar = float(np.min(cur_lidar)) if len(cur_lidar) > 0 else 0.0
+                st.markdown(
+                    f"""
+                    <div class="telemetry-card">
+                        <div class="telemetry-header">📡 Sensors & Perception</div>
+                        <div class="telemetry-grid">
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">LiDAR Rays</span>
+                                <span class="telemetry-stat-val cyan">16 <span class="unit">Beams</span></span>
+                            </div>
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Closest Return</span>
+                                <span class="telemetry-stat-val {"red" if min_lidar < 1.5 else "green"}">{min_lidar:.2f}<span class="unit">m</span></span>
+                            </div>
                         </div>
                     </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-            # 5. REWARDS & PERFORMANCE
-            st.markdown(
-                f"""
-                <div class="telemetry-card">
-                    <div class="telemetry-header">🎯 Performance & Rewards</div>
-                    <div class="telemetry-grid">
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Step Reward</span>
-                            <span class="telemetry-stat-val">{step_info["reward"]:+.2f}</span>
-                        </div>
-                        <div class="telemetry-stat">
-                            <span class="telemetry-stat-label">Cumulative Return</span>
-                            <span class="telemetry-stat-val green">{step_info["cumulative_reward"]:+.2f}</span>
+                # 5. REWARDS & PERFORMANCE
+                st.markdown(
+                    f"""
+                    <div class="telemetry-card">
+                        <div class="telemetry-header">🎯 Performance & Rewards</div>
+                        <div class="telemetry-grid">
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Step Reward</span>
+                                <span class="telemetry-stat-val">{step_info["reward"]:+.2f}</span>
+                            </div>
+                            <div class="telemetry-stat">
+                                <span class="telemetry-stat-label">Cumulative Return</span>
+                                <span class="telemetry-stat-val green">{step_info["cumulative_reward"]:+.2f}</span>
+                            </div>
                         </div>
                     </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-        # Expandable Simulation Diagnostics Section
-        with st.expander("🔍 Simulation Diagnostics & Physics Specifications"):
-            diag_col1, diag_col2 = st.columns(2)
-            with diag_col1:
-                st.markdown(
-                    """
-                    **Dynamics Engine Specifications**
-                    - **6-DOF Quadrotor Dynamics**: Runge-Kutta 4th Order (RK4) integration with 5 substeps ($\\Delta t_{\\text{sub}} = 0.01\\text{ s}$).
-                    - **State Representation**: 36-dimensional state vector with position, linear velocity, unit quaternion attitude $\\mathbf{q} = [q_w, q_x, q_y, q_z]$, and body angular velocity $\\boldsymbol{\\omega} = [p, q, r]$.
-                    - **Control**: Continuous 4-motor thrust commands mapped to physical body torques and collective thrust.
-                    """
-                )
-            with diag_col2:
-                st.markdown(
-                    """
-                    **Sensor & Obstacle Parameters**
-                    - **Spherical LiDAR**: 16 analytical raycast rangefinders with geometric ray-sphere and bounding box intersection calculations.
-                    - **Collision Detection**: Continuous sphere-to-sphere collision checking with obstacle clearance radii.
-                    - **Playback Notice**: Recorded trajectory playback from deterministic numerical evaluation episodes.
-                    """
-                )
+            # Expandable Simulation Diagnostics Section
+            with st.expander("🔍 Simulation Diagnostics & Physics Specifications"):
+                diag_col1, diag_col2 = st.columns(2)
+                with diag_col1:
+                    st.markdown(
+                        """
+                        **Dynamics Engine Specifications**
+                        - **6-DOF Quadrotor Dynamics**: Runge-Kutta 4th Order (RK4) integration with 5 substeps ($\\Delta t_{\\text{sub}} = 0.01\\text{ s}$).
+                        - **State Representation**: 36-dimensional state vector with position, linear velocity, unit quaternion attitude $\\mathbf{q} = [q_w, q_x, q_y, q_z]$, and body angular velocity $\\boldsymbol{\\omega} = [p, q, r]$.
+                        - **Control**: Continuous 4-motor thrust commands mapped to physical body torques and collective thrust.
+                        """
+                    )
+                with diag_col2:
+                    st.markdown(
+                        """
+                        **Sensor & Obstacle Parameters**
+                        - **Spherical LiDAR**: 16 analytical raycast rangefinders with geometric ray-sphere and bounding box intersection calculations.
+                        - **Collision Detection**: Continuous sphere-to-sphere collision checking with obstacle clearance radii.
+                        - **Playback Notice**: Recorded trajectory playback from deterministic numerical evaluation episodes.
+                        """
+                    )
+        else:
+            st.info(
+                "💡 Please enter valid target coordinates within the arena boundaries and click **🚀 Execute Sim** to launch numerical simulation."
+            )
 
     # ==========================================
     # TAB 2: TRAIN POLICY (PPO & SAC)
@@ -841,6 +1042,67 @@ def main() -> None:
             )
         with tr_col4:
             train_seed = st.number_input("Random Seed:", value=42, step=1)
+
+        # Training Target Destination Configuration
+        st.markdown("**Target Destination for Training:**")
+        tr_tcol1, tr_tcol2, tr_tcol3, tr_tcol4 = st.columns([1.1, 1.1, 1.1, 1.5])
+        with tr_tcol1:
+            train_tx = st.number_input(
+                "Train Target X (m):",
+                value=25.0,
+                min_value=-15.0,
+                max_value=45.0,
+                step=1.0,
+                format="%.2f",
+                key="train_tx",
+            )
+        with tr_tcol2:
+            train_ty = st.number_input(
+                "Train Target Y (m):",
+                value=25.0,
+                min_value=-15.0,
+                max_value=45.0,
+                step=1.0,
+                format="%.2f",
+                key="train_ty",
+            )
+        with tr_tcol3:
+            train_tz = st.number_input(
+                "Train Target Z (m):",
+                value=10.0,
+                min_value=-15.0,
+                max_value=30.0,
+                step=1.0,
+                format="%.2f",
+                key="train_tz",
+            )
+        with tr_tcol4:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            use_custom_train_target = st.checkbox(
+                "Train with Custom Target",
+                value=False,
+                key="use_custom_train_target",
+                help="Train against fixed custom target instead of default environment target.",
+            )
+
+        train_target = (
+            (float(train_tx), float(train_ty), float(train_tz))
+            if use_custom_train_target
+            else (25.0, 25.0, 10.0)
+        )
+        is_train_target_valid, train_target_err = validate_target_coordinates(
+            target=train_target,
+            bounds=(30.0, 30.0, 15.0),
+            start_pos=(5.0, 5.0, 5.0),
+        )
+        if use_custom_train_target:
+            if is_train_target_valid:
+                st.info(
+                    f"🎯 **Fixed Custom Target Training Mode:** All training episodes will use destination [{train_target[0]:.1f}, {train_target[1]:.1f}, {train_target[2]:.1f}] m. "
+                    "Note: The policy will specialize for this specific waypoint and is not guaranteed to generalize to other destinations."
+                )
+            else:
+                st.error(f"Invalid Training Destination: {train_target_err}")
 
         # Hyperparameter configuration
         with st.expander("⚙️ Algorithm Hyperparameters", expanded=False):
@@ -906,7 +1168,9 @@ def main() -> None:
 
         is_training = st.session_state.get("is_training", False)
         start_train_btn = st.button(
-            f"▶ Start {train_algo} Training", type="primary", disabled=is_training
+            f"▶ Start {train_algo} Training",
+            type="primary",
+            disabled=(is_training or (use_custom_train_target and not is_train_target_valid)),
         )
 
         if start_train_btn:
@@ -947,6 +1211,14 @@ def main() -> None:
                         "ent_coef": sac_ent,
                     }
 
+                env_params: Dict[str, Any] = {}
+                if use_custom_train_target and is_train_target_valid:
+                    env_params["goal_pos"] = [
+                        float(train_target[0]),
+                        float(train_target[1]),
+                        float(train_target[2]),
+                    ]
+
                 train_cfg = ExperimentConfig(
                     name=experiment_name,
                     seed=int(train_seed),
@@ -959,6 +1231,7 @@ def main() -> None:
                     ),
                     environment=EnvironmentConfig(
                         name=env_id,
+                        parameters=env_params,
                     ),
                     training=TrainingConfig(
                         total_timesteps=int(train_steps),
@@ -1059,27 +1332,96 @@ def main() -> None:
                 "Mode:", ["Compare Both (PPO vs Random)", "PPO Only", "Random Only"]
             )
 
+        # Evaluation Destination Configuration
+        st.markdown("**Target Destination for Evaluation:**")
+        ev_tcol1, ev_tcol2, ev_tcol3, ev_tcol4 = st.columns([1.1, 1.1, 1.1, 1.5])
+        with ev_tcol1:
+            eval_tx = st.number_input(
+                "Eval Target X (m):",
+                value=25.0,
+                min_value=-15.0,
+                max_value=45.0,
+                step=1.0,
+                format="%.2f",
+                key="eval_tx",
+            )
+        with ev_tcol2:
+            eval_ty = st.number_input(
+                "Eval Target Y (m):",
+                value=25.0,
+                min_value=-15.0,
+                max_value=45.0,
+                step=1.0,
+                format="%.2f",
+                key="eval_ty",
+            )
+        with ev_tcol3:
+            eval_tz = st.number_input(
+                "Eval Target Z (m):",
+                value=10.0,
+                min_value=-15.0,
+                max_value=30.0,
+                step=1.0,
+                format="%.2f",
+                key="eval_tz",
+            )
+        with ev_tcol4:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            use_custom_eval_target = st.checkbox(
+                "Evaluate with Custom Target",
+                value=False,
+                key="use_custom_eval_target",
+                help="Evaluate both trained policy and baseline on custom target coordinates.",
+            )
+
+        eval_target = (
+            (float(eval_tx), float(eval_ty), float(eval_tz))
+            if use_custom_eval_target
+            else (25.0, 25.0, 10.0)
+        )
+        is_eval_target_valid, eval_target_err = validate_target_coordinates(
+            target=eval_target,
+            bounds=(30.0, 30.0, 15.0),
+            start_pos=(5.0, 5.0, 5.0),
+        )
+        if use_custom_eval_target:
+            if is_eval_target_valid:
+                st.info(
+                    f"🎯 **Identical Custom Target Evaluation Active:** Both policy and random baseline will navigate toward [{eval_target[0]:.1f}, {eval_target[1]:.1f}, {eval_target[2]:.1f}] m."
+                )
+            else:
+                st.error(f"Invalid Evaluation Destination: {eval_target_err}")
+
         run_eval_btn = st.button("📊 Run Benchmark Evaluation", type="primary")
 
         if run_eval_btn:
-            with st.spinner(f"Running evaluation ({eval_episodes} episodes)..."):
-                is_eval_6dof = False
-                target_path = None
-                info = None
-                if available_models and eval_model_name in model_info_map:
-                    target_path = next(
-                        (p for p in available_models if p.name == eval_model_name), None
-                    )
-                    if target_path:
-                        info = model_info_map[target_path.name]
-                        if info.get("compatible_env") == "6-DOF":
-                            is_eval_6dof = True
+            if use_custom_eval_target and not is_eval_target_valid:
+                st.error(f"Cannot run evaluation with invalid target: {eval_target_err}")
+            else:
+                with st.spinner(f"Running evaluation ({eval_episodes} episodes)..."):
+                    is_eval_6dof = False
+                    target_path = None
+                    info = None
+                    if available_models and eval_model_name in model_info_map:
+                        target_path = next(
+                            (p for p in available_models if p.name == eval_model_name), None
+                        )
+                        if target_path:
+                            info = model_info_map[target_path.name]
+                            if info.get("compatible_env") == "6-DOF":
+                                is_eval_6dof = True
 
-                eval_env = (
-                    Drone6DOFEnv(max_steps=200)
-                    if is_eval_6dof
-                    else DroneNavigation3DEnv(max_steps=200)
-                )
+                    eval_env = (
+                        Drone6DOFEnv(
+                            max_steps=200,
+                            goal_pos=eval_target if use_custom_eval_target else None,
+                        )
+                        if is_eval_6dof
+                        else DroneNavigation3DEnv(
+                            max_steps=200,
+                            goal_pos=eval_target if use_custom_eval_target else None,
+                        )
+                    )
                 try:
                     metrics_to_plot: Dict[str, Any] = {}
 
@@ -1117,7 +1459,9 @@ def main() -> None:
                                 )
                                 metrics_to_plot[algo_title] = trained_res
                                 Evaluator.save_report(
-                                    trained_res, Path("artifacts/evaluation.json")
+                                    trained_res,
+                                    Path("artifacts/evaluation.json"),
+                                    target_pos=eval_target if use_custom_eval_target else None,
                                 )
                         else:
                             st.warning(
@@ -1326,6 +1670,20 @@ def main() -> None:
                 - **Integration**: RK4 with 5 substeps ($\Delta t_{\text{sub}} = 0.01\text{ s}$) and quaternion re-normalization
                 """
             )
+
+        st.markdown(
+            r"""
+            ### User-Defined 3D Destination & Validation System
+            - **Arbitrary 3D Coordinates**: Users can define target destinations $\mathbf{g} = [g_x, g_y, g_z]$ in metres for both 3-DOF kinematic and 6-DOF dynamic simulations.
+            - **Strict Pre-Flight Validation**:
+              - **Finite Coordinates**: Requires three finite numbers (rejects NaN, $+\infty$, $-\infty$).
+              - **Arena Boundaries**: Validates coordinates within $[0, X_{\max}] \times [0, Y_{\max}] \times [0, Z_{\max}]$ ($30 \times 30 \times 15\text{ m}$).
+              - **Boundary Collision Margins**: Requires clearance from perimeter walls exceeding aircraft collision radius ($r_{\text{collision}} = 0.8\text{ m}$).
+              - **Launch Clearance**: Rejects destinations within arrival radius ($r_{\text{target}} = 1.5\text{ m}$) of launch position ($[5, 5, 5]\text{ m}$).
+            - **Closed-Loop Physics Integration**: Selected coordinates are instantiated directly in environment state ($\mathbf{g}$), updating relative observation vectors, distance metrics, obstacle generation clearance, and arrival reward triggers.
+            - **Training & Generalization Advisory**: RL policies trained on fixed destinations specialize on that waypoint vector. Testing policies on custom destinations tests out-of-distribution transfer; success is not guaranteed without generalized multi-target training.
+            """
+        )
 
         st.markdown("---")
         st.markdown(

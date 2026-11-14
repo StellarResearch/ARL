@@ -746,12 +746,14 @@ class Evaluator:
     def save_report(
         metrics: EvaluationMetrics,
         output_path: str | Path,
+        metadata: Optional[Dict[str, Any]] = None,
+        target_pos: Optional[Sequence[float] | np.ndarray] = None,
     ) -> Path:
         """Serialize evaluation metrics to JSON."""
         target = Path(output_path)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        data = {
+        data: Dict[str, Any] = {
             "episodes": metrics.episodes,
             "mean_reward": round(metrics.mean_reward, 2),
             "std_reward": round(metrics.std_reward, 2),
@@ -801,6 +803,13 @@ class Evaluator:
             "obstacle_collision_count": metrics.obstacle_collision_count,
             "boundary_collision_count": metrics.boundary_collision_count,
         }
+
+        if target_pos is not None:
+            data["target"] = [float(c) for c in target_pos]
+        if metadata is not None:
+            data["metadata"] = metadata
+            if "target" in metadata and "target" not in data:
+                data["target"] = metadata["target"]
 
         with open(target, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
