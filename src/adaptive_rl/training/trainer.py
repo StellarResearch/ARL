@@ -84,10 +84,24 @@ class RLTrainer:
         self._callbacks: List[BaseCallback] = [self.metric_logger]
 
         if self.config.training and self.config.training.checkpoint_freq > 0:
+            import adaptive_rl
+
+            cfg_dict = self.config.model_dump()
+            config_fp = hashlib.sha256(
+                json.dumps(cfg_dict, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:16]
+            cp_meta = {
+                "environment_id": self.config.environment.name,
+                "algorithm": self.config.algorithm.name,
+                "seed": self.config.seed,
+                "config_fingerprint": config_fp,
+                "version": adaptive_rl.__version__,
+            }
             self._callbacks.append(
                 CheckpointCallback(
                     checkpoint_manager=self.checkpoint_manager,
                     save_freq=self.config.training.checkpoint_freq,
+                    metadata=cp_meta,
                 )
             )
         if callbacks:

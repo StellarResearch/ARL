@@ -132,3 +132,45 @@ def test_checkpoint_non_existent_file(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError):
         load_algorithm_from_pretrained(missing)
+
+
+def test_checkpoint_manager_metadata_embedding(tmp_path: Path) -> None:
+    """Verify CheckpointManager and CheckpointCallback embed arl_metadata.json for verified provenance."""
+    from adaptive_rl.algorithms.ppo import PPOAlgorithm
+    from adaptive_rl.training.callbacks import CheckpointCallback
+    from adaptive_rl.training.checkpointing import CheckpointManager
+
+    env = DroneNavigation3DEnv(max_steps=10)
+    algo = PPOAlgorithm(env=env, n_steps=64, batch_size=32)
+    cp_dir = tmp_path / "checkpoints"
+    manager = CheckpointManager(checkpoint_dir=cp_dir)
+
+    metadata = {
+        "environment_id": "drone",
+        "algorithm": "ppo",
+        "seed": 42,
+        "config_fingerprint": "abcdef1234567890",
+    }
+
+    # 1. Direct save_checkpoint with metadata
+    cp_path = manager.save_checkpoint(model=algo, step=100, metadata=metadata)
+    assert cp_path.is_file()
+    info = inspect_model_checkpoint(cp_path)
+    assert info["valid"] is True
+    assert info["algorithm"] == "ppo"
+    assert info["compatible_env"] == "3-DOF"
+    assert info["compatibility_status"] == "verified"
+    assert info["metadata_source"] == "embedded"
+    assert info["config_fingerprint"] == "abcdef1234567890"
+
+    # 2. CheckpointCallback with metadata
+    cb = CheckpointCallback(checkpoint_manager=manager, save_freq=50, model=algo, metadata=metadata)
+    cb.on_step(step=150)
+    history = manager.list_checkpoints()
+    assert len(history) == 2
+    step150_info = inspect_model_checkpoint(history[-1]["path"])
+    assert step150_info["valid"] is True
+    assert step150_info["compatibility_status"] == "verified"
+    assert step150_info["metadata_source"] == "embedded"
+    env.close()
+

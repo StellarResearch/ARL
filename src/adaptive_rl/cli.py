@@ -298,6 +298,9 @@ def train(
     split: Optional[str] = typer.Option(
         None, "--split", help="Environment dataset split ('train' or 'test')"
     ),
+    target: Optional[str] = typer.Option(
+        None, "--target", help="Target coordinates as 'X,Y,Z' (e.g. '15.0,20.0,8.0')"
+    ),
 ) -> None:
     """Train a reinforcement learning agent using PPO."""
     if config is None:
@@ -325,6 +328,27 @@ def train(
         exp_config.training.total_timesteps = timesteps
     if seed is not None:
         exp_config.seed = seed
+
+    if target is not None:
+        try:
+            parts = [float(x.strip()) for x in target.split(",")]
+            if len(parts) != 3:
+                raise ValueError("Expected exactly 3 comma-separated numbers: X,Y,Z")
+            t_coords = tuple(parts)
+        except Exception as e:
+            console.print(f"[bold red]Invalid --target argument:[/bold red] {e}")
+            raise typer.Exit(code=1)
+        from adaptive_rl.environments.drone import validate_target_coordinates
+
+        bounds_val = tuple(exp_config.environment.parameters.get("bounds", (30.0, 30.0, 15.0)))
+        start_val = tuple(exp_config.environment.parameters.get("start_pos", (5.0, 5.0, 5.0)))
+        valid, msg = validate_target_coordinates(
+            target=t_coords, bounds=bounds_val, start_pos=start_val
+        )
+        if not valid:
+            console.print(f"[bold red]Target validation failed:[/bold red] {msg}")
+            raise typer.Exit(code=1)
+        exp_config.environment.parameters["goal_pos"] = list(t_coords)
 
     clean_split: Optional[str] = None
     if split is not None:
@@ -688,6 +712,9 @@ def evaluate(
     split: Optional[str] = typer.Option(
         None, "--split", help="Environment dataset split ('train' or 'test')"
     ),
+    target: Optional[str] = typer.Option(
+        None, "--target", help="Target coordinates as 'X,Y,Z' (e.g. '15.0,20.0,8.0')"
+    ),
 ) -> None:
     """Evaluate a trained agent over multiple benchmark episodes."""
     if ctx.args:
@@ -720,6 +747,28 @@ def evaluate(
     except ConfigError as err:
         console.print(f"[bold red]Configuration error:[/bold red] {err}")
         raise typer.Exit(code=1)
+
+    parsed_target_coords = None
+    if target is not None:
+        try:
+            parts = [float(x.strip()) for x in target.split(",")]
+            if len(parts) != 3:
+                raise ValueError("Expected exactly 3 comma-separated numbers: X,Y,Z")
+            parsed_target_coords = tuple(parts)
+        except Exception as e:
+            console.print(f"[bold red]Invalid --target argument:[/bold red] {e}")
+            raise typer.Exit(code=1)
+        from adaptive_rl.environments.drone import validate_target_coordinates
+
+        bounds_val = tuple(exp_config.environment.parameters.get("bounds", (30.0, 30.0, 15.0)))
+        start_val = tuple(exp_config.environment.parameters.get("start_pos", (5.0, 5.0, 5.0)))
+        valid, msg = validate_target_coordinates(
+            target=parsed_target_coords, bounds=bounds_val, start_pos=start_val
+        )
+        if not valid:
+            console.print(f"[bold red]Target validation failed:[/bold red] {msg}")
+            raise typer.Exit(code=1)
+        exp_config.environment.parameters["goal_pos"] = list(parsed_target_coords)
 
     num_episodes = episodes if episodes is not None else exp_config.evaluation.eval_episodes
     if num_episodes <= 0:
@@ -1030,7 +1079,9 @@ def evaluate(
 
         if metrics is not None:
             report_target = output_report or (exp_config.output_dir / "evaluation.json")
-            saved_path = evaluator.save_report(metrics, report_target)
+            saved_path = evaluator.save_report(
+                metrics, report_target, target_pos=parsed_target_coords
+            )
             console.print(f"\n[bold green]Report saved to:[/bold green] {saved_path}")
 
             csv_target = output_csv or (exp_config.output_dir / "evaluation.csv")
@@ -1675,6 +1726,9 @@ def demo_drone(
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to experiment YAML"),
     seed: int = typer.Option(42, "--seed", "-s", help="Random seed for deterministic demo"),
     max_steps: int = typer.Option(150, "--max-steps", help="Maximum steps for demo episode"),
+    target: Optional[str] = typer.Option(
+        None, "--target", "-t", help="Target coordinates as 'X,Y,Z' (e.g. '15.0,20.0,8.0')"
+    ),
 ) -> None:
     """Run a deterministic, visual demonstration of the trained drone agent."""
     if max_steps <= 0:
@@ -1695,9 +1749,30 @@ def demo_drone(
             console.print(f"[bold red]Configuration file not found:[/bold red] {config}")
             raise typer.Exit(code=1)
         cfg = load_config(config)
-        env_kwargs = cfg.environment.parameters
+        env_kwargs = dict(cfg.environment.parameters)
         if hasattr(cfg.environment, "name") and cfg.environment.name:
             env_name = cfg.environment.name
+
+    if target is not None:
+        try:
+            parts = [float(x.strip()) for x in target.split(",")]
+            if len(parts) != 3:
+                raise ValueError("Expected exactly 3 comma-separated numbers: X,Y,Z")
+            t_coords = tuple(parts)
+        except Exception as e:
+            console.print(f"[bold red]Invalid --target argument:[/bold red] {e}")
+            raise typer.Exit(code=1)
+        from adaptive_rl.environments.drone import validate_target_coordinates
+
+        bounds_val = tuple(env_kwargs.get("bounds", (30.0, 30.0, 15.0)))
+        start_val = tuple(env_kwargs.get("start_pos", (5.0, 5.0, 5.0)))
+        valid, msg = validate_target_coordinates(
+            target=t_coords, bounds=bounds_val, start_pos=start_val
+        )
+        if not valid:
+            console.print(f"[bold red]Target validation failed:[/bold red] {msg}")
+            raise typer.Exit(code=1)
+        env_kwargs["goal_pos"] = list(t_coords)
 
     from adaptive_rl.algorithms.registry import load_algorithm_from_pretrained
 

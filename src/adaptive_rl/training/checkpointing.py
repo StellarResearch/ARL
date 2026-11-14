@@ -40,6 +40,7 @@ class CheckpointManager:
         step: int,
         metric_value: float = 0.0,
         filename: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Path:
         """Save a model checkpoint to disk and register in manager history.
 
@@ -48,6 +49,7 @@ class CheckpointManager:
             step: Timestep at which the checkpoint is taken.
             metric_value: Performance metric (e.g. mean reward) associated with checkpoint.
             filename: Custom filename (defaults to 'checkpoint_step_{step}.zip').
+            metadata: Optional dictionary with provenance metadata to embed as arl_metadata.json.
 
         Returns:
             Path: Path where the checkpoint was written.
@@ -58,6 +60,17 @@ class CheckpointManager:
 
         # Confirm exact file on disk (some libraries append .zip if omitted)
         final_path = target_path if target_path.exists() else target_path.with_suffix(".zip")
+
+        if metadata:
+            try:
+                import json
+                import zipfile
+
+                with zipfile.ZipFile(final_path, "a") as z:
+                    z.writestr("arl_metadata.json", json.dumps(metadata, indent=2))
+            except Exception:
+                pass
+
         self.record_checkpoint(path=final_path, step=step, metric_value=metric_value)
         return final_path
 

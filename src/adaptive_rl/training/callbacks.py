@@ -186,6 +186,7 @@ class CheckpointCallback(BaseCallback):
         save_freq: int,
         model: Optional[BaseAlgorithm] = None,
         verbose: int = 0,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Initialize checkpoint callback.
 
@@ -194,11 +195,13 @@ class CheckpointCallback(BaseCallback):
             save_freq: Number of environment steps between saves.
             model: Optional BaseAlgorithm model reference to save.
             verbose: Verbosity level.
+            metadata: Optional dictionary with provenance metadata to embed in checkpoints.
         """
         self.manager = checkpoint_manager
         self.save_freq = save_freq
         self.model = model
         self.verbose = verbose
+        self.metadata = metadata
         self.last_save_step: int = 0
 
     def set_model(self, model: BaseAlgorithm) -> None:
@@ -219,6 +222,7 @@ class CheckpointCallback(BaseCallback):
                     model=self.model,
                     step=step,
                     metric_value=0.0,
+                    metadata=self.metadata,
                 )
 
         return True

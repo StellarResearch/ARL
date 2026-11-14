@@ -184,12 +184,22 @@ class SACAlgorithm(BaseAlgorithm):
         save_path.parent.mkdir(parents=True, exist_ok=True)
         self.model.save(str(save_path))
 
-    def load(self, path: str | Path, env: Optional[gym.Env] = None) -> None:
+    def load(
+        self,
+        path: str | Path,
+        env: Optional[gym.Env] = None,
+        device: str = "auto",
+        custom_objects: Optional[dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> None:
         """Load algorithm weights from disk into this instance.
 
         Args:
             path: Path to saved model file.
             env: Optional environment to associate with loaded model.
+            device: Computation device ('cpu', 'cuda', 'auto').
+            custom_objects: Dictionary of custom objects to substitute when unpickling.
+            **kwargs: Additional keyword arguments passed to SAC.load.
         """
         load_path = Path(path)
         if not load_path.exists():
@@ -200,7 +210,16 @@ class SACAlgorithm(BaseAlgorithm):
                 raise FileNotFoundError(f"Model file not found at: {path}")
 
         target_env = env if env is not None else self.env
-        self.model = SAC.load(str(load_path), env=target_env)
+        load_kwargs: dict[str, Any] = {}
+        if device != "auto":
+            load_kwargs["device"] = device
+        elif "device" in self.hyperparameters:
+            load_kwargs["device"] = self.hyperparameters["device"]
+        if custom_objects is not None:
+            load_kwargs["custom_objects"] = custom_objects
+        load_kwargs.update(kwargs)
+
+        self.model = SAC.load(str(load_path), env=target_env, **load_kwargs)
         if env is not None:
             self.env = env
 
@@ -216,13 +235,13 @@ class SACAlgorithm(BaseAlgorithm):
         Args:
             path: Path to saved model file.
             env: Optional Gymnasium environment.
-            **kwargs: Overrides for loaded model configuration.
+            **kwargs: Overrides for loaded model configuration or SAC.load options.
 
         Returns:
             SACAlgorithm: Loaded algorithm instance.
         """
         instance = cls(env=env)
-        instance.load(path, env=env)
+        instance.load(path, env=env, **kwargs)
         return instance
 
     @property

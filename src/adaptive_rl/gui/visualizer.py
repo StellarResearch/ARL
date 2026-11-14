@@ -1339,11 +1339,29 @@ def build_arena_3d_figure(
 
 
 def get_available_models(models_dir: str | Path = "artifacts/models") -> List[Path]:
-    """Scan the artifacts directory for saved PPO model checkpoints."""
+    """Scan the artifacts directory for saved model checkpoints."""
     path = Path(models_dir)
-    if not path.exists():
-        return []
-    return sorted(list(path.glob("*.zip")), key=lambda p: p.stat().st_mtime, reverse=True)
+    found_files: List[Path] = []
+    if path.exists():
+        found_files.extend(path.glob("*.zip"))
+        found_files.extend(path.glob("*/*.zip"))
+
+    clean_dir = str(models_dir).rstrip("/\\")
+    if clean_dir == "artifacts/models":
+        checkpoints_dir = Path("artifacts/checkpoints")
+        if checkpoints_dir.exists():
+            found_files.extend(checkpoints_dir.glob("*/*.zip"))
+            found_files.extend(checkpoints_dir.glob("*.zip"))
+
+    seen = set()
+    unique_models: List[Path] = []
+    for p in found_files:
+        resolved = str(p.resolve())
+        if resolved not in seen and p.is_file():
+            seen.add(resolved)
+            unique_models.append(p)
+
+    return sorted(unique_models, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def run_drone_simulation_episode(

@@ -736,3 +736,33 @@ def test_cli_demo_drone_edge_cases(tmp_path: Path) -> None:
     assert res_dir_model.exit_code == 1
     clean_m = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_dir_model.output)
     assert "Model file not found" in clean_m
+
+
+def test_cli_target_option_validation(tmp_path: Path) -> None:
+    """Verify CLI commands validate --target coordinates properly."""
+    # 1. Malformed target coordinates
+    res_bad = runner.invoke(app, ["train", "--target", "not_numbers", "--timesteps", "10"])
+    assert res_bad.exit_code == 1
+    clean_bad = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_bad.output)
+    assert "Invalid --target argument" in clean_bad
+
+    # 2. Wrong count of coordinates
+    res_count = runner.invoke(app, ["train", "--target", "10,20", "--timesteps", "10"])
+    assert res_count.exit_code == 1
+    clean_cnt = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_count.output)
+    assert "Expected exactly 3 comma-separated numbers" in clean_cnt
+
+    # 3. Out-of-bounds negative coordinate
+    res_neg = runner.invoke(app, ["train", "--target", "-5,15,8", "--timesteps", "10"])
+    assert res_neg.exit_code == 1
+    clean_neg = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_neg.output)
+    assert "Target validation failed" in clean_neg
+    assert "cannot be negative" in clean_neg
+
+    # 4. Target too close to launch position (5, 5, 5)
+    res_close = runner.invoke(app, ["evaluate", "--target", "5.2,5.1,5.0", "--episodes", "1"])
+    assert res_close.exit_code == 1
+    clean_close = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_close.output)
+    assert "Target validation failed" in clean_close
+    assert "too close to" in clean_close and "launch position" in clean_close
+
