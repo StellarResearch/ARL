@@ -84,3 +84,43 @@ Each update block execution must record in the experiment output artifact:
    $$\Delta_\theta = \sqrt{\sum_{p} \|\theta_{new}^{(p)} - \theta_{old}^{(p)}\|_2^2}$$
 7. `fingerprint_before`: SHA-256 hash of the policy `state_dict` before block execution
 8. `fingerprint_after`: SHA-256 hash of the policy `state_dict` after block execution
+
+---
+
+## 6. SAC Online Adaptation Specification (Issue #273)
+
+### Algorithmic Protocol & Architecture
+The Soft Actor-Critic (SAC) adaptation protocol strictly mirrors the PPO shift protocol while preserving SAC's maximum entropy off-policy formulation:
+1. **Nominal Training**: Trained once on the nominal environment (`DroneDisturbed3DEnv`) using the unified `SACAlgorithm` wrapper.
+2. **Checkpoint & Forking**: Policy weights are frozen and fingerprinted via SHA-256. At fork time, both Fixed and Adaptive arms instantiate independent models initialized with identical parameter tensors.
+3. **Replay Buffer Isolation**:
+   - Nominal replay transitions are never preserved across the shift boundary.
+   - The Adaptive SAC replay buffer is cleared at fork time and populated **strictly** with post-shift transitions ($e \le k$).
+   - Block $B_k$ cannot sample transitions from episodes $> k$.
+4. **Fixed-Arm Invariant**: The Fixed arm performs zero gradient steps throughout all post-shift episodes ($B_k = \emptyset$). Its policy weights remain identical to the frozen nominal checkpoint.
+5. **Update Blocks $B_5 \dots B_{14}$**:
+   - Triggered between post-shift episodes $k$ and $k+1$ for $k \in \{5, \dots, 14\}$.
+   - Zero-based seed derivation: block $B_k$ applies `derive_seed(training_seed, "update", k - 5)`.
+
+### SAC Hyperparameters
+
+| Hyperparameter | Nominal Training | Post-Shift Adaptation ($B_k$) |
+|---|---|---|
+| **Actor & Critic Learning Rate** | $3.0 \times 10^{-4}$ | $1.0 \times 10^{-4}$ |
+| **Discount Factor ($\gamma$)** | 0.99 | 0.99 |
+| **Target Smoothing ($\tau$)** | 0.005 | 0.005 |
+| **Replay Buffer Capacity** | 100,000 | 100,000 (post-shift only) |
+| **Minibatch Size** | 256 | $\min(32, N_{transitions})$ |
+| **Gradient Steps per Block** | 1 | 10 |
+| **Entropy Regularization ($\alpha$)** | Auto (`"auto"`) | Auto (`"auto"`) |
+
+### Verification Status & Invariants
+- **Tested & Verified Invariants**:
+  - Exact ten update blocks ($B_5 \dots B_{14}$) at episode transitions.
+  - Zero-based seed derivation mapping ($b = 0 \dots 9$).
+  - Post-shift transition isolation (buffer contains only post-shock / post-shift transitions).
+  - Fixed-arm parameter immutability and zero gradient updates.
+  - Non-zero adaptive parameter delta norm ($\Delta_\theta > 0$).
+  - Causal recovery metric computation compatibility.
+- **Environment Blockers**:
+  - Full neural network gradient descent requires PyTorch and Stable-Baselines3 (`pip install 'adaptive-rl[rl]'`). When dependencies are absent, integration tests skip cleanly via `pytest.importorskip`.

@@ -53,7 +53,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-import torch
+def _load_torch():
+    try:
+        import torch
+        return torch
+    except ImportError:
+        # Optional dependency not present; return None instead of raising.
+        return None
+
+# Lazy-loaded torch module (may be None if not installed)
+torch = _load_torch()
+
 
 from adaptive_rl.algorithms.ppo import PPOAlgorithm
 from adaptive_rl.config import ExperimentConfig
@@ -103,7 +113,11 @@ def policy_fingerprint(algorithm_or_model: Any) -> str:
         tensor = state[name]
         digest.update(name.encode("utf-8"))
         try:
-            digest.update(bytes(tensor.detach().cpu().numpy().tobytes()))
+            if hasattr(tensor, "detach"):
+                raw_bytes = tensor.detach().cpu().numpy().tobytes()
+            else:
+                raw_bytes = np.asarray(tensor).tobytes()
+            digest.update(bytes(raw_bytes))
         except Exception as err:
             raise RuntimeError(f"Cannot fingerprint parameter '{name}': {err}") from err
     return digest.hexdigest()
