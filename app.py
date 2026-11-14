@@ -43,7 +43,7 @@ st.set_page_config(
     page_title="ARL | Autonomous Flight Systems — 3D Flight Deck",
     page_icon="🛸",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 
@@ -341,7 +341,7 @@ def main() -> None:
 
         # Simulation Control Toolbar / Card
         with st.container():
-            ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([1.5, 2.0, 1.0, 1.0, 1.1])
+            ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5, ctrl_col6 = st.columns([1.3, 1.8, 0.9, 0.9, 1.0, 1.2])
 
             with ctrl_col1:
                 env_choice = st.selectbox(
@@ -390,20 +390,21 @@ def main() -> None:
                 )
 
             with ctrl_col5:
-                show_lidar_rays = st.checkbox("Show 16-Ray LiDAR", value=True)
+                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                show_lidar_rays = st.checkbox("16-Ray LiDAR", value=True)
 
-            run_col1, run_col2 = st.columns([1.5, 4.5])
-            with run_col1:
+            with ctrl_col6:
+                st.markdown("<div style='height: 26px;'></div>", unsafe_allow_html=True)
                 launch_clicked = st.button(
-                    "🚀 Execute Flight Simulation", type="primary", use_container_width=True
+                    "🚀 Execute Sim", type="primary", use_container_width=True
                 )
-            with run_col2:
-                if selected_policy.startswith("Random Action Baseline"):
-                    st.markdown(
-                        "<div class='baseline-disclaimer'>⚠️ <b>Untrained Baseline Note:</b> Random Action Baseline provides "
-                        "stochastic control inputs for baseline comparison; it does not represent a trained agent.</div>",
-                        unsafe_allow_html=True,
-                    )
+
+            if selected_policy.startswith("Random Action Baseline"):
+                st.markdown(
+                    "<div class='baseline-disclaimer'>⚠️ <b>Untrained Baseline Note:</b> Random Action Baseline provides "
+                    "stochastic control inputs for baseline comparison; it does not represent a trained agent.</div>",
+                    unsafe_allow_html=True,
+                )
 
         is_6dof = "6-DOF" in env_choice
         sim_key = f"flight_data_{'6dof' if is_6dof else '3dof'}"
@@ -498,9 +499,9 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
-        # Scrubber Slider for Trajectory Playback
-        scrub_col1, scrub_col2 = st.columns([3.5, 1.0])
-        with scrub_col1:
+        # Scrubber & Viewport Control Bar
+        vp_col1, vp_col2, vp_col3, vp_col4, vp_col5, vp_col6 = st.columns([2.4, 0.7, 1.4, 0.7, 0.7, 0.7])
+        with vp_col1:
             selected_step = st.slider(
                 "Flight Step Playback Scrubber:",
                 min_value=0,
@@ -509,19 +510,35 @@ def main() -> None:
                 step=1,
                 help="Scrub through recorded flight timesteps to inspect 3D drone attitude, position, speed, and sensor range.",
             )
-        with scrub_col2:
+        with vp_col2:
             step_pct = (selected_step / max(1, total_steps)) * 100.0
             dt_step = 0.05
             sim_time_sec = selected_step * dt_step
             st.markdown(
                 f"""
-                <div style="padding-top: 18px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #94a3b8;">
-                    Step: <b style="color: #00f2fe;">{selected_step}</b> / {total_steps} ({step_pct:.0f}%)<br>
-                    Elapsed: <b style="color: #38bdf8;">{sim_time_sec:.2f}s</b>
+                <div style="padding-top: 26px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #94a3b8; line-height: 1.2;">
+                    <b style="color: #00f2fe;">{selected_step}</b>/{total_steps} ({step_pct:.0f}%)<br>
+                    <b style="color: #38bdf8;">{sim_time_sec:.2f}s</b>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
+        with vp_col3:
+            camera_preset = st.selectbox(
+                "Camera Perspective / Preset:",
+                options=["Arena Overview", "Drone Follow", "Drone Inspection", "Target View", "Free Orbit", "Reset Camera"],
+                index=0,
+                help="Select 3D viewport camera perspective. Use 'Drone Inspection' for detailed close-up examination of quadrotor airframe.",
+            )
+        with vp_col4:
+            st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+            show_floor = st.checkbox("Floor", value=True, help="Render 3D flight test chamber floor and grid.")
+        with vp_col5:
+            st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+            show_safety = st.checkbox("Safety", value=True, help="Render obstacle safety proximity zones.")
+        with vp_col6:
+            st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+            show_traj = st.checkbox("Path", value=True, help="Render recorded 3D flight trajectory.")
 
         step_info = steps[selected_step]
         cur_pos = step_info["position"]
@@ -563,6 +580,11 @@ def main() -> None:
                 lidar_ranges=cur_lidar,
                 show_lidar=show_lidar_rays,
                 title=f"3D Flight Arena ({env_choice}) — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
+                camera_preset=camera_preset,
+                show_floor=show_floor,
+                show_safety_zones=show_safety,
+                show_trajectory=show_traj,
+                propeller_phase=selected_step * 0.45,
             )
             # Give viewport substantial height for dominance
             fig.update_layout(height=660)

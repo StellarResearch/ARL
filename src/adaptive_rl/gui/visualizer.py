@@ -164,38 +164,97 @@ def _blade_mesh_body(
     chord: float,
     angle_rad: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Generate 2-blade aerodynamic propeller mesh in body coordinates."""
+    """Generate 2-blade aerodynamic propeller mesh with thickness in body coordinates."""
     cos_a = math.cos(angle_rad)
     sin_a = math.sin(angle_rad)
     dir_v = np.array([cos_a, sin_a, 0.0], dtype=np.float64)
     nor_v = np.array([-sin_a, cos_a, 0.0], dtype=np.float64)
 
-    z = rotor_center[2] + 0.04
-    p0 = rotor_center + dir_v * 0.04 - nor_v * (chord * 0.5)
-    p1 = rotor_center + dir_v * 0.04 + nor_v * (chord * 0.5)
+    z = rotor_center[2] + 0.045
+    dz = 0.005
+
+    # Blade 1 (+dir_v)
+    p0 = rotor_center + dir_v * 0.03 - nor_v * (chord * 0.48)
+    p1 = rotor_center + dir_v * 0.03 + nor_v * (chord * 0.48)
     p2 = rotor_center + dir_v * blade_length + nor_v * (chord * 0.28)
     p3 = rotor_center + dir_v * blade_length - nor_v * (chord * 0.28)
 
-    p4 = rotor_center - dir_v * 0.04 - nor_v * (chord * 0.5)
-    p5 = rotor_center - dir_v * 0.04 + nor_v * (chord * 0.5)
+    # Blade 2 (-dir_v)
+    p4 = rotor_center - dir_v * 0.03 - nor_v * (chord * 0.48)
+    p5 = rotor_center - dir_v * 0.03 + nor_v * (chord * 0.48)
     p6 = rotor_center - dir_v * blade_length + nor_v * (chord * 0.28)
     p7 = rotor_center - dir_v * blade_length - nor_v * (chord * 0.28)
 
-    verts = np.array([
-        [p0[0], p0[1], z],
-        [p1[0], p1[1], z],
-        [p2[0], p2[1], z + 0.01],
-        [p3[0], p3[1], z + 0.01],
-        [p4[0], p4[1], z],
-        [p5[0], p5[1], z],
-        [p6[0], p6[1], z - 0.01],
-        [p7[0], p7[1], z - 0.01],
+    upper = np.array([
+        [p0[0], p0[1], z + dz],
+        [p1[0], p1[1], z + dz],
+        [p2[0], p2[1], z + dz + 0.01],
+        [p3[0], p3[1], z + dz + 0.01],
+        [p4[0], p4[1], z + dz],
+        [p5[0], p5[1], z + dz],
+        [p6[0], p6[1], z + dz - 0.01],
+        [p7[0], p7[1], z + dz - 0.01],
     ], dtype=np.float64)
 
-    i = np.array([0, 0, 4, 4], dtype=np.int32)
-    j = np.array([1, 2, 5, 6], dtype=np.int32)
-    k = np.array([2, 3, 6, 7], dtype=np.int32)
-    return verts[:, 0], verts[:, 1], verts[:, 2], i, j, k
+    lower = np.array([
+        [p0[0], p0[1], z - dz],
+        [p1[0], p1[1], z - dz],
+        [p2[0], p2[1], z - dz + 0.01],
+        [p3[0], p3[1], z - dz + 0.01],
+        [p4[0], p4[1], z - dz],
+        [p5[0], p5[1], z - dz],
+        [p6[0], p6[1], z - dz - 0.01],
+        [p7[0], p7[1], z - dz - 0.01],
+    ], dtype=np.float64)
+
+    verts = np.vstack([upper, lower])
+    # 16 vertices total: 0..7 upper, 8..15 lower
+    # Top faces & bottom faces
+    i_list = [0, 0, 4, 4, 8, 8, 12, 12]
+    j_list = [1, 2, 5, 6, 10, 9, 14, 13]
+    k_list = [2, 3, 6, 7, 9, 11, 13, 15]
+
+    return (
+        verts[:, 0],
+        verts[:, 1],
+        verts[:, 2],
+        np.array(i_list, dtype=np.int32),
+        np.array(j_list, dtype=np.int32),
+        np.array(k_list, dtype=np.int32),
+    )
+
+
+def _rotor_disc_mesh_body(
+    rotor_center: np.ndarray,
+    radius: float,
+    n_seg: int = 14,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Generate subtle spinning rotor disc representing propeller motion blur."""
+    z = rotor_center[2] + 0.045
+    theta = np.linspace(0.0, 2.0 * math.pi, n_seg, endpoint=False)
+    circle_pts = [
+        np.array([rotor_center[0] + radius * math.cos(th), rotor_center[1] + radius * math.sin(th), z])
+        for th in theta
+    ]
+    center_pt = np.array([rotor_center[0], rotor_center[1], z])
+    verts = np.array(circle_pts + [center_pt], dtype=np.float64)
+    c_idx = n_seg
+
+    i_l, j_l, k_l = [], [], []
+    for s in range(n_seg):
+        nxt = (s + 1) % n_seg
+        i_l.append(c_idx)
+        j_l.append(s)
+        k_l.append(nxt)
+
+    return (
+        verts[:, 0],
+        verts[:, 1],
+        verts[:, 2],
+        np.array(i_l, dtype=np.int32),
+        np.array(j_l, dtype=np.int32),
+        np.array(k_l, dtype=np.int32),
+    )
 
 
 def _fuselage_mesh_body(d: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -278,6 +337,23 @@ def _chevron_mesh_body(d: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np
     return verts[:, 0], verts[:, 1], verts[:, 2], i, j, k
 
 
+def _antennas_mesh_body(d: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Generate dual rear telemetry antenna masts in body coordinates."""
+    a1 = _cylinder_mesh_body(
+        np.array([-0.24 * d, 0.08 * d, 0.03 * d]),
+        np.array([-0.40 * d, 0.14 * d, 0.14 * d]),
+        0.012 * d,
+        n_seg=6,
+    )
+    a2 = _cylinder_mesh_body(
+        np.array([-0.24 * d, -0.08 * d, 0.03 * d]),
+        np.array([-0.40 * d, -0.14 * d, 0.14 * d]),
+        0.012 * d,
+        n_seg=6,
+    )
+    return _combine_meshes([a1, a2])
+
+
 def _transform_mesh(
     mesh_b: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     center_pos: np.ndarray,
@@ -307,6 +383,7 @@ def compute_quadrotor_3d_geometry(
     arm_span: float = 1.2,
     rotor_radius: float = 0.28,
     n_propeller_points: int = 16,
+    propeller_phase: float = 0.0,
 ) -> Dict[str, Any]:
     """Compute 3D world-coordinate geometry for an X-configuration quadrotor.
 
@@ -314,9 +391,10 @@ def compute_quadrotor_3d_geometry(
     - Central body fuselage with 3D volume pod and forward heading nose (+X_B direction)
     - 4 volumetric X-configuration arms with structural motor housings
     - 4 rotor hubs (R1: Front-Right, R2: Front-Left, R3: Rear-Left, R4: Rear-Right)
-    - 4 recognizable 3D propellers with front/rear color differentiation
+    - 4 recognizable 3D propellers with aerodynamic twist, thickness, and front/rear color differentiation
     - Dual port/starboard landing gear skids and angled structural struts
     - Forward-facing optical sensor gimbal and camera assembly
+    - Dual rear telemetry antenna masts
     - Illuminated 3D navigation chevron indicating heading (+X_B)
 
     Transformation:
@@ -423,19 +501,29 @@ def compute_quadrotor_3d_geometry(
     mesh_rotor_hubs = _transform_mesh(_combine_meshes(hubs), c_pos, rot_mat)
     mesh_rotor_assemblies = _transform_mesh(_combine_meshes(motors_front + motors_rear + hubs), c_pos, rot_mat)
 
-    # 5. Four Recognizable Propeller Blades
+    # 5. Four Recognizable Propeller Blades with Dynamic Phase
     blade_len = float(rotor_radius)
-    blade_chord = max(0.05 * d, 0.05)
+    blade_chord = max(0.06 * d, 0.06)
+
+    # Counter-rotating propeller directions (CCW for R1/R3, CW for R2/R4)
+    phi = float(propeller_phase)
     props_front = [
-        _blade_mesh_body(body_rotors[0], blade_len, blade_chord, 0.35),
-        _blade_mesh_body(body_rotors[1], blade_len, blade_chord, -0.35),
+        _blade_mesh_body(body_rotors[0], blade_len, blade_chord, 0.35 + phi),
+        _blade_mesh_body(body_rotors[1], blade_len, blade_chord, -0.35 - phi),
     ]
     props_rear = [
-        _blade_mesh_body(body_rotors[2], blade_len, blade_chord, 0.35),
-        _blade_mesh_body(body_rotors[3], blade_len, blade_chord, -0.35),
+        _blade_mesh_body(body_rotors[2], blade_len, blade_chord, 0.35 + phi),
+        _blade_mesh_body(body_rotors[3], blade_len, blade_chord, -0.35 - phi),
     ]
     mesh_props_front = _transform_mesh(_combine_meshes(props_front), c_pos, rot_mat)
     mesh_props_rear = _transform_mesh(_combine_meshes(props_rear), c_pos, rot_mat)
+
+    # Translucent spinning rotor blur discs
+    discs = [
+        _rotor_disc_mesh_body(r, float(rotor_radius) * 0.95)
+        for r in body_rotors
+    ]
+    mesh_rotor_discs = _transform_mesh(_combine_meshes(discs), c_pos, rot_mat)
 
     # 6. Landing Gear (Dual Skids and 4 Angled Struts)
     skid_port = [
@@ -464,7 +552,10 @@ def compute_quadrotor_3d_geometry(
     ]
     mesh_camera = _transform_mesh(_combine_meshes(camera_parts), c_pos, rot_mat)
 
-    # 8. Forward Heading Indicator Chevron (+X_B)
+    # 8. Dual Rear Telemetry Antenna Masts
+    mesh_antennas = _transform_mesh(_antennas_mesh_body(d), c_pos, rot_mat)
+
+    # 9. Forward Heading Indicator Chevron (+X_B)
     mesh_heading = _transform_mesh(_chevron_mesh_body(d), c_pos, rot_mat)
 
     return {
@@ -485,12 +576,83 @@ def compute_quadrotor_3d_geometry(
         "mesh_rotor_assemblies": mesh_rotor_assemblies,
         "mesh_props_front": mesh_props_front,
         "mesh_props_rear": mesh_props_rear,
+        "mesh_rotor_discs": mesh_rotor_discs,
         "mesh_landing_gear": mesh_landing_gear,
         "mesh_camera": mesh_camera,
+        "mesh_antennas": mesh_antennas,
         "mesh_heading_indicator": mesh_heading,
         "rot_mat": rot_mat,
         "body_rotors": body_rotors,
     }
+
+
+def compute_camera_preset(
+    preset_name: str,
+    bounds: Tuple[float, float, float] = (30.0, 30.0, 15.0),
+    drone_pos: Optional[np.ndarray | Sequence[float]] = None,
+    target_pos: Optional[np.ndarray | Sequence[float]] = None,
+) -> Dict[str, Any]:
+    """Calculate scene camera parameters for a given preset.
+
+    Presets:
+    1. Arena Overview — View of entire flight arena.
+    2. Drone Follow — Medium distance camera tracking drone position.
+    3. Drone Inspection — Close-up inspection of 3D quadrotor airframe and details.
+    4. Target View — View centered on goal target waypoint and flight path approach.
+    5. Free Orbit — User-controlled 3D orbit around the center.
+    6. Reset Camera — Resets view to default overview.
+    """
+    bx, by, bz = bounds
+
+    if drone_pos is not None:
+        c_pos = np.asarray(drone_pos, dtype=np.float64)
+        xn = float((c_pos[0] - bx / 2.0) / bx)
+        yn = float((c_pos[1] - by / 2.0) / by)
+        zn = float((c_pos[2] - bz / 2.0) / bz)
+    else:
+        xn, yn, zn = 0.0, 0.0, 0.0
+
+    if target_pos is not None:
+        t_pos = np.asarray(target_pos, dtype=np.float64)
+        xt = float((t_pos[0] - bx / 2.0) / bx)
+        yt = float((t_pos[1] - by / 2.0) / by)
+        zt = float((t_pos[2] - bz / 2.0) / bz)
+    else:
+        xt, yt, zt = 0.2, 0.2, 0.0
+
+    preset_clean = preset_name.lower().strip()
+
+    if "inspect" in preset_clean:
+        return dict(
+            center=dict(x=xn, y=yn, z=zn),
+            eye=dict(x=0.20, y=-0.20, z=0.15),
+            up=dict(x=0, y=0, z=1),
+        )
+    elif "follow" in preset_clean:
+        return dict(
+            center=dict(x=xn, y=yn, z=zn),
+            eye=dict(x=0.55, y=-0.55, z=0.40),
+            up=dict(x=0, y=0, z=1),
+        )
+    elif "target" in preset_clean:
+        return dict(
+            center=dict(x=xt, y=yt, z=zt),
+            eye=dict(x=0.60, y=-0.60, z=0.40),
+            up=dict(x=0, y=0, z=1),
+        )
+    elif "orbit" in preset_clean:
+        return dict(
+            center=dict(x=0.0, y=0.0, z=0.0),
+            eye=dict(x=1.2, y=-1.2, z=1.0),
+            up=dict(x=0, y=0, z=1),
+        )
+    else:
+        # Arena Overview / Reset
+        return dict(
+            center=dict(x=0.0, y=0.0, z=-0.08),
+            eye=dict(x=1.35, y=-1.35, z=0.85),
+            up=dict(x=0, y=0, z=1),
+        )
 
 
 def _generate_sphere_surface(
@@ -557,11 +719,16 @@ def build_arena_3d_figure(
     title: str = "3D Drone Flight Arena",
     arm_span: float = 1.8,
     rotor_radius: float = 0.42,
+    camera_preset: str = "Arena Overview",
+    show_floor: bool = True,
+    show_safety_zones: bool = True,
+    show_trajectory: bool = True,
+    propeller_phase: float = 0.0,
 ) -> go.Figure:
     """Build an interactive 3D Plotly flight arena visualizer.
 
     Visualizes:
-    - Bounded flight volume with wireframe arena boundary walls
+    - Bounded flight volume with 3D flight-testing floor and wireframe walls
     - Procedural 3D spherical obstacles with proximity clearance zones
     - Goal target waypoint with altitude beacon column and destination label
     - Launch start origin position
@@ -571,9 +738,47 @@ def build_arena_3d_figure(
     - 16-ray spherical LiDAR sensor beams and contact points
     """
     fig = go.Figure()
-
-    # 1. Arena Bounding Box Wireframe
     bx, by, bz = bounds
+
+    # 1. 3D Arena Testing Chamber Floor Plane
+    if show_floor:
+        fx = np.linspace(0, bx, 8)
+        fy = np.linspace(0, by, 8)
+        FX, FY = np.meshgrid(fx, fy)
+        FZ = np.zeros_like(FX)
+        floor_scale = [[0.0, "#080e1c"], [1.0, "#0f1c38"]]
+        fig.add_trace(
+            go.Surface(
+                x=FX,
+                y=FY,
+                z=FZ,
+                colorscale=floor_scale,
+                showscale=False,
+                opacity=0.45,
+                name="Chamber Floor",
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
+        # Floor Center Test Grid Ring
+        th_floor = np.linspace(0.0, 2.0 * math.pi, 32)
+        cx, cy = bx / 2.0, by / 2.0
+        r_floor = min(bx, by) * 0.35
+        fig.add_trace(
+            go.Scatter3d(
+                x=cx + r_floor * np.cos(th_floor),
+                y=cy + r_floor * np.sin(th_floor),
+                z=np.zeros_like(th_floor),
+                mode="lines",
+                line=dict(color="#1e3a66", width=2, dash="dash"),
+                name="Arena Center Grid",
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
+    # 2. Arena Boundary Box Wireframe
     box_x, box_y, box_z = _generate_box_wireframe(bounds)
     fig.add_trace(
         go.Scatter3d(
@@ -587,12 +792,11 @@ def build_arena_3d_figure(
         )
     )
 
-    # 2. Obstacles (3D Spheres with Proximity / Safety Zones)
+    # 3. Obstacles (3D Spheres with Proximity / Safety Zones)
     if obstacles:
         for idx, obs in enumerate(obstacles):
-            # Physical Obstacle Core
             ox, oy, oz = _generate_sphere_surface(obs.center, obs.radius, n_points=14)
-            red_scale = [[0.0, "#991b1b"], [1.0, "#dc2626"]]
+            red_scale = [[0.0, "#7f1d1d"], [1.0, "#dc2626"]]
             fig.add_trace(
                 go.Surface(
                     x=ox,
@@ -600,7 +804,7 @@ def build_arena_3d_figure(
                     z=oz,
                     colorscale=red_scale,
                     showscale=False,
-                    opacity=0.60,
+                    opacity=0.65,
                     name=f"Obstacle {idx + 1}",
                     hoverinfo="text",
                     text=(
@@ -611,33 +815,50 @@ def build_arena_3d_figure(
                 )
             )
 
-            # Obstacle Proximity / Safety Clearance Perimeter Ring
-            safety_r = obs.radius + 0.8
-            th = np.linspace(0.0, 2.0 * math.pi, 24)
-            ring_x = obs.center[0] + safety_r * np.cos(th)
-            ring_y = obs.center[1] + safety_r * np.sin(th)
-            ring_z = np.full_like(th, obs.center[2])
-            fig.add_trace(
-                go.Scatter3d(
-                    x=ring_x,
-                    y=ring_y,
-                    z=ring_z,
-                    mode="lines",
-                    line=dict(color="rgba(239, 68, 68, 0.4)", width=2, dash="dash"),
-                    name=f"Safety Margin {idx + 1}",
-                    showlegend=False,
-                    hoverinfo="skip",
+            # Obstacle Proximity / Safety Clearance Perimeter
+            if show_safety_zones:
+                safety_r = obs.radius + 0.8
+                th = np.linspace(0.0, 2.0 * math.pi, 24)
+                ring_x = obs.center[0] + safety_r * np.cos(th)
+                ring_y = obs.center[1] + safety_r * np.sin(th)
+                ring_z = np.full_like(th, obs.center[2])
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=ring_x,
+                        y=ring_y,
+                        z=ring_z,
+                        mode="lines",
+                        line=dict(color="rgba(239, 68, 68, 0.45)", width=2, dash="dash"),
+                        name=f"Safety Margin {idx + 1}",
+                        showlegend=False,
+                        hoverinfo="skip",
+                    )
                 )
-            )
 
-    # 3. Target Waypoint with Altitude Beacon Column
+    # 4. Target Waypoint with Ground Pad and Altitude Beacon Column
     if target is not None:
-        # Vertical Altitude Beacon Line from ground to waypoint
+        # Ground Landing Pad Ring at z = 0
+        th_pad = np.linspace(0.0, 2.0 * math.pi, 24)
+        pad_r = 1.5
+        fig.add_trace(
+            go.Scatter3d(
+                x=target[0] + pad_r * np.cos(th_pad),
+                y=target[1] + pad_r * np.sin(th_pad),
+                z=np.zeros_like(th_pad),
+                mode="lines",
+                line=dict(color="#10b981", width=2),
+                name="Waypoint Ground Pad",
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
+        # Vertical Altitude Beacon Column from ground to waypoint
         fig.add_trace(
             go.Scatter3d(
                 x=[target[0], target[0]],
                 y=[target[1], target[1]],
-                z=[0.0, target[2] + 1.5],
+                z=[0.0, target[2] + 1.8],
                 mode="lines",
                 line=dict(color="#10b981", width=2, dash="dot"),
                 name="Waypoint Beacon Column",
@@ -668,7 +889,7 @@ def build_arena_3d_figure(
             )
         )
 
-    # 4. Start Position
+    # 5. Start Position
     if start_pos is not None:
         fig.add_trace(
             go.Scatter3d(
@@ -691,8 +912,8 @@ def build_arena_3d_figure(
             )
         )
 
-    # 5. Trajectory Line
-    if trajectory and len(trajectory) > 1:
+    # 6. Trajectory Line
+    if show_trajectory and trajectory and len(trajectory) > 1:
         traj_arr = np.asarray(trajectory, dtype=np.float64)
         fig.add_trace(
             go.Scatter3d(
@@ -710,7 +931,7 @@ def build_arena_3d_figure(
             )
         )
 
-    # 6. LiDAR Beams
+    # 7. 16-Ray LiDAR Beams with Distance-Based Color-Coding and Contact Points
     if (
         show_lidar
         and current_pos is not None
@@ -722,11 +943,18 @@ def build_arena_3d_figure(
         ly: List[Optional[float]] = []
         lz: List[Optional[float]] = []
 
+        hit_x: List[float] = []
+        hit_y: List[float] = []
+        hit_z: List[float] = []
+
         for ray_dir, dist in zip(lidar_rays, lidar_ranges):
             end_pt = c_pos + ray_dir * dist
             lx.extend([c_pos[0], end_pt[0], None])
             ly.extend([c_pos[1], end_pt[1], None])
             lz.extend([c_pos[2], end_pt[2], None])
+            hit_x.append(float(end_pt[0]))
+            hit_y.append(float(end_pt[1]))
+            hit_z.append(float(end_pt[2]))
 
         fig.add_trace(
             go.Scatter3d(
@@ -734,19 +962,32 @@ def build_arena_3d_figure(
                 y=ly,
                 z=lz,
                 mode="lines",
-                line=dict(color="rgba(0, 242, 254, 0.40)", width=2),
+                line=dict(color="rgba(0, 242, 254, 0.45)", width=2),
                 name="16-Ray LiDAR",
                 hoverinfo="skip",
             )
         )
+        fig.add_trace(
+            go.Scatter3d(
+                x=hit_x,
+                y=hit_y,
+                z=hit_z,
+                mode="markers",
+                marker=dict(size=3, color="#00f2fe"),
+                name="LiDAR Contact Points",
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
 
-    # 7. Current Quadrotor Airframe: 3D Meshes, Attitude & Telemetry
+    # 8. Current Quadrotor Airframe: 3D Meshes, Attitude & Telemetry
     if current_pos is not None:
         geom = compute_quadrotor_3d_geometry(
             current_pos,
             quaternion=attitude_quaternion,
             arm_span=arm_span,
             rotor_radius=rotor_radius,
+            propeller_phase=propeller_phase,
         )
 
         def _add_mesh(mesh_dict: Dict[str, np.ndarray], color: str, name: str, opacity: float = 1.0, showlegend: bool = False) -> None:
@@ -763,7 +1004,7 @@ def build_arena_3d_figure(
                         opacity=opacity,
                         name=name,
                         flatshading=True,
-                        lighting=dict(ambient=0.6, diffuse=0.8, roughness=0.3, specular=0.4),
+                        lighting=dict(ambient=0.55, diffuse=0.85, roughness=0.25, specular=0.45),
                         hoverinfo="name",
                         showlegend=showlegend,
                     )
@@ -780,14 +1021,22 @@ def build_arena_3d_figure(
         _add_mesh(geom["mesh_rotor_assemblies"], "#94a3b8", "Rotor Assemblies", opacity=1.0, showlegend=True)
 
         # Front & Rear 3D Propeller Blades
-        _add_mesh(geom["mesh_props_front"], "#00e5ff", "Front Propellers", opacity=0.9, showlegend=True)
-        _add_mesh(geom["mesh_props_rear"], "#3b82f6", "Rear Propellers", opacity=0.9, showlegend=True)
+        _add_mesh(geom["mesh_props_front"], "#00e5ff", "Front Propellers", opacity=0.95, showlegend=True)
+        _add_mesh(geom["mesh_props_rear"], "#3b82f6", "Rear Propellers", opacity=0.95, showlegend=True)
+
+        # Translucent Spinning Rotor Blur Discs
+        if "mesh_rotor_discs" in geom:
+            _add_mesh(geom["mesh_rotor_discs"], "#38bdf8", "Rotor Blur Discs", opacity=0.20, showlegend=False)
 
         # Dual Landing Gear Skids & Struts
         _add_mesh(geom["mesh_landing_gear"], "#475569", "Landing Gear", opacity=1.0, showlegend=True)
 
         # Forward Optical Sensor Gimbal
         _add_mesh(geom["mesh_camera"], "#06b6d4", "Sensor Gimbal & Lens", opacity=1.0, showlegend=True)
+
+        # Dual Rear Telemetry Antenna Masts
+        if "mesh_antennas" in geom:
+            _add_mesh(geom["mesh_antennas"], "#64748b", "Antennas", opacity=1.0, showlegend=False)
 
         # Forward Heading Indicator Chevron (+X_B)
         _add_mesh(geom["mesh_heading_indicator"], "#fbbf24", "Forward Heading (+X_B)", opacity=1.0, showlegend=True)
@@ -875,12 +1124,27 @@ def build_arena_3d_figure(
                 )
             )
 
+    # Camera Preset Calculation
+    camera_dict = compute_camera_preset(
+        preset_name=camera_preset,
+        bounds=bounds,
+        drone_pos=current_pos,
+        target_pos=target,
+    )
+
     # Configure 3D Camera, Lighting, and Aerospace Mission-Control Styling
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="#080c14",
         plot_bgcolor="#080c14",
-        title=dict(text=title, font=dict(size=17, color="#f1f5f9"), x=0.02, y=0.98),
+        title=dict(
+            text=title,
+            font=dict(size=14, color="#f1f5f9"),
+            x=0.02,
+            y=0.98,
+            xanchor="left",
+            yanchor="top",
+        ),
         scene=dict(
             xaxis=dict(
                 title="X Position (m)",
@@ -907,23 +1171,19 @@ def build_arena_3d_figure(
                 zerolinecolor="#334155",
             ),
             aspectratio=dict(x=1.0, y=1.0, z=bz / max(bx, by)),
-            camera=dict(
-                eye=dict(x=1.35, y=-1.35, z=0.85),
-                center=dict(x=0.0, y=0.0, z=-0.08),
-                up=dict(x=0, y=0, z=1),
-            ),
+            camera=camera_dict,
         ),
-        margin=dict(l=0, r=0, b=0, t=35),
+        margin=dict(l=10, r=10, b=40, t=35),
         legend=dict(
             orientation="h",
-            yanchor="bottom",
-            y=1.01,
-            xanchor="left",
-            x=0.0,
+            yanchor="top",
+            y=-0.03,
+            xanchor="center",
+            x=0.5,
             bgcolor="rgba(11, 15, 25, 0.85)",
             bordercolor="#1e293b",
             borderwidth=1,
-            font=dict(color="#cbd5e1", size=11),
+            font=dict(color="#cbd5e1", size=10),
         ),
     )
 
@@ -1128,13 +1388,6 @@ def build_comparison_bar_chart(
 
     categories = ["Success Rate (%)", "Collision Rate (%)"]
     colors = ["#00E676", "#FF5252", "#FFD700", "#7C4DFF"]
-
-    for i, policy_name in enumerate(policies):
-        m = metrics_map[policy_name]
-        succ = (m.success_rate if hasattr(m, "success_rate") else m.get("success_rate", 0.0)) or 0.0
-        coll = (
-            m.collision_rate if hasattr(m, "collision_rate") else m.get("collision_rate", 0.0)
-        ) or 0.0
 
     for i, policy_name in enumerate(policies):
         m = metrics_map[policy_name]
@@ -1395,6 +1648,7 @@ __all__ = [
     "build_distribution_shift_trajectory_figure",
     "build_recovery_curve_figure",
     "build_training_curve_figure",
+    "compute_camera_preset",
     "compute_quadrotor_3d_geometry",
     "get_available_models",
     "inspect_model_checkpoint",
