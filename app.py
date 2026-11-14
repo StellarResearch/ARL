@@ -406,9 +406,7 @@ def main() -> None:
 
             with ctrl_col6:
                 st.markdown("<div style='height: 26px;'></div>", unsafe_allow_html=True)
-                launch_clicked = st.button(
-                    "🚀 Execute Sim", type="primary", use_container_width=True
-                )
+                launch_clicked = st.button("🚀 Execute Sim", type="primary", width="stretch")
 
             if selected_policy.startswith("Random Action Baseline"):
                 st.markdown(
@@ -485,7 +483,7 @@ def main() -> None:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
                 if st.button(
                     "↺ Restore Default Target",
-                    use_container_width=True,
+                    width="stretch",
                     help="Restore environment's default destination coordinates",
                 ):
                     st.session_state["target_x"] = float(default_goal[0])
@@ -840,7 +838,7 @@ def main() -> None:
                 )
                 # Give viewport substantial height for dominance
                 fig.update_layout(height=660)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
             with col_telemetry:
                 # 1. NAVIGATION TELEMETRY
@@ -1306,7 +1304,7 @@ def main() -> None:
                 window_size=10,
                 title="PPO Episode Return over Training Episodes",
             )
-            st.plotly_chart(fig_curve, use_container_width=True)
+            st.plotly_chart(fig_curve, width="stretch")
 
     # ==========================================
     # TAB 3: EVALUATION & BASELINE
@@ -1515,7 +1513,7 @@ def main() -> None:
                 metrics_map=bench_results,
                 title="Trained Policy vs Random Baseline (Success & Collision Rates)",
             )
-            st.plotly_chart(fig_comp, use_container_width=True)
+            st.plotly_chart(fig_comp, width="stretch")
             st.info("Evaluation report exported to `artifacts/evaluation.json`")
         else:
             st.caption("Click 'Run Benchmark Evaluation' to generate empirical metrics.")
@@ -1599,7 +1597,7 @@ def main() -> None:
                 density_results=density_data,
                 title="Performance Degradation under Increasing Obstacle Density",
             )
-            st.plotly_chart(fig_density, use_container_width=True)
+            st.plotly_chart(fig_density, width="stretch")
             st.success(
                 "Experiment results exported to `artifacts/obstacle_density_experiment.json`"
             )
