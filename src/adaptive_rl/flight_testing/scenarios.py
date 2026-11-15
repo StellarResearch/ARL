@@ -36,6 +36,7 @@ Computes measurable, independently verifiable aerospace flight metrics:
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
 import math
@@ -166,6 +167,7 @@ class FlightScenarioResult:
     description: str
     metrics: FlightScenarioMetrics
     telemetry: List[FlightStepTelemetry] = field(default_factory=list)
+    scenario_definition: Optional[FlightScenarioDefinition] = None
 
     def to_dict(self, include_telemetry: bool = True) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -173,6 +175,8 @@ class FlightScenarioResult:
             "description": self.description,
             "metrics": self.metrics.to_dict(),
         }
+        if self.scenario_definition is not None:
+            data["scenario_definition"] = self.scenario_definition.to_dict()
         if include_telemetry:
             data["telemetry"] = [step.to_dict() for step in self.telemetry]
         return data
@@ -273,6 +277,80 @@ class FlightScenarioResult:
         return path
 
 
+def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
+    """Extract a stable, deterministic provenance record for a callable.
+
+    Captures function identity, module, qualified name, explicit metadata,
+    custom attributes, closure variables, and a SHA-256 digest of bytecode and constants.
+    Guarantees different callback configurations generate different digests.
+    """
+    if fn is None:
+        return {}
+
+    info: Dict[str, Any] = {
+        "name": getattr(fn, "__name__", type(fn).__name__),
+        "qualname": getattr(fn, "__qualname__", getattr(fn, "__name__", str(type(fn)))),
+        "callable_type": type(fn).__name__,
+    }
+    if hasattr(fn, "__module__") and fn.__module__:
+        info["module"] = str(fn.__module__)
+
+    # Explicit metadata or docstring
+    if hasattr(fn, "metadata"):
+        meta = getattr(fn, "metadata")
+        if isinstance(meta, dict):
+            info["metadata"] = {str(k): v for k, v in sorted(meta.items())}
+        else:
+            info["metadata"] = str(meta)
+    elif getattr(fn, "__doc__", None):
+        info["doc"] = fn.__doc__.strip()
+
+    # Custom attributes on the callable
+    if hasattr(fn, "__dict__"):
+        custom_attrs = {
+            k: v for k, v in fn.__dict__.items() if not k.startswith("__") and k != "metadata"
+        }
+        if custom_attrs:
+            info["attributes"] = {str(k): str(v) for k, v in sorted(custom_attrs.items())}
+
+    # Closure variables
+    closure_vars: Dict[str, Any] = {}
+    if hasattr(fn, "__closure__") and fn.__closure__ is not None and hasattr(fn, "__code__"):
+        co_freevars = getattr(fn.__code__, "co_freevars", ())
+        for var_name, cell in zip(co_freevars, fn.__closure__):
+            try:
+                contents = cell.cell_contents
+                if isinstance(contents, (int, float, bool, str)):
+                    closure_vars[var_name] = contents
+                elif isinstance(contents, np.ndarray):
+                    closure_vars[var_name] = contents.tolist()
+                elif isinstance(contents, (list, tuple)):
+                    closure_vars[var_name] = list(contents)
+                elif isinstance(contents, dict):
+                    closure_vars[var_name] = {str(k): v for k, v in sorted(contents.items())}
+                else:
+                    closure_vars[var_name] = str(contents)
+            except ValueError:
+                closure_vars[var_name] = "<empty_cell>"
+    if closure_vars:
+        info["closure"] = {k: closure_vars[k] for k in sorted(closure_vars.keys())}
+
+    # Bytecode and constants digest
+    if hasattr(fn, "__code__"):
+        code = fn.__code__
+        hasher = hashlib.sha256()
+        hasher.update(getattr(code, "co_code", b""))
+        co_consts = getattr(code, "co_consts", ())
+        for const in co_consts:
+            if hasattr(const, "co_code"):
+                hasher.update(const.co_code)
+            else:
+                hasher.update(str(const).encode("utf-8", errors="replace"))
+        info["code_hash"] = hasher.hexdigest()
+
+    return info
+
+
 @dataclass
 class FlightScenarioDefinition:
     """Specification of an autonomous flight validation scenario."""
@@ -337,21 +415,11 @@ class FlightScenarioDefinition:
 
         fault_info: Dict[str, Any] = {}
         if self.actuator_fault_fn is not None:
-            fn_name = getattr(self.actuator_fault_fn, "__name__", "custom_fault")
-            fault_info = {"name": fn_name}
-            if hasattr(self.actuator_fault_fn, "metadata"):
-                fault_info["metadata"] = getattr(self.actuator_fault_fn, "metadata")
-            elif self.actuator_fault_fn.__doc__:
-                fault_info["doc"] = self.actuator_fault_fn.__doc__.strip()
+            fault_info = extract_callable_provenance(self.actuator_fault_fn)
 
         dist_info: Dict[str, Any] = {}
         if self.disturbance_fn is not None:
-            fn_name = getattr(self.disturbance_fn, "__name__", "custom_disturbance")
-            dist_info = {"name": fn_name}
-            if hasattr(self.disturbance_fn, "metadata"):
-                dist_info["metadata"] = getattr(self.disturbance_fn, "metadata")
-            elif self.disturbance_fn.__doc__:
-                dist_info["doc"] = self.disturbance_fn.__doc__.strip()
+            dist_info = extract_callable_provenance(self.disturbance_fn)
 
         return {
             "name": self.name,
@@ -840,6 +908,7 @@ class FlightScenarioRunner:
                     description=scenario.description,
                     metrics=metrics,
                     telemetry=[],
+                    scenario_definition=scenario,
                 )
             waypoints = [w.copy() for w in mission_manager.active_path]
         else:
@@ -1061,13 +1130,20 @@ class FlightScenarioRunner:
                     ctrl.set_target(current_target)
 
             # Final arrival and settling check
-            dist_to_final = float(np.linalg.norm(waypoints[-1] - new_state.position))
+            final_coord = (
+                scenario.waypoints[-1] if scenario.waypoints else scenario.initial_position
+            )
+            dist_to_final = float(np.linalg.norm(final_coord - new_state.position))
             curr_speed = float(np.linalg.norm(new_state.velocity))
             is_pos_settled = dist_to_final <= scenario.target_radius
             is_vel_settled = curr_speed <= scenario.settling_velocity_threshold
 
             all_waypoints_completed = (
-                (mission_manager.state == MissionState.ARRIVED)
+                (
+                    mission_manager.state == MissionState.ARRIVED
+                    and mission_manager.current_mission_waypoint_idx
+                    >= len(mission_manager.mission_waypoints)
+                )
                 if mission_manager is not None
                 else (waypoint_idx == len(waypoints) - 1 and is_at_curr_waypoint)
             )
@@ -1120,7 +1196,12 @@ class FlightScenarioRunner:
                 outcome = "success"
                 break
 
-        final_pos_err = float(np.linalg.norm(waypoints[-1] - self.env._position))
+        final_pos_err = float(
+            np.linalg.norm(
+                (scenario.waypoints[-1] if scenario.waypoints else scenario.initial_position)
+                - self.env._position
+            )
+        )
         final_speed = float(np.linalg.norm(self.env.dynamics.state.velocity))
         max_tilt = max(att_errors_deg) if att_errors_deg else 0.0
         min_alt = (
@@ -1206,6 +1287,7 @@ class FlightScenarioRunner:
             description=scenario.description,
             metrics=metrics,
             telemetry=telemetry,
+            scenario_definition=scenario,
         )
 
     def run_all_scenarios(

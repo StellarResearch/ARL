@@ -36,6 +36,14 @@ class DynamicObstacleSphere3D:
         self.velocity = np.asarray(self.velocity, dtype=np.float64)
         self.oscillation_amplitude = np.asarray(self.oscillation_amplitude, dtype=np.float64)
 
+    def max_speed(self) -> float:
+        """Calculate the theoretical maximum translation speed of the obstacle."""
+        if self.motion_type == "oscillate":
+            omega = 2.0 * math.pi / max(0.1, self.oscillation_period)
+            amp_mag = float(np.linalg.norm(self.oscillation_amplitude))
+            return omega * amp_mag
+        return float(np.linalg.norm(self.velocity))
+
     def center_at(self, time_sec: float) -> np.ndarray:
         """Compute the deterministic 3D position of the obstacle at a given simulation time."""
         t = float(time_sec)
@@ -72,7 +80,7 @@ class DynamicObstacleSphere3D:
         """Check continuous swept-sphere collision between vehicle and dynamic obstacle over [prev_time, curr_time].
 
         Calculates minimum relative distance between moving vehicle segment and moving obstacle trajectory.
-        Handles arbitrary speeds, cross-trajectories, and boundary bounce reflections.
+        Conservative collision evaluation accounts for secant chord approximation errors and high speeds.
         """
         p0 = np.asarray(prev_drone_pos, dtype=np.float64)
         p1 = np.asarray(curr_drone_pos, dtype=np.float64)
@@ -91,13 +99,27 @@ class DynamicObstacleSphere3D:
         if np.linalg.norm(p1 - self.center_at(t1)) <= threshold:
             return True
 
-        # Adaptive subdivision to guarantee linear relative subsegment fidelity under high speed or bounce
-        v_obs_mag = float(np.linalg.norm(self.velocity))
+        # Adaptive subdivision based on valid maximum speed
+        v_obs_mag = self.max_speed()
         v_veh_est = float(np.linalg.norm(p1 - p0)) / dt
         v_rel_max = max(1.0, v_obs_mag + v_veh_est)
-        # Substep duration ensures max relative displacement per subsegment <= half the threshold
+
+        # Substep duration ensures relative displacement per subsegment <= half the threshold
         sub_dt = min(0.01, threshold / (2.0 * v_rel_max))
-        num_substeps = max(1, min(50, int(math.ceil(dt / sub_dt))))
+        max_substeps = 500
+        desired_substeps = max(1, int(math.ceil(dt / sub_dt)))
+        num_substeps = min(max_substeps, desired_substeps)
+
+        # Theoretical secant approximation error bound eps_sec over subsegment tau_step
+        tau_step = dt / num_substeps
+        if self.motion_type == "oscillate":
+            omega = 2.0 * math.pi / max(0.1, self.oscillation_period)
+            amp_mag = float(np.linalg.norm(self.oscillation_amplitude))
+            eps_sec = (1.0 / 8.0) * (tau_step**2) * (omega**2) * amp_mag
+        else:
+            eps_sec = v_obs_mag * tau_step
+
+        effective_threshold = threshold + eps_sec
 
         for k in range(num_substeps):
             frac_a = k / num_substeps
@@ -123,7 +145,17 @@ class DynamicObstacleSphere3D:
                 closest_rel = ra + s_opt * d_rel
                 min_dist = float(np.linalg.norm(closest_rel))
 
-            if min_dist <= threshold:
+            if min_dist <= effective_threshold:
+                return True
+
+        # When computational limits are reached (desired_substeps > max_substeps),
+        # fail conservatively if swept bounding volumes intersect.
+        if desired_substeps > max_substeps:
+            mid_drone = 0.5 * (p0 + p1)
+            mid_obs = 0.5 * (self.center_at(t0) + self.center_at(t1))
+            envelope_dist = float(np.linalg.norm(mid_drone - mid_obs))
+            swept_bound = threshold + 0.5 * v_rel_max * dt
+            if envelope_dist <= swept_bound:
                 return True
 
         return False
@@ -158,11 +190,35 @@ class DynamicObstacleSphere3D:
         horizon_sec: float = 3.0,
         dt: float = 0.5,
     ) -> List[ObstacleSphere3D]:
-        """Generate static spherical obstacle approximations covering the predicted trajectory horizon."""
-        return [
-            ObstacleSphere3D(center=pt, radius=self.radius)
-            for _, pt in self.predict_trajectory(t_start, horizon_sec, dt)
-        ]
+        """Generate static spherical obstacle approximations covering the predicted continuous swept volume.
+
+        Guarantees that consecutive spheres overlap with spacing <= 1.2 * radius,
+        leaving zero gaps in the predicted flight corridor.
+        """
+        raw_traj = self.predict_trajectory(t_start, horizon_sec, dt)
+        if not raw_traj:
+            return []
+
+        spheres: List[ObstacleSphere3D] = []
+        max_spacing = max(0.05, 1.2 * self.radius)
+
+        for i in range(len(raw_traj) - 1):
+            t_curr, c_curr = raw_traj[i]
+            t_next, c_next = raw_traj[i + 1]
+            seg_dist = float(np.linalg.norm(c_next - c_curr))
+            n_sub = max(1, int(math.ceil(seg_dist / max_spacing)))
+
+            for j in range(n_sub):
+                alpha = j / float(n_sub)
+                t_sample = t_curr + alpha * (t_next - t_curr)
+                c_sample = self.center_at(t_sample)
+                spheres.append(ObstacleSphere3D(center=c_sample, radius=self.radius))
+
+        # Include the final horizon endpoint
+        t_last, _ = raw_traj[-1]
+        spheres.append(ObstacleSphere3D(center=self.center_at(t_last), radius=self.radius))
+
+        return spheres
 
     def to_dict(self) -> Dict[str, Any]:
         return {

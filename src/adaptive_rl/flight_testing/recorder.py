@@ -143,6 +143,7 @@ class ExperimentConfigurationFingerprint:
     controller_gains: Dict[str, float] = field(default_factory=dict)
     scenarios: List[Dict[str, Any]] = field(default_factory=list)
     extra_parameters: Dict[str, Any] = field(default_factory=dict)
+    provenance_complete: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -156,6 +157,7 @@ class ExperimentConfigurationFingerprint:
             "controller_type": self.controller_type,
             "controller_gains": self.controller_gains,
             "extra_parameters": self.extra_parameters,
+            "provenance_complete": self.provenance_complete,
         }
 
 
@@ -196,6 +198,7 @@ class FlightRecord:
     trajectories: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     configuration: Optional[ExperimentConfigurationFingerprint] = None
     aggregate_summary: Dict[str, Any] = field(default_factory=dict)
+    provenance_complete: bool = True
     signature: Optional[str] = None  # Optional asymmetric HMAC / digital signature
 
     def to_dict(self, include_digest: bool = True) -> Dict[str, Any]:
@@ -211,6 +214,7 @@ class FlightRecord:
             "scenario_metrics": [m.to_dict() for m in self.scenario_metrics],
             "trajectories": self.trajectories,
             "aggregate_summary": self.aggregate_summary,
+            "provenance_complete": self.provenance_complete,
             "signature": self.signature,
         }
         if self.configuration is not None:
@@ -316,13 +320,47 @@ class FlightRecorder:
                 chk_hash = "not_found"
 
         # Serialize scenario provenance definitions
-        raw_scenarios = scenarios if scenarios is not None else physics_params.get("scenarios", [])
         scenario_provenance: List[Dict[str, Any]] = []
-        for sc in raw_scenarios:
-            if hasattr(sc, "to_dict"):
-                scenario_provenance.append(sc.to_dict())
-            elif isinstance(sc, dict):
-                scenario_provenance.append(sc)
+        provenance_complete: bool = True
+
+        raw_scenarios = (
+            scenarios if scenarios is not None else physics_params.get("scenarios", None)
+        )
+
+        if raw_scenarios is not None:
+            for sc in raw_scenarios:
+                if hasattr(sc, "to_dict"):
+                    scenario_provenance.append(sc.to_dict())
+                elif isinstance(sc, dict):
+                    scenario_provenance.append(sc)
+        else:
+            # Automatically infer scenario definitions from scenario_results
+            for r in scenario_results:
+                sc_def = getattr(r, "scenario_definition", None)
+                if sc_def is not None and hasattr(sc_def, "to_dict"):
+                    scenario_provenance.append(sc_def.to_dict())
+                else:
+                    name = getattr(r, "scenario_name", None)
+                    if name:
+                        try:
+                            from adaptive_rl.flight_testing.scenarios import get_scenario
+
+                            sc_obj = get_scenario(name)
+                            scenario_provenance.append(sc_obj.to_dict())
+                        except Exception:
+                            provenance_complete = False
+                    else:
+                        provenance_complete = False
+
+        scenario_provenance.sort(key=lambda s: str(s.get("name", "")))
+
+        # Verify whether all scenario_names have corresponding provenance
+        expected_scenario_names = set(m.scenario_name for m in metrics_list)
+        found_scenario_names = set(s.get("name") for s in scenario_provenance if "name" in s)
+        if expected_scenario_names and not expected_scenario_names.issubset(found_scenario_names):
+            provenance_complete = False
+        if not expected_scenario_names and not scenario_provenance:
+            provenance_complete = True
 
         # Build comprehensive ExperimentConfigurationFingerprint
         if configuration is not None:
@@ -348,6 +386,7 @@ class FlightRecorder:
                 controller_gains=dict(physics_params.get("controller_gains", {})),
                 scenarios=scenario_provenance,
                 extra_parameters=dict(physics_params.get("extra_parameters", {})),
+                provenance_complete=provenance_complete,
             )
 
         config_hash = compute_config_fingerprint(exp_config.to_dict())
@@ -412,9 +451,10 @@ class FlightRecorder:
             "random_seed": random_seed,
             "scenario_metrics": [m.to_dict() for m in metrics_list],
             "trajectories": collected_trajectories,
-            "configuration": exp_config.to_dict(),
             "aggregate_summary": agg_summary,
+            "provenance_complete": provenance_complete,
             "signature": signature,
+            "configuration": exp_config.to_dict(),
         }
         rec_digest = compute_record_digest(record_pre)
 
@@ -432,6 +472,7 @@ class FlightRecorder:
             trajectories=collected_trajectories,
             configuration=exp_config,
             aggregate_summary=agg_summary,
+            provenance_complete=provenance_complete,
             signature=signature,
         )
 
@@ -545,7 +586,9 @@ class FlightRecorder:
                 scenario_names=list(cfg_data.get("scenario_names", [])),
                 controller_type=str(cfg_data.get("controller_type", "QuadrotorPIDController")),
                 controller_gains=dict(cfg_data.get("controller_gains", {})),
+                scenarios=list(cfg_data.get("scenarios", [])),
                 extra_parameters=dict(cfg_data.get("extra_parameters", {})),
+                provenance_complete=bool(cfg_data.get("provenance_complete", True)),
             )
         else:
             configuration = ExperimentConfigurationFingerprint(
@@ -555,6 +598,7 @@ class FlightRecorder:
                 checkpoint_hash=data.get("checkpoint_hash"),
                 random_seed=data.get("random_seed"),
                 scenario_names=sorted([m.scenario_name for m in metrics_list]),
+                provenance_complete=bool(data.get("provenance_complete", True)),
             )
 
         record = FlightRecord(
@@ -571,6 +615,7 @@ class FlightRecorder:
             trajectories=trajectories,
             configuration=configuration,
             aggregate_summary=data.get("aggregate_summary", {}),
+            provenance_complete=bool(data.get("provenance_complete", True)),
             signature=data.get("signature"),
         )
 

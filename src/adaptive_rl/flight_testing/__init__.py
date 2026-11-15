@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from adaptive_rl.flight_testing.recorder import (
+    ExperimentConfigurationFingerprint,
     ExperimentMetadata,
     FlightRecord,
     FlightRecorder,
@@ -16,6 +17,7 @@ from adaptive_rl.flight_testing.scenarios import (
     FlightScenarioResult,
     FlightScenarioRunner,
     FlightStepTelemetry,
+    extract_callable_provenance,
     get_advanced_navigation_scenarios,
     get_all_flight_scenarios,
     get_scenario,
@@ -23,6 +25,7 @@ from adaptive_rl.flight_testing.scenarios import (
 )
 
 __all__ = [
+    "ExperimentConfigurationFingerprint",
     "ExperimentMetadata",
     "FlightRecord",
     "FlightRecorder",
@@ -34,6 +37,7 @@ __all__ = [
     "PhysicsSimulationFingerprint",
     "canonical_json_dumps",
     "compute_config_fingerprint",
+    "extract_callable_provenance",
     "get_advanced_navigation_scenarios",
     "get_all_flight_scenarios",
     "get_scenario",

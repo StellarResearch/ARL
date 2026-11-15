@@ -281,3 +281,123 @@ def test_scenario_provenance_invalidation() -> None:
         obstacles=[ObstacleSphere3D(center=np.array([5.0, 5.0, 4.0001]), radius=1.5)],
     )
     assert compute_config_fingerprint(alt_obs.to_dict()) != fp_base
+
+
+def test_create_record_infers_scenario_provenance_automatically(tmp_path: Path) -> None:
+    """FlightRecorder.create_record automatically infers scenario provenance from scenario_results."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioDefinition,
+        FlightScenarioRunner,
+    )
+
+    runner = FlightScenarioRunner()
+    sc = FlightScenarioDefinition(
+        name="test_inferred_scenario",
+        description="Test scenario for provenance inference",
+        initial_position=np.array([1.0, 2.0, 3.0]),
+        waypoints=[np.array([1.0, 2.0, 3.0])],
+        max_steps=5,
+    )
+    res = runner.run_scenario(sc)
+    assert res.scenario_definition is not None
+
+    recorder = FlightRecorder(output_dir=tmp_path)
+    record = recorder.create_record(
+        experiment_id="test_infer_exp",
+        physics_params={"mass": 1.0, "gravity": 9.81},
+        scenario_results=[res],  # No scenarios explicitly passed!
+    )
+
+    assert record.configuration is not None
+    assert len(record.configuration.scenarios) == 1
+    assert record.configuration.scenarios[0]["name"] == "test_inferred_scenario"
+    assert record.configuration.provenance_complete is True
+    assert record.verify_config_fingerprint() is True
+    assert record.verify_record_digest() is True
+
+
+def test_incomplete_scenario_provenance_flagged(tmp_path: Path) -> None:
+    """When scenario results cannot be resolved to definitions, provenance_complete is False."""
+    recorder = FlightRecorder(output_dir=tmp_path)
+    unknown_metric = FlightScenarioMetrics(
+        scenario_name="unknown_custom_scenario_xyz",
+        success=True,
+        outcome="success",
+        duration_steps=10,
+        duration_seconds=0.5,
+        final_position_error=0.01,
+        mean_position_error=0.02,
+        max_position_error=0.05,
+        rms_position_error=0.02,
+        mean_velocity_error=0.01,
+        max_velocity_error=0.02,
+        rms_velocity_error=0.01,
+        mean_attitude_error_deg=0.5,
+        max_attitude_error_deg=1.0,
+        mean_angular_speed=0.1,
+        max_angular_speed=0.2,
+        initial_goal_distance=1.0,
+        final_goal_distance=0.01,
+        min_obstacle_clearance=-1.0,
+        collision_count=0,
+        control_effort=10.0,
+        execution_wall_time_ms=5.0,
+    )
+
+    record = recorder.create_record(
+        experiment_id="test_incomplete_exp",
+        physics_params={"mass": 1.0, "gravity": 9.81},
+        scenario_results=[unknown_metric],
+    )
+
+    assert record.configuration is not None
+    assert record.configuration.provenance_complete is False
+    assert record.provenance_complete is False
+
+
+def test_callable_provenance_contract_closure_and_code() -> None:
+    """Callable provenance captures closure variables, bytecode hash, and explicit metadata."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioDefinition,
+        extract_callable_provenance,
+    )
+
+    def make_thrust_fault(factor: float, motor_idx: int):
+        def fault(step: int, thrusts: np.ndarray) -> np.ndarray:
+            t = thrusts.copy()
+            t[motor_idx] *= factor
+            return t
+
+        return fault
+
+    fault_50 = make_thrust_fault(0.5, 0)
+    fault_70 = make_thrust_fault(0.7, 0)
+
+    prov_50 = extract_callable_provenance(fault_50)
+    prov_70 = extract_callable_provenance(fault_70)
+
+    # Different closure values must yield different provenance
+    assert prov_50["closure"]["factor"] == 0.5
+    assert prov_70["closure"]["factor"] == 0.7
+    assert prov_50 != prov_70
+
+    # Scenarios using these distinct faults must yield distinct cryptographic fingerprints
+    sc1 = FlightScenarioDefinition(
+        name="sc1",
+        description="Sc 1",
+        initial_position=np.array([0.0, 0.0, 1.0]),
+        actuator_fault_fn=fault_50,
+    )
+    sc2 = FlightScenarioDefinition(
+        name="sc1",
+        description="Sc 1",
+        initial_position=np.array([0.0, 0.0, 1.0]),
+        actuator_fault_fn=fault_70,
+    )
+    assert compute_config_fingerprint(sc1.to_dict()) != compute_config_fingerprint(sc2.to_dict())
+
+    # Metadata inclusion
+    fault_50.metadata = {"subsystem": "avionics_esc_1"}  # type: ignore[attr-defined]
+    prov_meta = extract_callable_provenance(fault_50)
+    assert prov_meta.get("metadata") == {"subsystem": "avionics_esc_1"}
+    assert prov_meta != prov_50
