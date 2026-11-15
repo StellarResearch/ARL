@@ -859,3 +859,245 @@ def test_real_closed_loop_flight_scenario_repeated_replanning() -> None:
 
     # 3. Final position error within target radius:
     assert result.metrics.final_position_error <= sc.target_radius
+
+    # 4. Telemetry progression: t_{reached, wp1} < t_{reached, wp2} < t_{reached, wp3}
+    t_wp1 = None
+    t_wp2 = None
+    t_wp3 = None
+    for telem in result.telemetry:
+        pos = telem.position
+        if t_wp1 is None and np.linalg.norm(pos - wp1) <= sc.target_radius:
+            t_wp1 = telem.time_sec
+        if t_wp2 is None and np.linalg.norm(pos - wp2) <= sc.target_radius:
+            t_wp2 = telem.time_sec
+        if t_wp3 is None and np.linalg.norm(pos - wp3) <= sc.target_radius:
+            t_wp3 = telem.time_sec
+
+    assert t_wp1 is not None, "Waypoint 1 was never reached"
+    assert t_wp2 is not None, "Waypoint 2 was never reached"
+    assert t_wp3 is not None, "Waypoint 3 was never reached"
+    assert t_wp1 < t_wp2 < t_wp3, (
+        f"Waypoints reached out of order: t1={t_wp1}, t2={t_wp2}, t3={t_wp3}"
+    )
+
+
+def test_predict_occupied_spheres_mathematical_swept_coverage() -> None:
+    """Continuous swept volume coverage: points outside uninflated spheres are covered by R_eff."""
+    # Linear motion from [0, 0, 0] to [4, 0, 0] over 2 seconds (v=2 m/s), R=1.0
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([0.0, 0.0, 0.0]),
+        radius=1.0,
+        velocity=np.array([2.0, 0.0, 0.0]),
+        bounds=(100.0, 100.0, 50.0),
+    )
+    # 2 spheres (N=2, t=0 and t=2)
+    spheres = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=2.0, max_spheres=2)
+    assert len(spheres) == 2
+    c0 = spheres[0].center
+    c1 = spheres[1].center
+    r_eff = spheres[0].radius
+
+    # At midpoint t=1.0, obstacle center is at [2.0, 0.0, 0.0].
+    # Point p = [2.0, 0.9, 0.0] is inside the true obstacle at t=1.0 (dist=0.9 <= 1.0).
+    test_pt = np.array([2.0, 0.9, 0.0])
+    dist_to_c0 = float(np.linalg.norm(test_pt - c0))
+    dist_to_c1 = float(np.linalg.norm(test_pt - c1))
+    # Outside uninflated spheres (radius 1.0)
+    assert dist_to_c0 > 1.0
+    assert dist_to_c1 > 1.0
+    # Inside inflated R_eff sphere
+    assert dist_to_c0 <= r_eff or dist_to_c1 <= r_eff
+
+
+def test_predict_occupied_spheres_one_sphere_and_clamped_caps() -> None:
+    """Hard count caps and 1-sphere conservative envelope."""
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([10.0, 10.0, 10.0]),
+        radius=1.5,
+        velocity=np.array([3.0, 0.0, 0.0]),
+        bounds=(50.0, 50.0, 50.0),
+    )
+    # max_spheres = 1
+    s1 = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=3.0, max_spheres=1)
+    assert len(s1) == 1
+    # Center should be at midpoint t=1.5
+    np.testing.assert_allclose(s1[0].center, obs.center_at(1.5), atol=1e-5)
+    # Trajectory endpoints must be inside s1
+    assert (
+        float(np.linalg.norm(obs.center_at(0.0) - s1[0].center)) + obs.radius <= s1[0].radius + 1e-6
+    )
+    assert (
+        float(np.linalg.norm(obs.center_at(3.0) - s1[0].center)) + obs.radius <= s1[0].radius + 1e-6
+    )
+
+    # Clamped hard caps: max_spheres in [2, 5, 10] (needed is 18)
+    for cap in [2, 5, 10]:
+        sc = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=10.0, max_spheres=cap)
+        assert len(sc) == cap
+
+    # Unclamped when max_spheres exceeds needed count
+    sc_unclamped = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=10.0, max_spheres=50)
+    assert len(sc_unclamped) <= 50
+    assert len(sc_unclamped) == 18
+
+
+def test_predict_occupied_spheres_randomized_oracle_coverage() -> None:
+    """Randomized oracle: every point in the continuous swept obstacle volume is covered."""
+    # Test across linear bounce and oscillation
+    obs_bounce = DynamicObstacleSphere3D(
+        center_initial=np.array([5.0, 5.0, 5.0]),
+        radius=0.8,
+        velocity=np.array([4.0, -3.0, 2.0]),
+        bounds=(12.0, 12.0, 12.0),
+        motion_type="bounce",
+    )
+    obs_osc = DynamicObstacleSphere3D(
+        center_initial=np.array([15.0, 15.0, 8.0]),
+        radius=1.0,
+        velocity=np.zeros(3),
+        motion_type="oscillate",
+        oscillation_period=2.0,
+        oscillation_amplitude=np.array([5.0, 0.0, 3.0]),
+        bounds=(30.0, 30.0, 15.0),
+    )
+
+    rng = np.random.default_rng(12345)
+    for obs in [obs_bounce, obs_osc]:
+        for max_sph in [5, 25, 100]:
+            spheres = obs.predict_occupied_spheres(
+                t_start=0.5, horizon_sec=2.5, max_spheres=max_sph
+            )
+            # Sample 50 random timestamps and 5 points per timestamp
+            for _ in range(50):
+                t_rand = float(rng.uniform(0.5, 3.0))
+                c_rand = obs.center_at(t_rand)
+                # Random points within ball B(c_rand, obs.radius)
+                dir_vec = rng.normal(size=(5, 3))
+                dir_vec /= np.linalg.norm(dir_vec, axis=1, keepdims=True)
+                r_sample = rng.uniform(0.0, obs.radius, size=(5, 1))
+                pts = c_rand + dir_vec * r_sample
+
+                for pt in pts:
+                    # Point must be inside at least one predicted sphere
+                    covered = any(
+                        float(np.linalg.norm(pt - s.center)) <= s.radius + 1e-5 for s in spheres
+                    )
+                    assert covered, (
+                        f"Point {pt} at t={t_rand} was NOT covered by any of {len(spheres)} spheres!"
+                    )
+
+
+def test_predict_occupied_spheres_dt_strict_validation() -> None:
+    """predict_occupied_spheres strictly rejects invalid dt types (None, bool, non-finite, <=0)."""
+    import pytest
+
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([5.0, 5.0, 5.0]),
+        radius=1.0,
+        velocity=np.array([1.0, 0.0, 0.0]),
+    )
+    for bad_dt in [None, True, False, 0.0, -0.5, float("inf"), float("nan"), "0.5"]:
+        with pytest.raises(ValueError, match="dt must be a strictly positive finite float"):
+            obs.predict_occupied_spheres(t_start=0.0, horizon_sec=1.0, dt=bad_dt)  # type: ignore[arg-type]
+
+
+def test_drone_dynamics_max_translational_acceleration() -> None:
+    """DroneDynamics6DOF calculates analytical, defensible translational acceleration bound."""
+    from adaptive_rl.environments.drone_6dof import DroneDynamics6DOF
+
+    # 1. Base dynamics
+    dyn_base = DroneDynamics6DOF(
+        mass=1.0,
+        gravity=9.81,
+        max_thrust_per_motor=5.0,
+        linear_damping=0.1,
+        enable_ground_effect=False,
+    )
+    a_base = dyn_base.max_translational_acceleration(max_speed_bound=25.0)
+    # T_max/m + g + D*v/m = 20.0 + 9.81 + 0.1*25.0 = 32.31
+    assert abs(a_base - (20.0 + 9.81 + 2.5)) < 1e-4
+
+    # 2. Ground effect increases acceleration bound
+    dyn_ige = DroneDynamics6DOF(
+        mass=1.0,
+        gravity=9.81,
+        max_thrust_per_motor=5.0,
+        linear_damping=0.1,
+        enable_ground_effect=True,
+    )
+    a_ige = dyn_ige.max_translational_acceleration(max_speed_bound=25.0)
+    assert a_ige > a_base
+
+    # 3. Wind vector increases airspeed and drag contribution
+    dyn_wind = DroneDynamics6DOF(
+        mass=1.0,
+        gravity=9.81,
+        max_thrust_per_motor=5.0,
+        linear_damping=0.1,
+        wind_vector=np.array([10.0, 0.0, 0.0]),
+    )
+    a_wind = dyn_wind.max_translational_acceleration(max_speed_bound=25.0)
+    assert a_wind > a_base
+
+
+def test_drone_curved_path_static_obstacle_and_boundary_collision() -> None:
+    """Curved 6-DOF trajectory detects static obstacle and boundary breaches when chords are clear."""
+    import pytest
+
+    from adaptive_rl.environments.drone_6dof import Drone6DOFEnv, ObstacleSphere3D
+
+    # Environment with obstacle at [5.0, 6.0, 5.0], radius 1.0, drone radius 0.3
+    obs = ObstacleSphere3D(center=np.array([5.0, 6.0, 5.0]), radius=1.0)
+    env = Drone6DOFEnv(
+        bounds=(10.0, 10.0, 10.0),
+        collision_radius=0.3,
+        num_obstacles=0,
+    )
+    env._obstacles = [obs]
+
+    # Chord from [2.0, 4.0, 5.0] to [8.0, 4.0, 5.0]: y=4.0 everywhere.
+    # Closest point on chord to [5.0, 6.0, 5.0] is [5.0, 4.0, 5.0], distance = 2.0.
+    # Obstacle threshold = 1.0 + 0.3 = 1.3 < 2.0. Chord is clear!
+    p_start = np.array([2.0, 4.0, 5.0])
+    p_end = np.array([8.0, 4.0, 5.0])
+
+    coll_chord, _ = env._check_collision(p_end, prev_pos=p_start)
+    assert coll_chord is False, "Straight chord must be clear of obstacle!"
+
+    # Curved intermediate substep trajectory bulging to y=5.0 (dist=1.0 <= 1.3)
+    curved_pts = [
+        p_start,
+        np.array([4.0, 4.5, 5.0]),
+        np.array([5.0, 5.0, 5.0]),  # Intrusive intermediate point
+        np.array([6.0, 4.5, 5.0]),
+        p_end,
+    ]
+    coll_curved, coll_type = env._check_collision(
+        p_end, prev_pos=p_start, intermediate_positions=curved_pts
+    )
+    assert coll_curved is True
+    assert coll_type == "obstacle"
+
+    # Curved intermediate boundary breach: y dips below collision_radius
+    boundary_curved_pts = [
+        np.array([5.0, 2.0, 5.0]),
+        np.array([5.0, 0.1, 5.0]),  # Breaches y=0 bound (0.1 - 0.3 = -0.2 <= 0)
+        np.array([5.0, 2.0, 5.0]),
+    ]
+    coll_bnd, bnd_type = env._check_collision(
+        np.array([5.0, 2.0, 5.0]),
+        prev_pos=np.array([5.0, 2.0, 5.0]),
+        intermediate_positions=boundary_curved_pts,
+    )
+    assert coll_bnd is True
+    assert bnd_type == "boundary_y"
+
+    # Malformed intermediate positions fail closed
+    with pytest.raises(
+        ValueError, match="intermediate_positions must contain at least 2 positions"
+    ):
+        env._check_collision(p_end, prev_pos=p_start, intermediate_positions=[p_start])
+
+    with pytest.raises(ValueError, match="does not match prev_pos"):
+        bad_start = [np.array([0.0, 0.0, 0.0]), p_end]
+        env._check_collision(p_end, prev_pos=p_start, intermediate_positions=bad_start)

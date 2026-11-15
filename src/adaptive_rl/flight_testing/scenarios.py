@@ -347,16 +347,31 @@ def _safe_provenance_value(val: Any, _visited: Optional[set[int]] = None) -> Tup
         qual = getattr(val, "__qualname__", getattr(val, "__name__", str(val)))
         if mod == "builtins" or mod.startswith("numpy") or mod.startswith("scipy"):
             return f"class:{mod}.{qual}", True
-        # User/custom class: fingerprint class attributes
+
+        # Custom class: inspect MRO for base classes and inherited methods
+        mro_bases = [
+            f"{b.__module__}.{b.__qualname__}"
+            for b in inspect.getmro(val)
+            if b not in (object,) and getattr(b, "__module__", "") != "builtins"
+        ]
         cls_attrs: Dict[str, Any] = {}
         cls_complete = True
-        for k, v in sorted(val.__dict__.items(), key=lambda item: str(item[0])):
-            if not k.startswith("__"):
-                ser_v, ok_v = _safe_provenance_value(v, _visited=_visited)
-                cls_attrs[k] = ser_v
-                if not ok_v:
-                    cls_complete = False
-        return {"class": f"{mod}.{qual}", "attributes": cls_attrs}, cls_complete
+
+        for base in reversed(inspect.getmro(val)):
+            if base is object or getattr(base, "__module__", "") == "builtins":
+                continue
+            for k, v in sorted(base.__dict__.items(), key=lambda item: str(item[0])):
+                if not k.startswith("__") or k in ("__call__", "__init__"):
+                    ser_v, ok_v = _safe_provenance_value(v, _visited=_visited)
+                    cls_attrs[k] = ser_v
+                    if not ok_v:
+                        cls_complete = False
+
+        return {
+            "class": f"{mod}.{qual}",
+            "mro": mro_bases,
+            "attributes": cls_attrs,
+        }, cls_complete
 
     # Callable class instance
     if callable(val) and hasattr(val, "__call__"):
@@ -382,6 +397,20 @@ def _safe_provenance_value(val: Any, _visited: Optional[set[int]] = None) -> Tup
         cleaned = re.sub(r"\bat 0x[0-9a-fA-F]+\b", "", s).strip()
         return cleaned, False
     return s, False
+
+
+def _hash_code_recursive(code_obj: Any, hasher: Any) -> None:
+    """Recursively hash code object bytecode, referenced names, and nested code constants."""
+    hasher.update(getattr(code_obj, "co_code", b""))
+    for name in getattr(code_obj, "co_names", ()):
+        hasher.update(name.encode("utf-8", errors="replace"))
+    for vname in getattr(code_obj, "co_varnames", ()):
+        hasher.update(vname.encode("utf-8", errors="replace"))
+    for const in getattr(code_obj, "co_consts", ()):
+        if inspect.iscode(const) or hasattr(const, "co_code"):
+            _hash_code_recursive(const, hasher)
+        else:
+            hasher.update(str(const).encode("utf-8", errors="replace"))
 
 
 def extract_callable_provenance(fn: Any, _visited: Optional[set[int]] = None) -> Dict[str, Any]:
@@ -445,7 +474,27 @@ def extract_callable_provenance(fn: Any, _visited: Optional[set[int]] = None) ->
         info["module"] = str(fn.__module__)
 
     if is_callable_instance:
-        info["callable_class"] = f"{type(fn).__module__}.{type(fn).__qualname__}"
+        cls = type(fn)
+        info["callable_class"] = f"{cls.__module__}.{cls.__qualname__}"
+        info["class_mro"] = [
+            f"{b.__module__}.{b.__qualname__}"
+            for b in inspect.getmro(cls)
+            if b not in (object,) and getattr(b, "__module__", "") != "builtins"
+        ]
+        # Inspect inherited methods across MRO
+        inherited_methods: Dict[str, Any] = {}
+        for base in reversed(inspect.getmro(cls)):
+            if base is object or getattr(base, "__module__", "") == "builtins":
+                continue
+            for k, v in base.__dict__.items():
+                if not k.startswith("__") or k == "__call__":
+                    if inspect.isfunction(v) or inspect.ismethod(v):
+                        m_prov, m_ok = _safe_provenance_value(v, _visited=set(_visited))
+                        inherited_methods[k] = m_prov
+                        if not m_ok:
+                            provenance_complete = False
+        if inherited_methods:
+            info["class_methods"] = inherited_methods
 
     if partial_args:
         info["partial_args"] = partial_args
@@ -517,10 +566,33 @@ def extract_callable_provenance(fn: Any, _visited: Optional[set[int]] = None) ->
         for name in sorted(set(co_names)):
             if name in fn_globals and name not in builtin_names:
                 g_val = fn_globals[name]
-                ser_g, ok_g = _safe_provenance_value(g_val, _visited=set(_visited))
-                ref_globals[name] = ser_g
-                if not ok_g:
-                    provenance_complete = False
+                if inspect.ismodule(g_val):
+                    # Resolve module-qualified dependencies referenced in co_names
+                    mod_attrs: Dict[str, Any] = {}
+                    mod_all_ok = True
+                    for attr_name in sorted(set(co_names)):
+                        if hasattr(g_val, attr_name) and attr_name not in builtin_names:
+                            try:
+                                attr_obj = getattr(g_val, attr_name)
+                                ser_attr, ok_attr = _safe_provenance_value(
+                                    attr_obj, _visited=set(_visited)
+                                )
+                                mod_attrs[attr_name] = ser_attr
+                                if not ok_attr:
+                                    mod_all_ok = False
+                            except Exception:
+                                mod_attrs[attr_name] = f"unresolvable:{attr_name}"
+                                mod_all_ok = False
+                    if mod_attrs:
+                        ref_globals[f"{name}.attributes"] = mod_attrs
+                    ref_globals[name] = f"module:{g_val.__name__}"
+                    if not mod_all_ok:
+                        provenance_complete = False
+                else:
+                    ser_g, ok_g = _safe_provenance_value(g_val, _visited=set(_visited))
+                    ref_globals[name] = ser_g
+                    if not ok_g:
+                        provenance_complete = False
         if ref_globals:
             info["referenced_globals"] = ref_globals
 
@@ -535,17 +607,7 @@ def extract_callable_provenance(fn: Any, _visited: Optional[set[int]] = None) ->
         }
 
         hasher = hashlib.sha256()
-        hasher.update(getattr(code, "co_code", b""))
-        co_consts = getattr(code, "co_consts", ())
-        for const in co_consts:
-            if hasattr(const, "co_code"):
-                hasher.update(const.co_code)
-            else:
-                hasher.update(str(const).encode("utf-8", errors="replace"))
-        for name in getattr(code, "co_names", ()):
-            hasher.update(name.encode("utf-8", errors="replace"))
-        for vname in getattr(code, "co_varnames", ()):
-            hasher.update(vname.encode("utf-8", errors="replace"))
+        _hash_code_recursive(code, hasher)
         info["code_hash"] = hasher.hexdigest()
 
     info["provenance_complete"] = provenance_complete
@@ -1309,11 +1371,24 @@ class FlightScenarioRunner:
                     min_obs_d = d
             min_clearances.append(min_obs_d)
 
-            # Collision check
-            coll, coll_type = self.env._check_collision(new_state.position, prev_pos=old_pos)
+            # Collision check with analytical curvature error bound
+            a_max = (
+                self.env.dynamics.max_translational_acceleration(25.0)
+                if hasattr(self.env.dynamics, "max_translational_acceleration")
+                else 35.0
+            )
+            substep_h = getattr(self.env.dynamics, "substep_dt", dt)
+            eps_curv = 0.125 * a_max * (substep_h**2)
+            intermediate_positions = getattr(self.env.dynamics, "last_substep_positions", None)
+
+            coll, coll_type = self.env._check_collision(
+                new_state.position,
+                prev_pos=old_pos,
+                intermediate_positions=intermediate_positions,
+                curvature_error_bound=eps_curv,
+            )
             # Continuous swept dynamic obstacle collision check
             if not coll:
-                intermediate_positions = getattr(self.env.dynamics, "last_substep_positions", None)
                 for dyn_obs in scenario.dynamic_obstacles:
                     if dyn_obs.check_continuous_collision(
                         prev_drone_pos=old_pos,
@@ -1322,6 +1397,7 @@ class FlightScenarioRunner:
                         curr_time=time_sec,
                         vehicle_radius=scenario.collision_radius,
                         intermediate_drone_positions=intermediate_positions,
+                        veh_acc_max=a_max,
                     ):
                         coll = True
                         coll_type = "obstacle"

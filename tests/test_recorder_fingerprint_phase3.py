@@ -819,3 +819,168 @@ def test_explicit_configuration_fully_equivalent_preserved(tmp_path: Path) -> No
     assert record.configuration.provenance_complete is True
     assert record.verify_config_fingerprint() is True
     assert record.verify_record_digest() is True
+
+
+def test_provenance_captures_module_helper_changes() -> None:
+    """extract_callable_provenance fingerprints module-qualified helper functions referenced in co_names."""
+    import types
+
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    mod1 = types.ModuleType("dummy_helper_mod")
+    mod1.transform = lambda x: x * 2  # type: ignore[attr-defined]
+
+    mod2 = types.ModuleType("dummy_helper_mod")
+    mod2.transform = lambda x: x * 999  # type: ignore[attr-defined]
+
+    def caller_fn(val: float) -> float:
+        return dummy_mod.transform(val)  # type: ignore[name-defined] # noqa: F821
+
+    # Caller with mod1
+    caller_fn.__globals__["dummy_mod"] = mod1
+    prov1 = extract_callable_provenance(caller_fn)
+
+    # Caller with mod2
+    caller_fn.__globals__["dummy_mod"] = mod2
+    prov2 = extract_callable_provenance(caller_fn)
+
+    # Different module helper implementation MUST yield different referenced_globals provenance!
+    assert prov1["referenced_globals"] != prov2["referenced_globals"]
+
+
+def test_provenance_captures_inherited_class_methods() -> None:
+    """Custom callable class instances capture MRO hierarchy and inherited methods."""
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    class BaseA:
+        def compute(self, x: float) -> float:
+            return x + 1.0
+
+    class DerivedA(BaseA):
+        def __call__(self, x: float) -> float:
+            return self.compute(x)
+
+    class BaseB:
+        def compute(self, x: float) -> float:
+            return x + 100.0
+
+    class DerivedB(BaseB):
+        def __call__(self, x: float) -> float:
+            return self.compute(x)
+
+    inst_a = DerivedA()
+    inst_b = DerivedB()
+
+    prov_a = extract_callable_provenance(inst_a)
+    prov_b = extract_callable_provenance(inst_b)
+
+    assert prov_a["callable_class"] != prov_b["callable_class"]
+    assert "class_methods" in prov_a
+    assert "class_methods" in prov_b
+    assert prov_a["class_methods"] != prov_b["class_methods"]
+
+
+def test_explicit_configuration_duplicate_scenario_names_1to1_matching(tmp_path: Path) -> None:
+    """1-to-1 canonical matching correctly handles duplicate scenario names without collision."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioDefinition,
+        FlightScenarioRunner,
+    )
+
+    runner = FlightScenarioRunner()
+    sc1 = FlightScenarioDefinition(
+        name="repeat_scenario",
+        description="trial 1",
+        initial_position=np.array([1.0, 1.0, 1.0]),
+        max_steps=5,
+    )
+    sc2 = FlightScenarioDefinition(
+        name="repeat_scenario",
+        description="trial 2 with different initial position",
+        initial_position=np.array([4.0, 4.0, 2.0]),
+        max_steps=5,
+    )
+    res1 = runner.run_scenario(sc1)
+    res2 = runner.run_scenario(sc2)
+
+    physics = PhysicsSimulationFingerprint(
+        mass=1.0,
+        gravity=9.81,
+        arm_length=0.2,
+        arm_span=0.4,
+        rotor_offset_d=0.1414,
+        rotor_radius=0.09,
+        max_thrust_per_motor=5.0,
+        torque_to_thrust_ratio=0.01,
+        linear_damping=0.1,
+        angular_damping=0.02,
+        inertia=[0.01, 0.01, 0.02],
+        dt=0.05,
+        substeps=5,
+        substep_dt=0.01,
+        body_frame_lidar=False,
+        num_lidar_rays=16,
+        lidar_range=20.0,
+    )
+
+    # 1. Matching 1-to-1 duplicate configuration
+    cfg_matching = ExperimentConfigurationFingerprint(
+        physics=physics,
+        environment_bounds=[30.0, 30.0, 15.0],
+        algorithm_name="test",
+        checkpoint_hash=None,
+        random_seed=42,
+        scenario_names=["repeat_scenario", "repeat_scenario"],
+        scenarios=[sc1.to_dict(), sc2.to_dict()],
+        provenance_complete=True,
+    )
+
+    recorder = FlightRecorder(output_dir=tmp_path)
+    record_ok = recorder.create_record(
+        experiment_id="dup_sc_match",
+        physics_params={"mass": 1.0, "gravity": 9.81},
+        scenario_results=[res1, res2],
+        configuration=cfg_matching,
+    )
+    assert record_ok.provenance_complete is True
+    assert record_ok.configuration.provenance_complete is True
+
+    # 2. Missing one of the duplicate runs (length mismatch)
+    cfg_single = ExperimentConfigurationFingerprint(
+        physics=physics,
+        environment_bounds=[30.0, 30.0, 15.0],
+        algorithm_name="test",
+        checkpoint_hash=None,
+        random_seed=42,
+        scenario_names=["repeat_scenario"],
+        scenarios=[sc1.to_dict()],
+        provenance_complete=True,
+    )
+    record_missing = recorder.create_record(
+        experiment_id="dup_sc_missing",
+        physics_params={"mass": 1.0, "gravity": 9.81},
+        scenario_results=[res1, res2],
+        configuration=cfg_single,
+    )
+    assert record_missing.provenance_complete is False
+    assert record_missing.configuration.provenance_complete is False
+
+    # 3. Differing duplicate scenario configuration (e.g. sc1 and sc1 instead of sc1 and sc2)
+    cfg_mismatch = ExperimentConfigurationFingerprint(
+        physics=physics,
+        environment_bounds=[30.0, 30.0, 15.0],
+        algorithm_name="test",
+        checkpoint_hash=None,
+        random_seed=42,
+        scenario_names=["repeat_scenario", "repeat_scenario"],
+        scenarios=[sc1.to_dict(), sc1.to_dict()],  # Second sc2 replaced by duplicate of sc1!
+        provenance_complete=True,
+    )
+    record_mismatch = recorder.create_record(
+        experiment_id="dup_sc_mismatch",
+        physics_params={"mass": 1.0, "gravity": 9.81},
+        scenario_results=[res1, res2],
+        configuration=cfg_mismatch,
+    )
+    assert record_mismatch.provenance_complete is False
+    assert record_mismatch.configuration.provenance_complete is False

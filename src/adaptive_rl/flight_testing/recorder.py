@@ -381,17 +381,25 @@ class FlightRecorder:
         scenario_provenance.sort(key=lambda s: str(s.get("name", "")))
 
         # Verify whether all scenario_names have corresponding provenance
-        expected_scenario_names = set(m.scenario_name for m in metrics_list)
-        found_scenario_names = set(s.get("name") for s in scenario_provenance if "name" in s)
-        if expected_scenario_names and not expected_scenario_names.issubset(found_scenario_names):
+        expected_scenario_names = sorted(str(m.scenario_name) for m in metrics_list)
+        found_scenario_names = sorted(
+            str(s.get("name", ""))
+            for s in scenario_provenance
+            if isinstance(s, dict) and "name" in s
+        )
+        if expected_scenario_names != found_scenario_names:
             provenance_complete = False
         if not expected_scenario_names and not scenario_provenance:
             provenance_complete = True
 
-        # Map executed scenario definitions by name
-        exec_sc_by_name = {
-            s.get("name"): s for s in scenario_provenance if isinstance(s, dict) and "name" in s
-        }
+        def _canonical_sc_repr(sc: Any) -> str:
+            if not isinstance(sc, dict):
+                return str(sc)
+            # Filter out provenance_complete flag, keeping critical scenario definitions
+            # (name, initial_position, initial_velocity, initial_quaternion, waypoints, obstacles,
+            # dynamic_obstacles, bounds, collision_radius, target_radius, controller settings)
+            norm = {k: v for k, v in sc.items() if k != "provenance_complete"}
+            return canonical_json_dumps(norm)
 
         # Build comprehensive ExperimentConfigurationFingerprint
         if configuration is not None:
@@ -404,36 +412,30 @@ class FlightRecorder:
 
             # Validate explicitly supplied configuration against executed scenarios:
             cfg_valid = True
-            if expected_scenario_names:
-                cfg_names = set(exp_config.scenario_names)
-                if not expected_scenario_names.issubset(cfg_names):
-                    cfg_valid = False
+            cfg_scenario_names = sorted(exp_config.scenario_names)
+            if expected_scenario_names != cfg_scenario_names:
+                cfg_valid = False
 
-                cfg_sc_by_name = {
-                    s.get("name"): s
-                    for s in exp_config.scenarios
-                    if isinstance(s, dict) and "name" in s
-                }
-                if not expected_scenario_names.issubset(cfg_sc_by_name.keys()):
-                    cfg_valid = False
+            if len(scenario_provenance) != len(exp_config.scenarios):
+                cfg_valid = False
+            else:
+                # 1-to-1 canonical definition matching of sorted lists (handles duplicates without collision)
+                sorted_exec = sorted(
+                    scenario_provenance,
+                    key=lambda s: (str(s.get("name", "")), _canonical_sc_repr(s)),
+                )
+                sorted_cfg = sorted(
+                    exp_config.scenarios,
+                    key=lambda s: (str(s.get("name", "")), _canonical_sc_repr(s)),
+                )
 
-                # Compare canonical serialized scenario definitions (not only names)
-                for sc_name in expected_scenario_names:
-                    exec_def = exec_sc_by_name.get(sc_name)
-                    cfg_def = cfg_sc_by_name.get(sc_name)
-                    if exec_def is None or cfg_def is None:
+                for exec_sc, cfg_sc in zip(sorted_exec, sorted_cfg):
+                    if not isinstance(cfg_sc, dict) or cfg_sc.get("provenance_complete") is False:
                         cfg_valid = False
                         break
-                    # Normalize comparison: compare behavior-affecting content
-                    exec_content = {k: v for k, v in exec_def.items() if k != "provenance_complete"}
-                    cfg_content = {k: v for k, v in cfg_def.items() if k != "provenance_complete"}
-                    if canonical_json_dumps(exec_content) != canonical_json_dumps(cfg_content):
+                    if _canonical_sc_repr(exec_sc) != _canonical_sc_repr(cfg_sc):
                         cfg_valid = False
                         break
-
-                for sc in exp_config.scenarios:
-                    if isinstance(sc, dict) and sc.get("provenance_complete") is False:
-                        cfg_valid = False
 
             # Define ONE authoritative provenance completeness result
             authoritative_complete = (

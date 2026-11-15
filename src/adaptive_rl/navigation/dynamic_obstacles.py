@@ -127,7 +127,7 @@ class DynamicObstacleSphere3D:
         t0: float,
         t1: float,
         threshold: float,
-        veh_acc_max: float = 30.0,
+        veh_acc_max: float = 35.0,
     ) -> bool:
         """Evaluate continuous swept-sphere collision across a single linear vehicle segment [t0, t1]."""
         p0_arr = np.asarray(p0, dtype=np.float64)
@@ -217,40 +217,83 @@ class DynamicObstacleSphere3D:
         curr_time: float,
         vehicle_radius: float,
         intermediate_drone_positions: Optional[List[np.ndarray]] = None,
+        veh_acc_max: float = 35.0,
     ) -> bool:
         """Check continuous swept-sphere collision between vehicle and dynamic obstacle over [prev_time, curr_time].
 
         Calculates relative clearance between vehicle trajectory and moving obstacle trajectory.
         Supports actual 6-DOF intermediate RK4 substep positions when available, and bounds
         trajectory curvature using physical acceleration limits (eps_veh <= 1/8 * a_max * dt^2).
+        Fails closed on malformed or inconsistent intermediate trajectory data.
         """
         threshold = float(self.radius + vehicle_radius)
         t0 = float(prev_time)
         t1 = float(curr_time)
         dt = t1 - t0
 
+        p_start_check = np.asarray(prev_drone_pos, dtype=np.float64)
+        p_end_check = np.asarray(curr_drone_pos, dtype=np.float64)
+
+        if p_start_check.shape != (3,) or not np.all(np.isfinite(p_start_check)):
+            raise ValueError(f"prev_drone_pos must be a finite 3D vector, got {prev_drone_pos}")
+        if p_end_check.shape != (3,) or not np.all(np.isfinite(p_end_check)):
+            raise ValueError(f"curr_drone_pos must be a finite 3D vector, got {curr_drone_pos}")
+
         if dt <= 1e-9:
             c = self.center_at(t0)
-            return bool(np.linalg.norm(np.asarray(curr_drone_pos) - c) <= threshold)
+            return bool(np.linalg.norm(p_end_check - c) <= threshold)
 
-        if intermediate_drone_positions and len(intermediate_drone_positions) >= 2:
-            num_segs = len(intermediate_drone_positions) - 1
+        if intermediate_drone_positions is not None:
+            if not isinstance(intermediate_drone_positions, (list, tuple)):
+                raise ValueError(
+                    "intermediate_drone_positions must be a sequence of 3D coordinates"
+                )
+            if len(intermediate_drone_positions) < 2:
+                raise ValueError("intermediate_drone_positions must contain at least 2 positions")
+
+            validated_pts: List[np.ndarray] = []
+            for idx, pt in enumerate(intermediate_drone_positions):
+                arr = np.asarray(pt, dtype=np.float64)
+                if arr.shape != (3,):
+                    raise ValueError(
+                        f"intermediate_drone_positions[{idx}] must have shape (3,), got {arr.shape}"
+                    )
+                if not np.all(np.isfinite(arr)):
+                    raise ValueError(
+                        f"intermediate_drone_positions[{idx}] contains non-finite values: {arr}"
+                    )
+                validated_pts.append(arr)
+
+            # Agreement with endpoints
+            if np.linalg.norm(validated_pts[0] - p_start_check) > 1e-3:
+                raise ValueError(
+                    f"intermediate_drone_positions[0] {validated_pts[0]} does not match prev_drone_pos {p_start_check}"
+                )
+            if np.linalg.norm(validated_pts[-1] - p_end_check) > 1e-3:
+                raise ValueError(
+                    f"intermediate_drone_positions[-1] {validated_pts[-1]} does not match curr_drone_pos {p_end_check}"
+                )
+
+            num_segs = len(validated_pts) - 1
             for j in range(num_segs):
-                p_a = intermediate_drone_positions[j]
-                p_b = intermediate_drone_positions[j + 1]
+                p_a = validated_pts[j]
+                p_b = validated_pts[j + 1]
                 t_a = t0 + (j / num_segs) * dt
                 t_b = t0 + ((j + 1) / num_segs) * dt
-                if self._check_subsegment_collision(p_a, p_b, t_a, t_b, threshold):
+                if self._check_subsegment_collision(
+                    p_a, p_b, t_a, t_b, threshold, veh_acc_max=veh_acc_max
+                ):
                     return True
             return False
 
         # If intermediate positions are not provided, evaluate the single chord with full-interval vehicle curvature bound
         return self._check_subsegment_collision(
-            np.asarray(prev_drone_pos),
-            np.asarray(curr_drone_pos),
+            p_start_check,
+            p_end_check,
             t0,
             t1,
             threshold,
+            veh_acc_max=veh_acc_max,
         )
 
     def distance_to(self, point: np.ndarray, time_sec: float) -> float:
@@ -330,14 +373,14 @@ class DynamicObstacleSphere3D:
         if horizon_sec < 0.0:
             raise ValueError(f"horizon_sec must be non-negative, got {horizon_sec!r}")
 
-        if dt is not None:
-            if (
-                isinstance(dt, bool)
-                or not isinstance(dt, (int, float))
-                or not math.isfinite(dt)
-                or dt <= 0.0
-            ):
-                raise ValueError(f"dt must be a strictly positive finite float, got {dt!r}")
+        if (
+            dt is None
+            or isinstance(dt, bool)
+            or not isinstance(dt, (int, float))
+            or not math.isfinite(dt)
+            or dt <= 0.0
+        ):
+            raise ValueError(f"dt must be a strictly positive finite float, got {dt!r}")
 
         t_start_f = float(t_start)
         horizon_f = float(horizon_sec)
@@ -358,21 +401,17 @@ class DynamicObstacleSphere3D:
 
         # Required number of temporal steps to guarantee center spacing <= 1.2 * radius everywhere
         needed_steps = max(1, int(math.ceil(total_dist_bound / max_spacing)))
-        needed_spheres = needed_steps + 1
 
-        if needed_spheres > max_spheres:
-            if max_spheres == 1:
-                t_mid = t_start_f + 0.5 * horizon_f
-                eff_radius = max(self.radius, self.radius + 0.5 * total_dist_bound)
-                return [ObstacleSphere3D(center=self.center_at(t_mid), radius=eff_radius)]
+        if max_spheres == 1:
+            t_mid = t_start_f + 0.5 * horizon_f
+            eff_radius = self.radius + 0.5 * total_dist_bound
+            return [ObstacleSphere3D(center=self.center_at(t_mid), radius=eff_radius)]
 
-            actual_steps = max_spheres - 1
-            step_dt = horizon_f / actual_steps
-            step_disp_bound = v_max * step_dt
-            eff_radius = max(self.radius, step_disp_bound / 1.2)
-        else:
-            actual_steps = needed_steps
-            eff_radius = self.radius
+        actual_steps = min(needed_steps, max_spheres - 1)
+        actual_steps = max(1, actual_steps)
+        step_dt = horizon_f / actual_steps
+        step_disp_bound = v_max * step_dt
+        eff_radius = max(self.radius + 0.5 * step_disp_bound, step_disp_bound / 1.2)
 
         spheres: List[ObstacleSphere3D] = []
         for i in range(actual_steps + 1):

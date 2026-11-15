@@ -481,6 +481,38 @@ class DroneDynamics6DOF:
             self.state.angular_velocity = np.zeros(3, dtype=np.float64)
 
         self.actual_motor_thrusts = np.full(4, self.hover_thrust_per_motor, dtype=np.float64)
+        self.last_substep_positions = [self.state.position.copy()]
+
+    def max_translational_acceleration(self, max_speed_bound: float = 25.0) -> float:
+        """Derive an analytical upper bound on translational acceleration ||p_ddot|| in m/s^2.
+
+        From the translational equations of motion:
+            p_ddot = (1/m)*R(q)*[0, 0, T] + [0, 0, -g] + F_drag / m
+        By triangle inequality:
+            ||p_ddot|| <= (T_max / m) + g + (||F_drag||_max / m)
+
+        T_max incorporates Cheeseman-Bennett ground effect amplification (up to 1.30)
+        when enabled. F_drag considers linear damping and quadratic drag over relative
+        airspeed up to max_speed_bound + ||wind_vector||.
+        """
+        # Maximum collective thrust across all 4 motors
+        t_max_nominal = 4.0 * self.max_thrust_per_motor
+        if self.enable_ground_effect:
+            t_max = 1.30 * t_max_nominal
+        else:
+            t_max = t_max_nominal
+
+        # Airspeed bound
+        wind_speed = float(np.linalg.norm(self.wind_vector))
+        v_rel_max = max(0.0, float(max_speed_bound)) + wind_speed
+
+        # Drag force upper bound
+        drag_force_max = self.linear_damping * v_rel_max
+        if self.quadratic_drag_coeff > 0.0:
+            drag_force_max += self.quadratic_drag_coeff * (v_rel_max**2)
+
+        acc_max = (t_max / self.mass) + self.gravity + (drag_force_max / self.mass)
+        return float(acc_max)
 
     def compute_forces_and_torques(
         self, motor_thrusts: np.ndarray, altitude: Optional[float] = None
@@ -1015,10 +1047,15 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         return np.asarray(np.clip(raw, -1.0, 1.0), dtype=np.float32)
 
     def _check_collision(
-        self, pos: np.ndarray, prev_pos: Optional[np.ndarray] = None
+        self,
+        pos: np.ndarray,
+        prev_pos: Optional[np.ndarray] = None,
+        intermediate_positions: Optional[Sequence[np.ndarray]] = None,
+        curvature_error_bound: float = 0.0,
     ) -> Tuple[bool, str]:
-        r = self.collision_radius
+        r = float(self.collision_radius)
         bx, by, bz = self.bounds
+        eps_curv = max(0.0, float(curvature_error_bound))
 
         if prev_pos is None:
             if pos[0] - r <= 0.0 or pos[0] + r >= bx:
@@ -1033,36 +1070,76 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
                     return True, "obstacle"
             return False, "none"
 
-        # Continuous swept collision check between prev_pos and pos
         p0 = np.asarray(prev_pos, dtype=np.float64)
         p1 = np.asarray(pos, dtype=np.float64)
 
-        # 1. Swept boundary check
-        min_p = np.minimum(p0, p1)
-        max_p = np.maximum(p0, p1)
-        if min_p[0] - r <= 0.0 or max_p[0] + r >= bx:
-            return True, "boundary_x"
-        if min_p[1] - r <= 0.0 or max_p[1] + r >= by:
-            return True, "boundary_y"
-        if min_p[2] - r <= 0.0 or max_p[2] + r >= bz:
-            return True, "boundary_z"
+        if p0.shape != (3,) or not np.all(np.isfinite(p0)):
+            raise ValueError(f"prev_pos must be a finite 3-element vector, got {prev_pos}")
+        if p1.shape != (3,) or not np.all(np.isfinite(p1)):
+            raise ValueError(f"pos must be a finite 3-element vector, got {pos}")
 
-        # 2. Swept obstacle spheres check
-        seg = p1 - p0
-        seg_len_sq = float(np.dot(seg, seg))
+        # If intermediate positions are provided, decompose path into subsegments
+        if intermediate_positions is not None:
+            if not isinstance(intermediate_positions, (list, tuple)):
+                raise ValueError("intermediate_positions must be a sequence of 3D coordinates")
+            if len(intermediate_positions) < 2:
+                raise ValueError("intermediate_positions must contain at least 2 positions")
 
-        for obs in self._obstacles:
-            c = obs.center
-            threshold = obs.radius + r
-            if seg_len_sq < 1e-12:
-                dist = float(np.linalg.norm(p0 - c))
-            else:
-                t = float(np.dot(c - p0, seg) / seg_len_sq)
-                t_clamped = max(0.0, min(1.0, t))
-                closest_point = p0 + t_clamped * seg
-                dist = float(np.linalg.norm(closest_point - c))
-            if dist <= threshold:
-                return True, "obstacle"
+            validated_pts: List[np.ndarray] = []
+            for idx, pt in enumerate(intermediate_positions):
+                arr = np.asarray(pt, dtype=np.float64)
+                if arr.shape != (3,):
+                    raise ValueError(
+                        f"intermediate_positions[{idx}] must have shape (3,), got {arr.shape}"
+                    )
+                if not np.all(np.isfinite(arr)):
+                    raise ValueError(
+                        f"intermediate_positions[{idx}] contains non-finite values: {arr}"
+                    )
+                validated_pts.append(arr)
+
+            if np.linalg.norm(validated_pts[0] - p0) > 1e-3:
+                raise ValueError(
+                    f"intermediate_positions[0] {validated_pts[0]} does not match prev_pos {p0}"
+                )
+            if np.linalg.norm(validated_pts[-1] - p1) > 1e-3:
+                raise ValueError(
+                    f"intermediate_positions[-1] {validated_pts[-1]} does not match pos {p1}"
+                )
+
+            segments = [
+                (validated_pts[k], validated_pts[k + 1]) for k in range(len(validated_pts) - 1)
+            ]
+        else:
+            segments = [(p0, p1)]
+
+        for p_start, p_end in segments:
+            # 1. Swept boundary check with curvature error bound
+            min_p = np.minimum(p_start, p_end)
+            max_p = np.maximum(p_start, p_end)
+            if min_p[0] - r - eps_curv <= 0.0 or max_p[0] + r + eps_curv >= bx:
+                return True, "boundary_x"
+            if min_p[1] - r - eps_curv <= 0.0 or max_p[1] + r + eps_curv >= by:
+                return True, "boundary_y"
+            if min_p[2] - r - eps_curv <= 0.0 or max_p[2] + r + eps_curv >= bz:
+                return True, "boundary_z"
+
+            # 2. Swept obstacle spheres check with curvature error bound
+            seg = p_end - p_start
+            seg_len_sq = float(np.dot(seg, seg))
+
+            for obs in self._obstacles:
+                c = obs.center
+                threshold = obs.radius + r + eps_curv
+                if seg_len_sq < 1e-12:
+                    dist = float(np.linalg.norm(p_start - c))
+                else:
+                    t = float(np.dot(c - p_start, seg) / seg_len_sq)
+                    t_clamped = max(0.0, min(1.0, t))
+                    closest_point = p_start + t_clamped * seg
+                    dist = float(np.linalg.norm(closest_point - c))
+                if dist <= threshold:
+                    return True, "obstacle"
 
         return False, "none"
 
@@ -1279,7 +1356,17 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         dist_delta = self._prev_distance_to_goal - curr_distance
         self._prev_distance_to_goal = curr_distance
 
-        is_collision, collision_type = self._check_collision(self._position, prev_pos=old_pos)
+        a_max = self.dynamics.max_translational_acceleration(self.max_velocity)
+        substep_h = self.dynamics.substep_dt
+        eps_curv = 0.125 * a_max * (substep_h**2)
+        inter_pos = self.dynamics.last_substep_positions
+
+        is_collision, collision_type = self._check_collision(
+            self._position,
+            prev_pos=old_pos,
+            intermediate_positions=inter_pos,
+            curvature_error_bound=eps_curv,
+        )
         is_success = curr_distance <= self.target_radius
 
         terminated = False
