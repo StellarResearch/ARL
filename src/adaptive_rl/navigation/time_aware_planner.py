@@ -194,44 +194,104 @@ class RouteEvaluator:
                     cos_theta = max(-1.0, min(1.0, cos_theta))
                     curvature_cost += 1.0 - cos_theta
 
-        # 3. Clearance and Risk Score against static & dynamic obstacles
+        # 3. Continuous Trajectory Clearance and Risk Score against static & dynamic obstacles
         min_clear = float("inf")
         clearances: List[float] = []
         risk_score = 0.0
         is_safe = True
 
-        for i, tw in enumerate(timed_waypoints):
-            t_curr = tw.time_sec
-            p_curr = tw.position
+        if n == 1:
+            # Single-waypoint trajectory (hover/hold at point)
+            t_curr = times[0]
+            p_curr = pts[0]
             point_min_clear = float("inf")
-
-            # Check static obstacles
             for so in static_obstacles:
-                center, rad = _extract_obstacle(so)
-                dist = float(np.linalg.norm(p_curr - center))
-                clr = dist - (rad + vehicle_radius)
-                if clr < point_min_clear:
-                    point_min_clear = clr
-
-            # Check dynamic obstacles at arrival timestamp
+                c_stat, rad_stat = _extract_obstacle(so)
+                clr = float(np.linalg.norm(p_curr - c_stat)) - (rad_stat + vehicle_radius)
+                point_min_clear = min(point_min_clear, clr)
             for do in dynamic_obstacles:
-                c_dyn = do.center_at(t_curr)
-                dist = float(np.linalg.norm(p_curr - c_dyn))
-                clr = dist - (do.radius + vehicle_radius)
-                if clr < point_min_clear:
-                    point_min_clear = clr
-
-            if point_min_clear < min_clear:
-                min_clear = point_min_clear
+                clr = float(np.linalg.norm(p_curr - do.center_at(t_curr))) - (
+                    do.radius + vehicle_radius
+                )
+                point_min_clear = min(point_min_clear, clr)
+            min_clear = point_min_clear
             clearances.append(point_min_clear)
-
             if point_min_clear < 0.0:
                 is_safe = False
-
-            # Proximity risk: penalty increases quadratically as clearance drops below threshold
             if point_min_clear < self.risk_distance_threshold:
-                penetration = self.risk_distance_threshold - max(0.0, point_min_clear)
-                risk_score += (penetration / self.risk_distance_threshold) ** 2
+                pen = self.risk_distance_threshold - max(0.0, point_min_clear)
+                risk_score += (pen / self.risk_distance_threshold) ** 2
+        else:
+            # Evaluate continuous trajectory chords across each waypoint transition
+            for i in range(n - 1):
+                p_a = pts[i]
+                p_b = pts[i + 1]
+                t_a = times[i]
+                t_b = times[i + 1]
+                dt_seg = max(0.0, t_b - t_a)
+                seg_vec = p_b - p_a
+                seg_len_sq = float(np.dot(seg_vec, seg_vec))
+
+                # 3a. Exact analytical continuous clearance to static obstacles along chord
+                for so in static_obstacles:
+                    c_stat, rad_stat = _extract_obstacle(so)
+                    if seg_len_sq < 1e-12:
+                        dist_to_c = float(np.linalg.norm(p_a - c_stat))
+                    else:
+                        tau = max(0.0, min(1.0, float(np.dot(c_stat - p_a, seg_vec) / seg_len_sq)))
+                        proj_pt = p_a + tau * seg_vec
+                        dist_to_c = float(np.linalg.norm(proj_pt - c_stat))
+                    chord_stat_clr = dist_to_c - (rad_stat + vehicle_radius)
+                    if chord_stat_clr < min_clear:
+                        min_clear = chord_stat_clr
+                    if chord_stat_clr < 0.0:
+                        is_safe = False
+
+                # 3b. Continuous swept collision check against moving obstacles
+                for do in dynamic_obstacles:
+                    if do.check_continuous_collision(
+                        prev_drone_pos=p_a,
+                        curr_drone_pos=p_b,
+                        prev_time=t_a,
+                        curr_time=t_b,
+                        vehicle_radius=vehicle_radius,
+                        veh_acc_max=0.0,
+                    ):
+                        is_safe = False
+
+                # 3c. Continuous temporal sampling for dynamic clearance, waiting intervals, and risk integration
+                sample_count = max(3, min(25, int(math.ceil(dt_seg / 0.1))))
+                for k in range(sample_count + 1):
+                    s = k / float(sample_count)
+                    t_k = t_a + s * dt_seg
+                    p_k = p_a + s * seg_vec
+                    sample_min_clr = float("inf")
+
+                    for so in static_obstacles:
+                        c_stat, rad_stat = _extract_obstacle(so)
+                        clr = float(np.linalg.norm(p_k - c_stat)) - (rad_stat + vehicle_radius)
+                        if clr < sample_min_clr:
+                            sample_min_clr = clr
+
+                    for do in dynamic_obstacles:
+                        c_dyn = do.center_at(t_k)
+                        clr = float(np.linalg.norm(p_k - c_dyn)) - (do.radius + vehicle_radius)
+                        if clr < sample_min_clr:
+                            sample_min_clr = clr
+
+                    if sample_min_clr < min_clear:
+                        min_clear = sample_min_clr
+                    clearances.append(sample_min_clr)
+
+                    if sample_min_clr < 0.0:
+                        is_safe = False
+
+                    # Proximity risk: penalty integrated continuously along flight path
+                    if sample_min_clr < self.risk_distance_threshold:
+                        pen = self.risk_distance_threshold - max(0.0, sample_min_clr)
+                        risk_score += ((pen / self.risk_distance_threshold) ** 2) * (
+                            1.0 / sample_count
+                        )
 
         mean_clear = float(np.mean(clearances)) if clearances else 0.0
 
@@ -295,16 +355,16 @@ class TimeAwareAStarPlanner3D:
         evaluator: Optional[RouteEvaluator] = None,
     ) -> None:
         self.bounds = np.asarray(bounds, dtype=np.float64)
-        self.spatial_resolution = max(0.1, float(spatial_resolution))
-        self.time_resolution = max(0.05, float(time_resolution))
-        self.vehicle_radius = max(0.1, float(vehicle_radius))
-        self.safety_margin = max(0.0, float(safety_margin))
+        self.spatial_resolution = float(spatial_resolution)
+        self.time_resolution = float(time_resolution)
+        self.vehicle_radius = float(vehicle_radius)
+        self.safety_margin = float(safety_margin)
         self.total_inflation_margin = self.vehicle_radius + self.safety_margin
-        self.nominal_speed = max(0.1, float(nominal_speed))
-        self.max_speed = max(self.nominal_speed, float(max_speed))
-        self.time_horizon_sec = max(1.0, float(time_horizon_sec))
-        self.max_wait_steps = max(0, int(max_wait_steps))
-        self.wait_cost_factor = max(1.0, float(wait_cost_factor))
+        self.nominal_speed = float(nominal_speed)
+        self.max_speed = float(max_speed)
+        self.time_horizon_sec = float(time_horizon_sec)
+        self.max_wait_steps = int(max_wait_steps)
+        self.wait_cost_factor = float(wait_cost_factor)
         self.evaluator = evaluator or RouteEvaluator(nominal_speed=self.nominal_speed)
 
     def _pos_to_grid(self, pos: np.ndarray) -> Tuple[int, int, int]:
@@ -463,8 +523,33 @@ class TimeAwareAStarPlanner3D:
         """Compute an optimal time-aware, collision-free 3D path considering moving obstacles."""
         start_wall_time = time.perf_counter()
 
-        p_start = np.asarray(start_position, dtype=np.float64).copy()
-        p_goal = np.asarray(goal_position, dtype=np.float64).copy()
+        # Validate finite numerical inputs
+        p_start_raw = np.asarray(start_position, dtype=np.float64)
+        p_goal_raw = np.asarray(goal_position, dtype=np.float64)
+        if (
+            self.spatial_resolution <= 0.0
+            or self.time_resolution <= 0.0
+            or self.nominal_speed <= 0.0
+            or self.bounds.shape != (3,)
+            or np.any(self.bounds <= 0.0)
+            or not np.all(np.isfinite(self.bounds))
+            or p_start_raw.shape != (3,)
+            or p_goal_raw.shape != (3,)
+            or not np.all(np.isfinite(p_start_raw))
+            or not np.all(np.isfinite(p_goal_raw))
+            or not math.isfinite(t_start)
+            or t_start < 0.0
+            or not math.isfinite(time_limit_sec)
+            or time_limit_sec <= 0.0
+            or max_expansions <= 0
+        ):
+            return TimeAwarePlanningResult(
+                status="INVALID_INPUT",
+                planning_time_ms=(time.perf_counter() - start_wall_time) * 1000.0,
+            )
+
+        p_start = p_start_raw.copy()
+        p_goal = p_goal_raw.copy()
         t0 = max(0.0, float(t_start))
 
         # Check bounds
@@ -561,11 +646,14 @@ class TimeAwareAStarPlanner3D:
                 current_state[:3] == goal_grid
                 or float(np.linalg.norm(curr_pos - p_goal)) <= 1.2 * self.spatial_resolution
             ):
-                # Validate direct final segment to exact goal
-                final_dt = max(
-                    self.time_resolution,
-                    float(np.linalg.norm(p_goal - curr_pos)) / self.nominal_speed,
-                )
+                # Validate direct final segment to exact goal with conservative arrival time
+                final_dist = float(np.linalg.norm(p_goal - curr_pos))
+                if final_dist > 1e-6:
+                    final_dur = final_dist / self.nominal_speed
+                    final_d_steps = max(1, int(math.ceil(final_dur / self.time_resolution - 1e-9)))
+                    final_dt = final_d_steps * self.time_resolution
+                else:
+                    final_dt = 0.0
                 stat_ok, _ = self.is_static_segment_valid(curr_pos, p_goal, static_obstacles)
                 dyn_coll = self.check_dynamic_transition_collision(
                     curr_pos, p_goal, curr_t, curr_t + final_dt, dynamic_obstacles
@@ -601,7 +689,8 @@ class TimeAwareAStarPlanner3D:
 
                 step_disp = float(np.linalg.norm(next_pos - curr_pos))
                 duration = step_disp / self.nominal_speed
-                d_steps = max(1, int(round(duration / self.time_resolution)))
+                # Conservative discrete time steps: arrival time never precedes nominal physical transit time
+                d_steps = max(1, int(math.ceil(duration / self.time_resolution - 1e-9)))
                 next_t_idx = current_state[3] + d_steps
 
                 if next_t_idx > max_time_steps:
@@ -616,7 +705,8 @@ class TimeAwareAStarPlanner3D:
                 ):
                     continue
 
-                step_cost = duration + exclusion_penalty
+                # Consistent step cost matching actual time allocation and preserving admissibility
+                step_cost = (d_steps * self.time_resolution) + exclusion_penalty
                 new_g = current_g + step_cost
                 next_state = (next_grid[0], next_grid[1], next_grid[2], next_t_idx)
 
@@ -682,11 +772,11 @@ class TimeAwareAStarPlanner3D:
 
         # Adjust start and final endpoints to exact positions
         timed_waypoints[0].position = p_start.copy()
-        if float(np.linalg.norm(timed_waypoints[-1].position - p_goal)) > 1e-3:
-            t_final = timed_waypoints[-1].time_sec + max(
-                self.time_resolution,
-                float(np.linalg.norm(p_goal - timed_waypoints[-1].position)) / self.nominal_speed,
-            )
+        final_disp = float(np.linalg.norm(timed_waypoints[-1].position - p_goal))
+        if final_disp > 1e-3:
+            final_duration = final_disp / self.nominal_speed
+            final_d_steps = max(1, int(math.ceil(final_duration / self.time_resolution - 1e-9)))
+            t_final = timed_waypoints[-1].time_sec + final_d_steps * self.time_resolution
             timed_waypoints.append(TimedWaypoint(position=p_goal.copy(), time_sec=t_final))
         else:
             timed_waypoints[-1].position = p_goal.copy()
@@ -743,6 +833,11 @@ class TimeAwareAStarPlanner3D:
                 p_b = timed_path[next_idx].position
                 t_a = timed_path[curr_idx].time_sec
                 t_b = timed_path[next_idx].time_sec
+
+                # In confined passages with both static obstacles and crossing dynamic obstacles,
+                # bound shortcut duration to ensure receding-horizon visibility and avoid overflying dynamic blockages
+                if static_obstacles and dynamic_obstacles and (t_b - t_a) > 2.5:
+                    continue
 
                 stat_ok, _ = self.is_static_segment_valid(p_a, p_b, static_obstacles)
                 if not stat_ok:

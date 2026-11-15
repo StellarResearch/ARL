@@ -7,6 +7,7 @@ obstacle collision monitoring, and waypoint sequencing for the flight controller
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -57,6 +58,7 @@ class MissionTelemetry:
     state_source: str = "ground_truth"
     planned_vs_actual_deviation: float = 0.0
     active_route_cost: float = 0.0
+    obstacle_prediction_error: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -84,6 +86,7 @@ class MissionTelemetry:
             "state_source": self.state_source,
             "planned_vs_actual_deviation": round(self.planned_vs_actual_deviation, 4),
             "active_route_cost": round(self.active_route_cost, 4),
+            "obstacle_prediction_error": round(self.obstacle_prediction_error, 4),
         }
 
 
@@ -109,6 +112,9 @@ class MissionManager:
         max_waiting_duration_sec: float = 5.0,
         max_path_deviation_threshold: float = 2.0,
         state_source: str = "ground_truth",
+        use_alternatives: bool = True,
+        schedule_delay_threshold_sec: float = 8.0,
+        obstacle_prediction_divergence_threshold: float = 0.5,
     ) -> None:
         self.planner = planner or AStarPlanner3D()
         self.time_aware_planner = time_aware_planner
@@ -119,6 +125,11 @@ class MissionManager:
         self.max_waiting_duration_sec = max(0.5, float(max_waiting_duration_sec))
         self.max_path_deviation_threshold = max(0.5, float(max_path_deviation_threshold))
         self.state_source = str(state_source)
+        self.use_alternatives = bool(use_alternatives)
+        self.schedule_delay_threshold_sec = max(0.5, float(schedule_delay_threshold_sec))
+        self.obstacle_prediction_divergence_threshold = max(
+            0.1, float(obstacle_prediction_divergence_threshold)
+        )
 
         self.state: MissionState = MissionState.IDLE
         self.mission_waypoints: List[np.ndarray] = []
@@ -138,6 +149,8 @@ class MissionManager:
         self.cumulative_waiting_duration: float = 0.0
         self.planned_vs_actual_deviation: float = 0.0
         self.active_route_cost: float = 0.0
+        self.current_target_velocity: np.ndarray = np.zeros(3, dtype=np.float64)
+        self.max_obstacle_prediction_error: float = 0.0
 
     def start_mission(
         self,
@@ -175,18 +188,50 @@ class MissionManager:
             total_cost = 0.0
 
             for goal in self.mission_waypoints:
-                ta_res = self.time_aware_planner.plan(
-                    start_position=curr_pt,
-                    goal_position=goal,
-                    static_obstacles=static_obstacles,
-                    dynamic_obstacles=dyn_obs,
-                    t_start=curr_t,
-                )
-                if ta_res.status != "SUCCESS" or not ta_res.timed_waypoints:
-                    logger.warning("Time-aware planning failed to goal %s: %s", goal, ta_res.status)
-                    self.state = MissionState.FAILED_BLOCKED
-                    self.replan_reason = f"initial_plan_failed_{ta_res.status.lower()}"
-                    return False
+                if self.use_alternatives:
+                    alt_res = self.time_aware_planner.plan_alternatives(
+                        start_position=curr_pt,
+                        goal_position=goal,
+                        static_obstacles=static_obstacles,
+                        dynamic_obstacles=dyn_obs,
+                        t_start=curr_t,
+                        num_alternatives=2,
+                        time_limit_sec=12.0,
+                    )
+                    valid_candidates = [
+                        r for r in alt_res if r.status == "SUCCESS" and r.timed_waypoints
+                    ]
+                    if valid_candidates:
+                        ta_res = valid_candidates[0]
+                    else:
+                        ta_res = self.time_aware_planner.plan(
+                            start_position=curr_pt,
+                            goal_position=goal,
+                            static_obstacles=static_obstacles,
+                            dynamic_obstacles=dyn_obs,
+                            t_start=curr_t,
+                            time_limit_sec=15.0,
+                        )
+                    if ta_res.status != "SUCCESS" or not ta_res.timed_waypoints:
+                        logger.warning("Time-aware planning failed to goal %s", goal)
+                        self.state = MissionState.FAILED_BLOCKED
+                        self.replan_reason = "initial_plan_failed_blocked"
+                        return False
+                else:
+                    ta_res = self.time_aware_planner.plan(
+                        start_position=curr_pt,
+                        goal_position=goal,
+                        static_obstacles=static_obstacles,
+                        dynamic_obstacles=dyn_obs,
+                        t_start=curr_t,
+                    )
+                    if ta_res.status != "SUCCESS" or not ta_res.timed_waypoints:
+                        logger.warning(
+                            "Time-aware planning failed to goal %s: %s", goal, ta_res.status
+                        )
+                        self.state = MissionState.FAILED_BLOCKED
+                        self.replan_reason = f"initial_plan_failed_{ta_res.status.lower()}"
+                        return False
 
                 for tw in ta_res.timed_waypoints[1:]:
                     full_timed.append(tw)
@@ -199,6 +244,7 @@ class MissionManager:
             self.active_path = [tw.position.copy() for tw in full_timed]
             self.active_route_cost = total_cost
             self.active_path_idx = 1 if len(full_timed) > 1 else 0
+            self._update_target_velocity(pos=self.home_position, time_sec=time_sec)
             self.state = MissionState.EXECUTING
             return True
 
@@ -235,11 +281,28 @@ class MissionManager:
     ) -> Tuple[np.ndarray, MissionTelemetry]:
         """Update navigation state machine, check clearance, replan if blocked, and return target."""
         pos = drone_state.position
+        vel = drone_state.velocity
+        quat = drone_state.quaternion
+        omega = drone_state.angular_velocity
+        q_norm = float(np.linalg.norm(quat)) if quat is not None else 0.0
 
-        # Fail closed on non-finite state observations (sensor failure or crash)
-        if not np.all(np.isfinite(pos)) or not np.all(np.isfinite(drone_state.velocity)):
+        # Strict fail-closed sensor state validation (preventing silent corruption or invalid control)
+        if (
+            not math.isfinite(time_sec)
+            or time_sec < 0.0
+            or pos is None
+            or not np.all(np.isfinite(pos))
+            or vel is None
+            or not np.all(np.isfinite(vel))
+            or quat is None
+            or not np.all(np.isfinite(quat))
+            or omega is None
+            or not np.all(np.isfinite(omega))
+            or abs(q_norm - 1.0) > 0.05
+        ):
             self.state = MissionState.ABORTED
-            self.replan_reason = "sensor_state_invalid_non_finite"
+            self.replan_reason = "sensor_state_non_finite_or_invalid_fail_closed"
+            self.current_target_velocity = np.zeros(3, dtype=np.float64)
             return (
                 self.home_position.copy() if self.home_position is not None else np.zeros(3)
             ), self.get_telemetry(drone_state)
@@ -250,6 +313,7 @@ class MissionManager:
             MissionState.WAITING,
         ):
             current_target = self.active_path[-1] if self.active_path else pos.copy()
+            self._update_target_velocity(pos=pos, time_sec=time_sec)
             return current_target, self.get_telemetry(drone_state)
 
         dyn_obs = dynamic_obstacles or []
@@ -289,19 +353,49 @@ class MissionManager:
         else:
             self.planned_vs_actual_deviation = float(np.linalg.norm(pos - current_target))
 
-        # --- Receding-Horizon Route Clearance Check ---
+        # --- Receding-Horizon Route Clearance & Divergence Check ---
         trigger_replan = False
         replan_reason = "none"
         critical_clearance = False
 
+        # Check for dynamic obstacle prediction divergence and build evaluation obstacle list
+        current_eval_dyn_obs: List[DynamicObstacleSphere3D] = []
+        for d in dyn_obs:
+            if hasattr(d, "prediction_error") and callable(getattr(d, "prediction_error")):
+                p_err = float(d.prediction_error(time_sec))
+                if p_err > self.max_obstacle_prediction_error:
+                    self.max_obstacle_prediction_error = p_err
+                if p_err > self.obstacle_prediction_divergence_threshold:
+                    trigger_replan = True
+                    replan_reason = "obstacle_prediction_divergence"
+                if hasattr(d, "as_updated_obstacle") and callable(
+                    getattr(d, "as_updated_obstacle")
+                ):
+                    current_eval_dyn_obs.append(d.as_updated_obstacle(time_sec))
+                else:
+                    current_eval_dyn_obs.append(d)
+            else:
+                current_eval_dyn_obs.append(d)
+
+        # 4D Schedule delay check: trigger replanning if significantly behind planned timestamps
+        if self.active_timed_waypoints and self.active_path_idx < len(self.active_timed_waypoints):
+            active_tw = self.active_timed_waypoints[self.active_path_idx]
+            if (
+                not active_tw.is_waiting
+                and (time_sec > active_tw.time_sec + self.schedule_delay_threshold_sec)
+                and (dist_to_target > self.waypoint_acceptance_radius)
+            ):
+                trigger_replan = True
+                replan_reason = "schedule_delay_exceeded"
+
         if self.active_path_idx < len(self.active_path):
-            # Check upcoming segment against moving obstacles over lookahead window
+            # Check upcoming segment against moving obstacles over lookahead horizon
             dt_lookahead = 2.5
             t_eval_end = time_sec + dt_lookahead
 
             if self.time_aware_planner is not None:
                 coll_ahead = self.time_aware_planner.check_dynamic_transition_collision(
-                    pos, current_target, time_sec, t_eval_end, dyn_obs
+                    pos, current_target, time_sec, t_eval_end, current_eval_dyn_obs
                 )
                 stat_ahead, clr_stat = self.time_aware_planner.is_static_segment_valid(
                     pos, current_target, static_obstacles
@@ -314,7 +408,7 @@ class MissionManager:
                     replan_reason = "static_corridor_obstructed"
             else:
                 predicted_dyn_obs: List[ObstacleSphere3D] = []
-                for d in dyn_obs:
+                for d in current_eval_dyn_obs:
                     predicted_dyn_obs.extend(
                         d.predict_occupied_spheres(time_sec, horizon_sec=dt_lookahead, dt=0.5)
                     )
@@ -332,7 +426,7 @@ class MissionManager:
                 replan_reason = "excessive_path_deviation"
 
             # Check if clearance is critically low
-            for d in dyn_obs:
+            for d in current_eval_dyn_obs:
                 c_now = d.center_at(time_sec)
                 d_dist = float(np.linalg.norm(pos - c_now))
                 d_clear = d_dist - (d.radius + veh_rad)
@@ -344,8 +438,13 @@ class MissionManager:
         # --- Replanning Execution with Cooldown & Hysteresis ---
         if trigger_replan:
             cooldown_active = (time_sec - self.last_replan_time_sec) < self.replan_cooldown_sec
-            # Safety override: critical clearance bypasses cooldown immediately!
-            if critical_clearance or not cooldown_active:
+            # Safety override: critical clearance or obstruction bypasses cooldown immediately!
+            safety_override = critical_clearance or replan_reason in (
+                "dynamic_obstacle_intersects_corridor",
+                "obstacle_prediction_divergence",
+                "static_corridor_obstructed",
+            )
+            if safety_override or not cooldown_active:
                 logger.info(
                     "Replanning triggered at t=%.2fs (reason: %s)...", time_sec, replan_reason
                 )
@@ -362,7 +461,7 @@ class MissionManager:
 
                 replan_success = False
 
-                # 1. Attempt Time-Aware Replanning
+                # 1. Attempt Time-Aware Replanning with alternative corridors
                 if self.time_aware_planner is not None:
                     replan_timed: List[TimedWaypoint] = [
                         TimedWaypoint(position=pos.copy(), time_sec=time_sec)
@@ -377,32 +476,36 @@ class MissionManager:
                             start_position=curr_pt,
                             goal_position=goal,
                             static_obstacles=static_obstacles,
-                            dynamic_obstacles=dyn_obs,
+                            dynamic_obstacles=current_eval_dyn_obs,
                             t_start=curr_t,
                         )
                         if ta_res.status != "SUCCESS" or not ta_res.timed_waypoints:
                             all_subgoals_ok = False
                             break
-                        for tw in ta_res.timed_waypoints[1:]:
+                        best_alt = ta_res
+
+                        for tw in best_alt.timed_waypoints[1:]:
                             replan_timed.append(tw)
                         curr_pt = goal.copy()
                         curr_t = replan_timed[-1].time_sec
-                        if ta_res.metrics:
-                            total_cand_cost += ta_res.metrics.total_objective_cost
+                        if best_alt.metrics:
+                            total_cand_cost += best_alt.metrics.total_objective_cost
 
                     if all_subgoals_ok and len(replan_timed) > 1:
-                        # Accept candidate route if current route is obstructed, critical, or candidate is cheaper
                         route_obstructed = replan_reason in (
                             "dynamic_obstacle_intersects_corridor",
                             "static_corridor_obstructed",
+                            "obstacle_prediction_divergence",
                             "excessive_path_deviation",
+                            "schedule_delay_exceeded",
                         )
+                        # Immediate safety override OR candidate improves by at least hysteresis cost
                         if (
                             critical_clearance
                             or route_obstructed
                             or (
                                 total_cand_cost
-                                < (self.active_route_cost + self.replan_hysteresis_cost)
+                                < (self.active_route_cost - self.replan_hysteresis_cost)
                             )
                         ):
                             self.active_timed_waypoints = replan_timed
@@ -414,11 +517,15 @@ class MissionManager:
                             self.state = MissionState.EXECUTING
                             self.waiting_start_time_sec = None
                             replan_success = True
+                        else:
+                            # Feasible candidate route found; keep existing route and resume execution
+                            replan_success = True
+                            self.state = MissionState.EXECUTING
 
                 # 2. Fallback to Standard Sequential A* Replanning
                 if not replan_success and self.planner is not None:
                     predicted_dyn_obs = []
-                    for d in dyn_obs:
+                    for d in current_eval_dyn_obs:
                         predicted_dyn_obs.extend(
                             d.predict_occupied_spheres(time_sec, horizon_sec=2.5, dt=0.5)
                         )
@@ -458,33 +565,47 @@ class MissionManager:
                         if wait_elapsed < self.max_waiting_duration_sec:
                             self.state = MissionState.WAITING
                             self.replan_reason = "waiting_for_corridor_clearance"
-                            current_target = pos.copy()
-                            return current_target, self.get_telemetry(drone_state)
+                            self._update_target_velocity(pos=pos, time_sec=time_sec)
+                            return pos.copy(), self.get_telemetry(drone_state)
                         else:
                             self.state = MissionState.FAILED_BLOCKED
                             self.replan_reason = "waiting_duration_exceeded_corridor_blocked"
-                            current_target = pos.copy()
-                            return current_target, self.get_telemetry(drone_state)
+                            self._update_target_velocity(pos=pos, time_sec=time_sec)
+                            return pos.copy(), self.get_telemetry(drone_state)
                     else:
-                        # Standard planner maintains REPLANNING state hover hold
                         self.replan_reason = "hover_hold_awaiting_corridor_clearance"
-                        current_target = pos.copy()
-                        return current_target, self.get_telemetry(drone_state)
+                        self._update_target_velocity(pos=pos, time_sec=time_sec)
+                        return pos.copy(), self.get_telemetry(drone_state)
 
-        # In WAITING state, check if corridor ahead has become clear
+        # In WAITING state, check if timeout exceeded
         if self.state == MissionState.WAITING and self.waiting_start_time_sec is not None:
             wait_elapsed = time_sec - self.waiting_start_time_sec
             self.cumulative_waiting_duration = wait_elapsed
             if wait_elapsed >= self.max_waiting_duration_sec:
                 self.state = MissionState.FAILED_BLOCKED
                 self.replan_reason = "waiting_duration_exceeded_corridor_blocked"
+                self._update_target_velocity(pos=pos, time_sec=time_sec)
                 return pos.copy(), self.get_telemetry(drone_state)
 
-        # Advance active path waypoint if reached
+        # Advance active path waypoint if reached (respecting scheduled wait intervals and arrival timestamps)
         if dist_to_target <= self.waypoint_acceptance_radius:
-            if self.active_path_idx < len(self.active_path) - 1:
-                self.active_path_idx += 1
-                current_target = self.active_path[self.active_path_idx]
+            can_advance = True
+            if self.active_timed_waypoints and self.active_path_idx < len(
+                self.active_timed_waypoints
+            ):
+                active_tw = self.active_timed_waypoints[self.active_path_idx]
+                if time_sec < active_tw.time_sec:
+                    can_advance = False
+                    self.state = MissionState.WAITING
+                    self.cumulative_waiting_duration += 0.05
+                    self.replan_reason = "waiting_for_corridor_clearance"
+
+            if can_advance:
+                if self.state == MissionState.WAITING:
+                    self.state = MissionState.EXECUTING
+                if self.active_path_idx < len(self.active_path) - 1:
+                    self.active_path_idx += 1
+                    current_target = self.active_path[self.active_path_idx]
 
         # Advance high-level mission waypoints sequentially as reached
         while self.current_mission_waypoint_idx < len(self.mission_waypoints):
@@ -511,7 +632,62 @@ class MissionManager:
         if all_mission_wps_reached and final_goal_reached and at_end_of_path:
             self.state = MissionState.ARRIVED
 
+        self._update_target_velocity(pos=pos, time_sec=time_sec)
         return current_target, self.get_telemetry(drone_state)
+
+    def _update_target_velocity(self, pos: np.ndarray, time_sec: float) -> None:
+        """Compute smooth, physically feasible feedforward target velocity respecting kinematic limits."""
+        if self.state in (
+            MissionState.IDLE,
+            MissionState.ARRIVED,
+            MissionState.WAITING,
+            MissionState.FAILED_BLOCKED,
+            MissionState.ABORTED,
+        ):
+            self.current_target_velocity = np.zeros(3, dtype=np.float64)
+            return
+
+        # Under sensor-in-the-loop state estimation, avoid feedforward velocity drift
+        if self.state_source == "estimated":
+            self.current_target_velocity = np.zeros(3, dtype=np.float64)
+            return
+
+        if not self.active_path or self.active_path_idx >= len(self.active_path):
+            self.current_target_velocity = np.zeros(3, dtype=np.float64)
+            return
+
+        target_pos = self.active_path[self.active_path_idx]
+        dist_to_target = float(np.linalg.norm(target_pos - pos))
+
+        if dist_to_target <= self.waypoint_acceptance_radius:
+            self.current_target_velocity = np.zeros(3, dtype=np.float64)
+            return
+
+        dir_to_target = (target_pos - pos) / dist_to_target
+        nom_speed = (
+            self.time_aware_planner.nominal_speed if self.time_aware_planner is not None else 2.0
+        )
+
+        # Smooth kinematic deceleration zone across all waypoints to prevent overshoot
+        decel_zone = max(3.0, 3.0 * self.waypoint_acceptance_radius)
+        ramp = max(0.0, min(1.0, (dist_to_target - self.waypoint_acceptance_radius) / decel_zone))
+
+        # For the final mission waypoint, smoothly ramp feedforward velocity down to zero over final approach
+        if self.mission_waypoints:
+            dist_to_final = float(np.linalg.norm(self.mission_waypoints[-1] - pos))
+            approach_dist = max(6.0, 4.0 * self.waypoint_acceptance_radius)
+            if dist_to_final <= approach_dist:
+                final_ramp = max(
+                    0.0,
+                    min(
+                        1.0,
+                        (dist_to_final - self.waypoint_acceptance_radius)
+                        / (approach_dist - self.waypoint_acceptance_radius),
+                    ),
+                )
+                ramp = min(ramp, final_ramp)
+
+        self.current_target_velocity = dir_to_target * (nom_speed * ramp)
 
     def trigger_return_to_home(
         self,
@@ -584,4 +760,5 @@ class MissionManager:
             state_source=self.state_source,
             planned_vs_actual_deviation=self.planned_vs_actual_deviation,
             active_route_cost=self.active_route_cost,
+            obstacle_prediction_error=self.max_obstacle_prediction_error,
         )

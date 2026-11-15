@@ -367,7 +367,44 @@ Phase IV integrates the 6-axis IMU sensor model and the non-linear SO(3) complem
 - **Avionics Sensor Fusion:** Specific force accelerometer readings and angular rates are fused with noisy position and altitude updates ($1\sigma = 0.02\text{ m}$).
 - **Observer Gain Tuning:** The estimator gains are tuned ($k_{p,\text{pos}}=5.0, k_{v,\text{pos}}=3.0, k_{p,\text{accel}}=0.2, k_{i,\text{accel}}=0.001$) to suppress IMU integration drift during high-acceleration translational turns without inducing tilt phase lag.
 - **Telemetry State Attribution:** Every telemetry record attributes state origin (`state_source: "estimated" | "ground_truth"`), logging estimation error norms $\| \mathbf{p}_{\text{est}} - \mathbf{p}_{\text{true}} \|_2$ and attitude error angles in real time.
-- **Fail-Closed Sensor Safety:** Non-finite sensor inputs ($\text{NaN}$ or $\pm\infty$) immediately abort mission execution to prevent flyaway crashes.
+- **Fail-Closed Sensor Safety:** Non-finite sensor inputs ($\text{NaN}$ or $\pm\infty$) and unnormalized quaternions ($|\|\mathbf{q}\| - 1| \ge 0.05$) immediately abort mission execution to prevent flyaway crashes.
+- **Pre-Step-1 Sensor Initialization:** Sensor estimators are fully initialized prior to step 1 execution, ensuring closed-loop feedback remains on avionics estimates from $t=0$ without requiring ground-truth fallback.
+
+### 9.5 Conservative Ceil Time-Discretization & Dynamic Edge Scheduling (Phase IV.1)
+
+In 4D lattice motion planning, continuous edge durations must be discretized into integer time-steps $\Delta i_t$. Floor or naive round operations produce edge durations shorter than physical flight time on diagonal steps (e.g. $\sqrt{2}\text{ m} / 2.0\text{ m/s} = 0.707\text{ s} \to 1\text{ step} = 0.5\text{ s}$), which implies an unachievable speed ($2.83\text{ m/s} > 2.0\text{ m/s}$) and masks moving obstacle blockages.
+
+Phase IV.1 establishes conservative ceiling time-discretization:
+
+$$\Delta i_t = \max\left(1, \left\lceil \frac{\Delta \tau}{\Delta t} - 10^{-9} \right\rceil\right)$$
+
+- **Physical Feasibility Guarantee:** Every edge transit duration satisfies $\Delta i_t \cdot \Delta t \ge \Delta \tau$, ensuring that the commanded quadrotor speed never exceeds $v_{\text{nominal}}$.
+- **Heuristic Admissibility & Consistency:**
+  With Euclidean distance heuristic $h(\mathbf{p}) = \|\mathbf{p} - \mathbf{p}_{\text{goal}}\|_2 / v_{\text{nominal}}$ and edge cost $c(u, v) = \Delta i_t \cdot \Delta t$:
+  $$h(u) - h(v) = \frac{\|u - \mathbf{p}_{\text{goal}}\| - \|v - \mathbf{p}_{\text{goal}}\|}{v_{\text{nominal}}} \le \frac{\|u - v\|}{v_{\text{nominal}}} \le \Delta i_t \cdot \Delta t = c(u, v)$$
+  Thus $h(\mathbf{p})$ remains strictly monotonic and admissible across all 26-connected spatial edges.
+
+### 9.6 Divergent Dynamic Obstacle Modeling (`DivergentDynamicObstacleSphere3D`)
+
+To verify adaptive receding-horizon recovery when moving obstacle forecasts fail, Phase IV.1 introduces deterministic prediction divergence:
+- **Nominal Predicted Model:** Obstacle reports predictable trajectory $\mathbf{x}_{\text{pred}}(t) = \mathbf{x}_0 + \mathbf{v}_0 t$.
+- **Perturbed Physical Trajectory:** At divergence time $t_{\text{div}}$, velocity shifts to $\mathbf{v}_{\text{div}}$, creating real-time divergence:
+  $$\mathbf{x}_{\text{actual}}(t) = \mathbf{x}_{\text{pred}}(t_{\text{div}}) + \mathbf{v}_{\text{div}} (t - t_{\text{div}}) \quad \forall t \ge t_{\text{div}}$$
+- **Online Detection:** `MissionManager` continuously computes prediction error $e_{\text{pred}}(t) = \|\mathbf{x}_{\text{actual}}(t) - \mathbf{x}_{\text{pred}}(t)\|_2$. When $e_{\text{pred}} > 0.5\text{ m}$, dynamic replanning updates the trajectory to ensure continuous collision avoidance.
+
+### 9.7 Empirical Performance Benchmarking Results
+
+Execution throughput benchmarked on a standard Linux environment (`benchmarks/benchmark_phase4_performance.py`):
+
+| Component | Metric | Value | Requirement |
+| :--- | :--- | :--- | :--- |
+| **4D Time-Aware A\*** (Clear Domain) | Mean Planning Latency | 4.23 s (15,000 expansions) | Bound within budget |
+| **4D Time-Aware A\*** (Cluttered Domain) | Mean Planning Latency | 5.00 s (2,558 expansions) | Goal reachable |
+| **Continuous Risk Evaluator** | Throughput | 64.8 evaluations / sec | Real-time |
+| **Continuous Risk Evaluator** | Mean Latency | 15.44 ms / evaluation | < 50 ms |
+| **MissionManager Update Cycle** | Mean Step Latency | 1.85 ms / update | < 50 ms (20 Hz loop) |
+| **MissionManager Update Cycle** | 95th Percentile Latency | 4.81 ms / update | < 50 ms |
+| **MissionManager Update Cycle** | Control Loop Throughput | 540.7 updates / sec | > 20 Hz |
 
 ---
 

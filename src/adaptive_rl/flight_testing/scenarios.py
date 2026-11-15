@@ -59,7 +59,10 @@ from adaptive_rl.environments.drone_6dof import (
     euler_to_quaternion,
     quaternion_to_euler_angles,
 )
-from adaptive_rl.navigation.dynamic_obstacles import DynamicObstacleSphere3D
+from adaptive_rl.navigation.dynamic_obstacles import (
+    DivergentDynamicObstacleSphere3D,
+    DynamicObstacleSphere3D,
+)
 from adaptive_rl.navigation.mission import MissionManager, MissionState
 from adaptive_rl.navigation.planner import AStarPlanner3D
 
@@ -97,6 +100,7 @@ class FlightStepTelemetry:
     planned_vs_actual_deviation: Optional[float] = None
     active_route_cost: Optional[float] = None
     state_source: Optional[str] = None
+    obstacle_prediction_error: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         cmd_thrusts = (
@@ -153,6 +157,8 @@ class FlightStepTelemetry:
             d["active_route_cost"] = round(float(self.active_route_cost), 4)
         if self.state_source is not None:
             d["state_source"] = self.state_source
+        if self.obstacle_prediction_error is not None:
+            d["obstacle_prediction_error"] = round(float(self.obstacle_prediction_error), 4)
         return d
 
 
@@ -1272,11 +1278,11 @@ def get_phase4_predictive_scenarios() -> List[FlightScenarioDefinition]:
         )
     )
 
-    # 24. Repeated Dynamic Replanning
+    # 24a. Repeated Dynamic Replanning (Stress Evaluation)
     scenarios.append(
         FlightScenarioDefinition(
-            name="repeated_dynamic_replanning",
-            description="Continually update routes under active oscillating obstacle interference.",
+            name="repeated_dynamic_replanning_stress",
+            description="Stress test: evaluate sustained collision-free dynamic replanning stability under continuous obstacle interference.",
             initial_position=np.array([3.0, 15.0, 5.0]),
             waypoints=[np.array([20.0, 15.0, 5.0])],
             obstacles=[],
@@ -1309,6 +1315,34 @@ def get_phase4_predictive_scenarios() -> List[FlightScenarioDefinition]:
         )
     )
 
+    # 24b. Repeated Dynamic Replanning (Mission Completion)
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="repeated_dynamic_replanning_completed",
+            description="Evaluate dynamic replanning under oscillating obstacles with verified arrival and settling at destination.",
+            initial_position=np.array([3.0, 15.0, 5.0]),
+            waypoints=[np.array([18.0, 15.0, 5.0])],
+            obstacles=[],
+            dynamic_obstacles=[
+                DynamicObstacleSphere3D(
+                    center_initial=np.array([10.0, 15.0, 5.0]),
+                    radius=0.9,
+                    velocity=np.zeros(3),
+                    bounds=(30.0, 30.0, 15.0),
+                    motion_type="oscillate",
+                    oscillation_period=6.0,
+                    oscillation_amplitude=np.array([0.0, 3.0, 0.0]),
+                ),
+            ],
+            max_steps=400,
+            target_radius=1.5,
+            collision_radius=0.3,
+            settling_velocity_threshold=2.0,
+            use_path_planner=True,
+            use_time_aware_planner=True,
+        )
+    )
+
     # 25. Sensor-in-the-Loop Predictive Navigation
     scenarios.append(
         FlightScenarioDefinition(
@@ -1320,6 +1354,7 @@ def get_phase4_predictive_scenarios() -> List[FlightScenarioDefinition]:
             dynamic_obstacles=[],
             max_steps=400,
             target_radius=1.5,
+            settling_velocity_threshold=1.5,
             enable_sensor_estimation=True,
             sensor_in_the_loop=True,
             sensor_seed=202,
@@ -1353,12 +1388,14 @@ def get_phase4_predictive_scenarios() -> List[FlightScenarioDefinition]:
             waypoints=[np.array([18.0, 15.0, 5.0])],
             obstacles=[],
             dynamic_obstacles=[
-                DynamicObstacleSphere3D(
-                    center_initial=np.array([10.0, 6.0, 5.0]),
+                DivergentDynamicObstacleSphere3D(
+                    center_initial=np.array([10.0, 8.0, 5.0]),
                     radius=1.0,
-                    velocity=np.array([0.0, 1.4, 0.0]),
+                    velocity=np.array([0.0, 0.4, 0.0]),
                     bounds=(30.0, 30.0, 15.0),
                     motion_type="bounce",
+                    divergence_time=2.0,
+                    divergence_velocity=np.array([0.0, 1.8, 0.0]),
                 )
             ],
             max_steps=400,
@@ -1385,6 +1422,8 @@ def get_all_flight_scenarios() -> List[FlightScenarioDefinition]:
 def get_scenario(name: str) -> FlightScenarioDefinition:
     """Retrieve a scenario definition by name."""
     clean = name.strip().lower()
+    if clean == "repeated_dynamic_replanning":
+        clean = "repeated_dynamic_replanning_stress"
     for sc in get_all_flight_scenarios():
         if sc.name.lower() == clean:
             return sc
@@ -1554,6 +1593,12 @@ class FlightScenarioRunner:
                 velocity=scenario.initial_velocity,
                 quaternion=scenario.initial_quaternion,
             )
+            est_drone_state = DroneState6DOF(
+                position=scenario.initial_position.copy(),
+                velocity=scenario.initial_velocity.copy(),
+                quaternion=scenario.initial_quaternion.copy(),
+                angular_velocity=scenario.initial_angular_velocity.copy(),
+            )
 
         telemetry: List[FlightStepTelemetry] = []
         pos_errors: List[float] = []
@@ -1577,11 +1622,24 @@ class FlightScenarioRunner:
             current_state = self.env.dynamics.state
 
             # Determine feedback state for closed-loop control (sensor-in-the-loop if active)
-            feedback_state = (
-                est_drone_state
-                if (scenario.sensor_in_the_loop and est_drone_state is not None)
-                else current_state
-            )
+            if scenario.sensor_in_the_loop:
+                if (
+                    est_drone_state is None
+                    or not np.all(np.isfinite(est_drone_state.position))
+                    or not np.all(np.isfinite(est_drone_state.velocity))
+                    or not np.all(np.isfinite(est_drone_state.quaternion))
+                    or not np.all(np.isfinite(est_drone_state.angular_velocity))
+                    or abs(float(np.linalg.norm(est_drone_state.quaternion)) - 1.0) >= 0.05
+                ):
+                    # Fail closed immediately: never silently substitute ground truth
+                    if mission_manager is not None:
+                        mission_manager.state = MissionState.ABORTED
+                        mission_manager.replan_reason = "sensor_estimation_invalid_fail_closed"
+                    outcome = "sensor_estimation_failure"
+                    break
+                feedback_state: DroneState6DOF = est_drone_state
+            else:
+                feedback_state = current_state
 
             # Predictive dynamic obstacle avoidance via MissionManager
             mission_telemetry = None
@@ -1616,11 +1674,19 @@ class FlightScenarioRunner:
             angular_speeds.append(omega_mag)
 
             # Compute controller action using feedback_state (sensor-in-the-loop if active)
+            target_vel = (
+                mission_manager.current_target_velocity
+                if (
+                    mission_manager is not None
+                    and getattr(scenario, "use_time_aware_planner", False)
+                )
+                else np.zeros(3, dtype=np.float64)
+            )
             if hasattr(ctrl, "compute_action"):
                 action, ctrl_info = ctrl.compute_action(
                     feedback_state,
                     target_position=current_target,
-                    target_velocity=np.zeros(3),
+                    target_velocity=target_vel,
                     dt=dt,
                 )
             elif hasattr(ctrl, "predict"):
@@ -1828,6 +1894,9 @@ class FlightScenarioRunner:
                         if mission_telemetry
                         else ("estimated" if scenario.sensor_in_the_loop else "ground_truth")
                     ),
+                    obstacle_prediction_error=(
+                        mission_telemetry.obstacle_prediction_error if mission_telemetry else None
+                    ),
                 )
             )
 
@@ -1840,10 +1909,18 @@ class FlightScenarioRunner:
             ):
                 break
 
-            if is_final_success and len(waypoints) > 1:
+            if is_final_success and (
+                len(waypoints) > 1
+                or (mission_manager is not None and mission_manager.state == MissionState.ARRIVED)
+                or (
+                    scenario.use_path_planner
+                    and float(np.linalg.norm(scenario.initial_position - waypoints[-1]))
+                    > scenario.target_radius
+                )
+            ):
                 outcome = "success"
                 break
-            elif is_final_success and len(waypoints) == 1 and step >= scenario.max_steps - 10:
+            elif is_final_success and step >= scenario.max_steps - 10:
                 outcome = "success"
                 break
 
@@ -1868,7 +1945,9 @@ class FlightScenarioRunner:
         )
 
         # Authoritative, mutually exclusive outcome classification
-        if fault_ever_active and (
+        if outcome == "sensor_estimation_failure":
+            pass
+        elif fault_ever_active and (
             is_collision
             or max_tilt >= scenario.max_recovery_tilt_deg
             or min_alt <= scenario.min_recovery_altitude

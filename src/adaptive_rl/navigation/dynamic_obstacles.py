@@ -584,3 +584,104 @@ class DynamicObstacleSphere3D:
             "oscillation_period": float(self.oscillation_period),
             "oscillation_amplitude": [float(x) for x in self.oscillation_amplitude],
         }
+
+
+@dataclass
+class DivergentDynamicObstacleSphere3D(DynamicObstacleSphere3D):
+    """Dynamic obstacle with deterministic trajectory divergence after a defined timestamp.
+
+    Enables experimental evaluation of autonomous navigation under model prediction mismatch.
+    Prior to divergence_time, the actual trajectory exactly matches the unperturbed prediction.
+    At or after divergence_time, the obstacle transitions deterministically to a new velocity.
+    """
+
+    divergence_time: float = 0.0
+    divergence_velocity: np.ndarray = field(
+        default_factory=lambda: np.array([0.0, 0.0, 0.0], dtype=np.float64)
+    )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.divergence_time = float(self.divergence_time)
+        if not math.isfinite(self.divergence_time) or self.divergence_time < 0.0:
+            raise ValueError(
+                f"divergence_time must be finite and >= 0.0, got {self.divergence_time}"
+            )
+        self.divergence_velocity = np.asarray(self.divergence_velocity, dtype=np.float64)
+        if self.divergence_velocity.shape != (3,) or not np.all(
+            np.isfinite(self.divergence_velocity)
+        ):
+            raise ValueError(
+                f"divergence_velocity must be a finite 3D vector, got {self.divergence_velocity}"
+            )
+
+    def max_speed(self) -> float:
+        """Calculate the maximum translation speed across pre- and post-divergence regimes."""
+        v_pre = super().max_speed()
+        v_post = float(np.linalg.norm(self.divergence_velocity))
+        return max(v_pre, v_post)
+
+    def predicted_center_at(self, time_sec: float) -> np.ndarray:
+        """Nominal center position as predicted before divergence occurred."""
+        return super().center_at(time_sec)
+
+    def center_at(self, time_sec: float) -> np.ndarray:
+        """Actual center position including deterministic trajectory divergence."""
+        t = float(time_sec)
+        if t <= self.divergence_time:
+            return super().center_at(t)
+
+        # Baseline position at the moment divergence initiates
+        p_div = super().center_at(self.divergence_time)
+        dt_post = t - self.divergence_time
+        pos = p_div + self.divergence_velocity * dt_post
+
+        # Reflect cleanly within arena bounds
+        reflected = np.zeros(3, dtype=np.float64)
+        for i in range(3):
+            b_min = self.radius
+            b_max = self.bounds[i] - self.radius
+            span = b_max - b_min
+            if span <= 1e-9:
+                reflected[i] = b_min
+                continue
+            norm_c = (pos[i] - b_min) % (2.0 * span)
+            if norm_c < 0.0:
+                norm_c += 2.0 * span
+            if norm_c <= span:
+                reflected[i] = b_min + norm_c
+            else:
+                reflected[i] = b_max - (norm_c - span)
+        return reflected
+
+    def prediction_error(self, time_sec: float) -> float:
+        """Euclidean distance between actual obstacle position and unperturbed prediction."""
+        p_actual = self.center_at(time_sec)
+        p_pred = self.predicted_center_at(time_sec)
+        return float(np.linalg.norm(p_actual - p_pred))
+
+    def as_predicted_obstacle(self) -> DynamicObstacleSphere3D:
+        """Return an unperturbed DynamicObstacleSphere3D matching initial prediction."""
+        return DynamicObstacleSphere3D(
+            center_initial=self.center_initial.copy(),
+            radius=self.radius,
+            velocity=self.velocity.copy(),
+            bounds=self.bounds,
+            motion_type=self.motion_type,
+            oscillation_period=self.oscillation_period,
+            oscillation_amplitude=self.oscillation_amplitude.copy(),
+        )
+
+    def as_updated_obstacle(self, current_time: float) -> DynamicObstacleSphere3D:
+        """Return an updated DynamicObstacleSphere3D fitted to post-divergence observation."""
+        curr_pos = self.center_at(current_time)
+        curr_vel = (
+            self.divergence_velocity if current_time >= self.divergence_time else self.velocity
+        )
+        return DynamicObstacleSphere3D(
+            center_initial=curr_pos - curr_vel * current_time,
+            radius=self.radius,
+            velocity=curr_vel.copy(),
+            bounds=self.bounds,
+            motion_type="bounce",
+        )
