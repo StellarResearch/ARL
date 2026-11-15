@@ -1,7 +1,6 @@
-"""Flight controllers and control allocation for autonomous quadrotor systems."""
+"""Flight controllers package for adaptive RL quadrotor simulation."""
 
-from __future__ import annotations
-
+from adaptive_rl.controllers.lqr import QuadrotorLQRController
 from adaptive_rl.controllers.pid import (
     PIDGains,
     QuadrotorPIDController,
@@ -10,6 +9,7 @@ from adaptive_rl.controllers.pid import (
 
 __all__ = [
     "PIDGains",
+    "QuadrotorLQRController",
     "QuadrotorPIDController",
     "ReferenceFlightController",
 ]

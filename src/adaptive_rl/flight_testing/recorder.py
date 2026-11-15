@@ -3,6 +3,16 @@
 Maintains tamper-evident cryptographic provenance for flight validation runs,
 capturing repository state, pinned dependencies, simulation physics parameters,
 random seeds, numerical integrator configuration, and empirical flight metrics.
+
+SECURITY AND CRYPTOGRAPHIC PROVENANCE NOTE:
+------------------------------------------
+The SHA-256 digests generated here (config_fingerprint and record_digest) provide
+mathematical integrity comparison and tamper detection. They detect accidental corruption
+or unauthorized modification of simulation parameters between execution and analysis.
+They do NOT provide non-repudiation or authenticated identity against an active attacker
+who possesses write permissions to both the record data and digest calculation logic.
+For strict adversarial non-repudiation, an optional cryptographic HMAC/digital signature
+field is provided to attach an asymmetric key signature.
 """
 
 from __future__ import annotations
@@ -33,7 +43,11 @@ logger = logging.getLogger(__name__)
 
 
 def canonical_json_dumps(data: Any) -> str:
-    """Serialize dictionary or primitive to canonical JSON with sorted keys and stable float formatting."""
+    """Serialize dictionary or primitive to canonical JSON with sorted keys and stable float formatting.
+
+    Preserves 6 decimal places for standard values while preserving 12 significant digits for small
+    physical parameters (< 1e-5, such as damping or inertia terms) to prevent loss of precision.
+    """
 
     def _sanitize(val: Any) -> Any:
         if isinstance(val, (int, bool, str)) or val is None:
@@ -41,7 +55,8 @@ def canonical_json_dumps(data: Any) -> str:
         if isinstance(val, float):
             if not math.isfinite(val):
                 return str(val)
-            # 6 decimal places for stable floating point hashing
+            if abs(val) < 1e-5 and val != 0.0:
+                return round(val, 12)
             return round(val, 6)
         if isinstance(val, (list, tuple)):
             return [_sanitize(x) for x in val]
@@ -60,6 +75,12 @@ def canonical_json_dumps(data: Any) -> str:
 def compute_config_fingerprint(config_dict: Dict[str, Any]) -> str:
     """Compute deterministic SHA-256 fingerprint of behavior-affecting configuration parameters."""
     canonical_str = canonical_json_dumps(config_dict)
+    return hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
+
+
+def compute_record_digest(record_dict: Dict[str, Any]) -> str:
+    """Compute deterministic SHA-256 digest of a completed experiment record."""
+    canonical_str = canonical_json_dumps(record_dict)
     return hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
 
 
@@ -90,6 +111,34 @@ class PhysicsSimulationFingerprint:
 
 
 @dataclass
+class ExperimentConfigurationFingerprint:
+    """Comprehensive specification covering all behavior-affecting experiment inputs."""
+
+    physics: PhysicsSimulationFingerprint
+    environment_bounds: List[float]
+    algorithm_name: str
+    checkpoint_hash: Optional[str]
+    random_seed: Optional[int]
+    scenario_names: List[str]
+    controller_type: str = "QuadrotorPIDController"
+    controller_gains: Dict[str, float] = field(default_factory=dict)
+    extra_parameters: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "physics": self.physics.to_dict(),
+            "environment_bounds": self.environment_bounds,
+            "algorithm_name": self.algorithm_name,
+            "checkpoint_hash": self.checkpoint_hash,
+            "random_seed": self.random_seed,
+            "scenario_names": sorted(self.scenario_names),
+            "controller_type": self.controller_type,
+            "controller_gains": self.controller_gains,
+            "extra_parameters": self.extra_parameters,
+        }
+
+
+@dataclass
 class ExperimentMetadata:
     """Environmental, software, and hardware provenance record."""
 
@@ -111,11 +160,12 @@ class ExperimentMetadata:
 
 @dataclass
 class FlightRecord:
-    """Complete, self-contained reproducible experiment record."""
+    """Complete, self-contained reproducible experiment record with dual integrity digests."""
 
     experiment_id: str
     timestamp_utc: str
     config_fingerprint: str
+    record_digest: str
     physics: PhysicsSimulationFingerprint
     provenance: ExperimentMetadata
     algorithm_name: str
@@ -123,9 +173,10 @@ class FlightRecord:
     random_seed: Optional[int]
     scenario_metrics: List[FlightScenarioMetrics]
     aggregate_summary: Dict[str, Any] = field(default_factory=dict)
+    signature: Optional[str] = None  # Optional asymmetric HMAC / digital signature
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
+    def to_dict(self, include_digest: bool = True) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
             "experiment_id": self.experiment_id,
             "timestamp_utc": self.timestamp_utc,
             "config_fingerprint": self.config_fingerprint,
@@ -136,12 +187,26 @@ class FlightRecord:
             "random_seed": self.random_seed,
             "scenario_metrics": [m.to_dict() for m in self.scenario_metrics],
             "aggregate_summary": self.aggregate_summary,
+            "signature": self.signature,
         }
+        if include_digest:
+            data["record_digest"] = self.record_digest
+        return data
 
-    def verify_fingerprint(self) -> bool:
+    def verify_config_fingerprint(self) -> bool:
         """Verify that the stored config_fingerprint matches the actual physics configuration."""
         expected = compute_config_fingerprint(self.physics.to_dict())
         return self.config_fingerprint == expected
+
+    def verify_fingerprint(self) -> bool:
+        """Backwards compatibility alias for verify_config_fingerprint."""
+        return self.verify_config_fingerprint()
+
+    def verify_record_digest(self) -> bool:
+        """Verify that the stored record_digest matches the SHA-256 digest of record contents."""
+        payload = self.to_dict(include_digest=False)
+        expected = compute_record_digest(payload)
+        return self.record_digest == expected
 
 
 class FlightRecorder:
@@ -159,6 +224,7 @@ class FlightRecorder:
         algorithm_name: str = "pid_reference",
         checkpoint_path: Optional[Path | str] = None,
         random_seed: Optional[int] = None,
+        signature: Optional[str] = None,
     ) -> FlightRecord:
         """Create a cryptographically fingerprinted FlightRecord from execution data."""
         from datetime import datetime, timezone
@@ -256,10 +322,27 @@ class FlightRecorder:
             ),
         }
 
+        # Pre-build record dict without record_digest to calculate exact record digest
+        record_pre = {
+            "experiment_id": experiment_id,
+            "timestamp_utc": now_utc,
+            "config_fingerprint": config_hash,
+            "physics": physics.to_dict(),
+            "provenance": provenance.to_dict(),
+            "algorithm_name": algorithm_name,
+            "checkpoint_hash": chk_hash,
+            "random_seed": random_seed,
+            "scenario_metrics": [m.to_dict() for m in metrics_list],
+            "aggregate_summary": agg_summary,
+            "signature": signature,
+        }
+        rec_digest = compute_record_digest(record_pre)
+
         return FlightRecord(
             experiment_id=experiment_id,
             timestamp_utc=now_utc,
             config_fingerprint=config_hash,
+            record_digest=rec_digest,
             physics=physics,
             provenance=provenance,
             algorithm_name=algorithm_name,
@@ -267,6 +350,7 @@ class FlightRecorder:
             random_seed=random_seed,
             scenario_metrics=metrics_list,
             aggregate_summary=agg_summary,
+            signature=signature,
         )
 
     def save_record_json(self, record: FlightRecord, filename: Optional[str] = None) -> Path:
@@ -338,81 +422,52 @@ class FlightRecorder:
         try:
             data = json.loads(raw_str)
         except Exception as exc:
-            raise ValueError(f"Corrupt or non-JSON flight record file: {exc}")
+            raise ValueError(f"Corrupt or non-JSON content in flight record {path}: {exc}") from exc
 
-        # Validate required root keys
-        required_keys = [
+        # Validate required top-level schema fields
+        required_fields = [
             "experiment_id",
+            "timestamp_utc",
             "config_fingerprint",
             "physics",
             "provenance",
             "scenario_metrics",
         ]
-        for k in required_keys:
-            if k not in data:
-                raise ValueError(f"Flight record missing required schema key: '{k}'")
-
-        # Parse physics
-        p_data = data["physics"]
-        physics = PhysicsSimulationFingerprint(
-            mass=float(p_data["mass"]),
-            gravity=float(p_data["gravity"]),
-            arm_length=float(p_data["arm_length"]),
-            arm_span=float(p_data["arm_span"]),
-            rotor_offset_d=float(p_data["rotor_offset_d"]),
-            rotor_radius=float(p_data["rotor_radius"]),
-            max_thrust_per_motor=float(p_data["max_thrust_per_motor"]),
-            torque_to_thrust_ratio=float(p_data["torque_to_thrust_ratio"]),
-            linear_damping=float(p_data["linear_damping"]),
-            angular_damping=float(p_data["angular_damping"]),
-            inertia=[float(x) for x in p_data["inertia"]],
-            dt=float(p_data["dt"]),
-            substeps=int(p_data["substeps"]),
-            substep_dt=float(p_data["substep_dt"]),
-            body_frame_lidar=bool(p_data.get("body_frame_lidar", False)),
-            num_lidar_rays=int(p_data.get("num_lidar_rays", 16)),
-            lidar_range=float(p_data.get("lidar_range", 20.0)),
-        )
-
-        # Validate fingerprint integrity
-        expected_hash = compute_config_fingerprint(physics.to_dict())
-        if data["config_fingerprint"] != expected_hash:
+        missing = [f for f in required_fields if f not in data]
+        if missing:
             raise ValueError(
-                f"Config fingerprint mismatch in record '{data['experiment_id']}': "
-                f"stored {data['config_fingerprint']}, computed {expected_hash}. "
-                "Behavior-affecting parameters have been altered or corrupted."
+                f"Incomplete flight record schema; missing required schema keys: {missing}"
             )
 
-        # Parse provenance
+        physics_data = data["physics"]
+        physics = PhysicsSimulationFingerprint(**physics_data)
+
         prov_data = data["provenance"]
-        provenance = ExperimentMetadata(
-            git_commit=str(prov_data.get("git_commit", "unknown")),
-            git_branch=str(prov_data.get("git_branch", "unknown")),
-            git_dirty=bool(prov_data.get("git_dirty", False)),
-            os_name=str(prov_data.get("os_name", "")),
-            os_version=str(prov_data.get("os_version", "")),
-            python_version=str(prov_data.get("python_version", "")),
-            software_packages=dict(prov_data.get("software_packages", {})),
-            device=str(prov_data.get("device", "cpu")),
-            cpu_count=int(prov_data.get("cpu_count", 1)),
-            gpu_count=int(prov_data.get("gpu_count", 0)),
-            gpu_name=prov_data.get("gpu_name"),
-        )
+        provenance = ExperimentMetadata(**prov_data)
 
-        # Parse metrics
-        metrics: List[FlightScenarioMetrics] = []
-        for m in data.get("scenario_metrics", []):
-            metrics.append(FlightScenarioMetrics(**m))
+        metrics_list: List[FlightScenarioMetrics] = []
+        for m in data["scenario_metrics"]:
+            metrics_list.append(FlightScenarioMetrics(**m))
 
-        return FlightRecord(
-            experiment_id=str(data["experiment_id"]),
-            timestamp_utc=str(data.get("timestamp_utc", "")),
-            config_fingerprint=str(data["config_fingerprint"]),
+        record = FlightRecord(
+            experiment_id=data["experiment_id"],
+            timestamp_utc=data["timestamp_utc"],
+            config_fingerprint=data["config_fingerprint"],
+            record_digest=data.get("record_digest", ""),
             physics=physics,
             provenance=provenance,
-            algorithm_name=str(data.get("algorithm_name", "unknown")),
+            algorithm_name=data.get("algorithm_name", "pid_reference"),
             checkpoint_hash=data.get("checkpoint_hash"),
             random_seed=data.get("random_seed"),
-            scenario_metrics=metrics,
-            aggregate_summary=dict(data.get("aggregate_summary", {})),
+            scenario_metrics=metrics_list,
+            aggregate_summary=data.get("aggregate_summary", {}),
+            signature=data.get("signature"),
         )
+
+        if not record.verify_config_fingerprint():
+            raise ValueError(
+                f"Config fingerprint mismatch in '{path.name}'. Stored fingerprint '{record.config_fingerprint}' "
+                f"does not match recomputed physics fingerprint '{compute_config_fingerprint(record.physics.to_dict())}'."
+            )
+
+        return record

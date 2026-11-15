@@ -1,4 +1,4 @@
-"""Unit tests for flight telemetry time-series and benchmark figures."""
+"""Unit tests for flight telemetry time-series, actuator plots, and 3D navigation benchmark figures."""
 
 from __future__ import annotations
 
@@ -9,8 +9,11 @@ pytest.importorskip("plotly")
 
 import plotly.graph_objects as go
 
+from adaptive_rl.environments.drone import ObstacleSphere3D
 from adaptive_rl.flight_testing.scenarios import FlightStepTelemetry
 from adaptive_rl.gui.visualizer import (
+    build_3d_navigation_trajectory_figure,
+    build_actuator_telemetry_figure,
     build_flight_benchmark_figure,
     build_telemetry_time_series_figure,
 )
@@ -41,6 +44,7 @@ def test_build_telemetry_time_series_figure_with_data() -> None:
             min_obstacle_distance=3.5,
             is_collision=False,
             is_success=False,
+            commanded_thrusts=np.full(4, 2.50),
         ),
         FlightStepTelemetry(
             step=2,
@@ -57,6 +61,7 @@ def test_build_telemetry_time_series_figure_with_data() -> None:
             min_obstacle_distance=3.48,
             is_collision=False,
             is_success=False,
+            commanded_thrusts=np.full(4, 2.50),
         ),
     ]
 
@@ -68,6 +73,51 @@ def test_build_telemetry_time_series_figure_with_data() -> None:
     assert "Speed ||v||" in trace_names
     assert "Roll φ (°)" in trace_names
     assert "Goal Dist (m)" in trace_names
+
+
+def test_build_actuator_telemetry_figure() -> None:
+    """Verify 4-panel motor thrust telemetry plot generation."""
+    telemetry = [
+        FlightStepTelemetry(
+            step=1,
+            time_sec=0.05,
+            position=np.zeros(3),
+            velocity=np.zeros(3),
+            quaternion=np.array([1.0, 0, 0, 0]),
+            euler_angles_deg=np.zeros(3),
+            angular_velocity=np.zeros(3),
+            target_position=np.zeros(3),
+            distance_to_target=0.0,
+            action=np.zeros(4, dtype=np.float32),
+            motor_thrusts=np.array([2.4, 2.5, 2.4, 2.5]),
+            min_obstacle_distance=float("inf"),
+            is_collision=False,
+            is_success=False,
+            commanded_thrusts=np.array([2.5, 2.5, 2.5, 2.5]),
+        )
+    ]
+    fig = build_actuator_telemetry_figure(telemetry)
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) >= 4
+
+
+def test_build_3d_navigation_trajectory_figure() -> None:
+    """Verify 3D scene creation with planned waypoints, flown path, and obstacle surfaces."""
+    planned = [np.array([5.0, 5.0, 5.0]), np.array([15.0, 10.0, 7.0]), np.array([25.0, 25.0, 10.0])]
+    flown = [np.array([5.0, 5.0, 5.0]), np.array([10.0, 8.0, 6.0]), np.array([24.5, 24.8, 9.8])]
+    obstacles = [ObstacleSphere3D(center=np.array([15.0, 15.0, 7.0]), radius=2.0)]
+
+    fig = build_3d_navigation_trajectory_figure(
+        planned_waypoints=planned,
+        flown_trajectory=flown,
+        obstacles=obstacles,
+    )
+    assert isinstance(fig, go.Figure)
+    trace_names = [tr.name for tr in fig.data]
+    assert "Planned A* Path" in trace_names
+    assert "Flown Trajectory" in trace_names
+    assert "Start" in trace_names
+    assert "Obstacle 1" in trace_names
 
 
 def test_build_flight_benchmark_figure() -> None:

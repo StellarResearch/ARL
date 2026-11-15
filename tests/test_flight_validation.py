@@ -97,7 +97,7 @@ def test_flight_scenario_obstacle_collision_detection() -> None:
     runner = FlightScenarioRunner()
     result = runner.run_scenario(obs_sc)
 
-    assert result.metrics.outcome in ("collision", "success", "timeout")
+    assert result.metrics.outcome in ("collision", "success", "timeout", "max_steps")
     # Verify obstacle clearance was evaluated and is finite
     assert math.isfinite(result.metrics.min_obstacle_clearance)
     if result.metrics.outcome == "collision":

@@ -16,6 +16,9 @@ from adaptive_rl.flight_testing.scenarios import (
     FlightScenarioResult,
     FlightScenarioRunner,
     FlightStepTelemetry,
+    get_advanced_navigation_scenarios,
+    get_all_flight_scenarios,
+    get_scenario,
     get_standard_flight_scenarios,
 )
 
@@ -31,5 +34,8 @@ __all__ = [
     "PhysicsSimulationFingerprint",
     "canonical_json_dumps",
     "compute_config_fingerprint",
+    "get_advanced_navigation_scenarios",
+    "get_all_flight_scenarios",
+    "get_scenario",
     "get_standard_flight_scenarios",
 ]

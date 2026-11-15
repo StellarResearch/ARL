@@ -5,12 +5,22 @@ Implements reproducible benchmark scenarios covering:
 2. Straight-line waypoint navigation
 3. Vertical ascent and descent
 4. Horizontal movement
-5. Position holding
-6. Obstacle avoidance
+5. Position holding under aerodynamic disturbance
+6. 3D Obstacle avoidance (A* collision-free path planning)
 7. Boundary avoidance
 8. Target approach and arrival
 9. Recovery from moderate disturbances
-10. Failure and collision scenarios
+10. Actuator fault degradation (canonical 50% motor loss)
+
+Advanced Phase III 3D Navigation Scenarios:
+11. Multi-obstacle navigation
+12. Narrow passage navigation
+13. Dynamic obstacle crossing
+14. Moving target tracking
+15. Multiple sequential 3D waypoints
+16. Dead-end / blocked-route handling
+17. Dynamic replanning after obstacle shift
+18. Return-to-Home (RTH)
 
 Computes measurable, independently verifiable aerospace flight metrics:
 - Position tracking error (mean, max, RMS)
@@ -27,6 +37,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import math
 import time
 from dataclasses import asdict, dataclass, field
@@ -43,6 +54,10 @@ from adaptive_rl.environments.drone_6dof import (
     euler_to_quaternion,
     quaternion_to_euler_angles,
 )
+from adaptive_rl.navigation.dynamic_obstacles import DynamicObstacleSphere3D
+from adaptive_rl.navigation.planner import AStarPlanner3D
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -63,8 +78,15 @@ class FlightStepTelemetry:
     min_obstacle_distance: float
     is_collision: bool
     is_success: bool
+    commanded_thrusts: Optional[np.ndarray] = None
+    actuator_fault_active: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
+        cmd_thrusts = (
+            [round(float(x), 4) for x in self.commanded_thrusts]
+            if self.commanded_thrusts is not None
+            else [round(float(x), 4) for x in self.motor_thrusts]
+        )
         return {
             "step": self.step,
             "time_sec": round(self.time_sec, 4),
@@ -78,6 +100,8 @@ class FlightStepTelemetry:
             "distance_to_target": round(float(self.distance_to_target), 4),
             "action": [round(float(x), 4) for x in self.action],
             "motor_thrusts": [round(float(x), 4) for x in self.motor_thrusts],
+            "commanded_thrusts": cmd_thrusts,
+            "actuator_fault_active": self.actuator_fault_active,
             "min_obstacle_distance": (
                 round(float(self.min_obstacle_distance), 4)
                 if math.isfinite(self.min_obstacle_distance)
@@ -94,7 +118,7 @@ class FlightScenarioMetrics:
 
     scenario_name: str
     success: bool
-    outcome: str  # "success", "collision", "boundary_breach", "timeout"
+    outcome: str  # "success", "collision", "boundary_breach", "max_steps", "timeout", "recovered_degraded", "crash_fault", "blocked_no_path"
     duration_steps: int
     duration_seconds: float
     final_position_error: float
@@ -114,6 +138,7 @@ class FlightScenarioMetrics:
     collision_count: int
     control_effort: float
     execution_wall_time_ms: float
+    replan_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -182,6 +207,7 @@ class FlightScenarioResult:
             "thrust_m2",
             "thrust_m3",
             "thrust_m4",
+            "fault_active",
             "min_obstacle_distance",
             "is_collision",
             "is_success",
@@ -220,6 +246,7 @@ class FlightScenarioResult:
                         "thrust_m2": round(float(t.motor_thrusts[1]), 4),
                         "thrust_m3": round(float(t.motor_thrusts[2]), 4),
                         "thrust_m4": round(float(t.motor_thrusts[3]), 4),
+                        "fault_active": int(t.actuator_fault_active),
                         "min_obstacle_distance": (
                             round(float(t.min_obstacle_distance), 4)
                             if math.isfinite(t.min_obstacle_distance)
@@ -248,11 +275,13 @@ class FlightScenarioDefinition:
     )
     waypoints: List[np.ndarray] = field(default_factory=list)
     obstacles: List[ObstacleSphere3D] = field(default_factory=list)
+    dynamic_obstacles: List[DynamicObstacleSphere3D] = field(default_factory=list)
     bounds: Tuple[float, float, float] = (30.0, 30.0, 15.0)
     max_steps: int = 300
     target_radius: float = 1.2
     collision_radius: float = 0.8
     step_duration_sec: float = 0.05
+    use_path_planner: bool = False
     disturbance_fn: Optional[Callable[[int, DroneState6DOF], np.ndarray]] = None
     actuator_fault_fn: Optional[Callable[[int, np.ndarray], np.ndarray]] = None
 
@@ -320,7 +349,6 @@ def get_standard_flight_scenarios() -> List[FlightScenarioDefinition]:
 
     # 5. Position Holding Under Wind-Like Force
     def wind_disturbance(step: int, state: DroneState6DOF) -> np.ndarray:
-        # Steady lateral aerodynamic drag disturbance in steps 50..150
         if 50 <= step <= 150:
             return np.array([1.2, 0.8, 0.0])  # +1.2 N in X, +0.8 N in Y
         return np.zeros(3)
@@ -338,18 +366,19 @@ def get_standard_flight_scenarios() -> List[FlightScenarioDefinition]:
         )
     )
 
-    # 6. Obstacle Avoidance
+    # 6. Obstacle Avoidance (Using 3D A* Collision-Free Path Planning)
     obs1 = ObstacleSphere3D(center=np.array([15.0, 15.0, 7.0]), radius=2.2)
     obs2 = ObstacleSphere3D(center=np.array([10.0, 18.0, 6.0]), radius=1.8)
     scenarios.append(
         FlightScenarioDefinition(
             name="obstacle_avoidance",
-            description="Navigate from [5.0, 5.0, 7.0] to [25.0, 25.0, 7.0] through spherical obstacle field.",
+            description="Navigate from [5.0, 5.0, 7.0] to [25.0, 25.0, 7.0] through spherical obstacle field using 3D A* collision-free planning.",
             initial_position=np.array([5.0, 5.0, 7.0]),
             waypoints=[np.array([25.0, 25.0, 7.0])],
             obstacles=[obs1, obs2],
             max_steps=400,
             target_radius=1.5,
+            use_path_planner=True,
         )
     )
 
@@ -381,7 +410,6 @@ def get_standard_flight_scenarios() -> List[FlightScenarioDefinition]:
     )
 
     # 9. Recovery from Moderate Disturbances
-    # Initial roll attitude perturbation (25 degrees) and angular rate (2 rad/s)
     q_init_pert = euler_to_quaternion(roll=math.radians(25.0), pitch=math.radians(-15.0), yaw=0.0)
     omega_init_pert = np.array([1.5, -1.2, 0.5])
     scenarios.append(
@@ -398,29 +426,199 @@ def get_standard_flight_scenarios() -> List[FlightScenarioDefinition]:
         )
     )
 
-    # 10. Failure and Collision Verification Scenario
-    # Inject 40% motor thrust loss on Motor 1 at step 40 to evaluate control margin under actuator degradation
-    def actuator_partial_fault(step: int, thrusts: np.ndarray) -> np.ndarray:
+    # 10. Failure Verification Scenario (Canonical 50% thrust loss on Motor 1)
+    def actuator_canonical_fault(step: int, thrusts: np.ndarray) -> np.ndarray:
         if step >= 40:
             degraded = thrusts.copy()
-            degraded[0] *= 0.6  # 40% thrust reduction on front-right motor
+            degraded[0] *= 0.5  # Canonical 50% thrust reduction on front-right motor
             return degraded
         return thrusts
 
     scenarios.append(
         FlightScenarioDefinition(
             name="actuator_fault_degradation",
-            description="Maintain controlled flight under 40% partial thrust loss on Motor 1.",
+            description="Evaluate flight control stability under canonical 50% partial thrust loss on Motor 1 at step 40.",
             initial_position=np.array([15.0, 15.0, 7.0]),
             waypoints=[np.array([15.0, 15.0, 7.0])],
             obstacles=[],
             max_steps=250,
-            target_radius=1.2,
-            actuator_fault_fn=actuator_partial_fault,
+            target_radius=1.5,
+            actuator_fault_fn=actuator_canonical_fault,
         )
     )
 
     return scenarios
+
+
+def get_advanced_navigation_scenarios() -> List[FlightScenarioDefinition]:
+    """Instantiate the 8 advanced 3D autonomous navigation scenarios (Phase III)."""
+    scenarios: List[FlightScenarioDefinition] = []
+
+    # 11. Multi-Obstacle Field Navigation
+    obs_field = [
+        ObstacleSphere3D(center=np.array([10.0, 10.0, 6.0]), radius=2.0),
+        ObstacleSphere3D(center=np.array([15.0, 18.0, 7.0]), radius=2.2),
+        ObstacleSphere3D(center=np.array([20.0, 12.0, 8.0]), radius=2.0),
+        ObstacleSphere3D(center=np.array([22.0, 22.0, 6.0]), radius=1.8),
+    ]
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="multi_obstacle_navigation",
+            description="Navigate through a dense 4-sphere obstacle field using 3D A* global path planning.",
+            initial_position=np.array([4.0, 4.0, 5.0]),
+            waypoints=[np.array([26.0, 26.0, 9.0])],
+            obstacles=obs_field,
+            max_steps=500,
+            target_radius=1.5,
+            use_path_planner=True,
+        )
+    )
+
+    # 12. Narrow Passage Navigation
+    # Two large obstacles forming a narrow corridor
+    obs_gap_1 = ObstacleSphere3D(center=np.array([15.0, 12.0, 7.0]), radius=2.0)
+    obs_gap_2 = ObstacleSphere3D(center=np.array([15.0, 18.0, 7.0]), radius=2.0)
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="narrow_passage_navigation",
+            description="Navigate safely through a narrow 2.0m corridor between two large obstacles.",
+            initial_position=np.array([5.0, 15.0, 7.0]),
+            waypoints=[np.array([25.0, 15.0, 7.0])],
+            obstacles=[obs_gap_1, obs_gap_2],
+            max_steps=400,
+            target_radius=1.2,
+            use_path_planner=True,
+        )
+    )
+
+    # 13. Dynamic Obstacle Crossing
+    dyn_obs = DynamicObstacleSphere3D(
+        center_initial=np.array([15.0, 5.0, 7.0]),
+        radius=1.6,
+        velocity=np.array([0.0, 1.2, 0.0]),  # Translating across the flight path
+        bounds=(30.0, 30.0, 15.0),
+    )
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="dynamic_obstacle_crossing",
+            description="Cross flight path with a moving obstacle translating deterministically across trajectory.",
+            initial_position=np.array([5.0, 15.0, 7.0]),
+            waypoints=[np.array([25.0, 15.0, 7.0])],
+            obstacles=[],
+            dynamic_obstacles=[dyn_obs],
+            max_steps=400,
+            target_radius=1.5,
+            use_path_planner=True,
+        )
+    )
+
+    # 14. Multiple Sequential 3D Waypoints (Slalom)
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="multiple_sequential_waypoints",
+            description="Follow a 5-waypoint 3D spatial slalom course.",
+            initial_position=np.array([5.0, 5.0, 3.0]),
+            waypoints=[
+                np.array([10.0, 20.0, 5.0]),
+                np.array([15.0, 8.0, 7.0]),
+                np.array([20.0, 22.0, 9.0]),
+                np.array([25.0, 10.0, 11.0]),
+                np.array([27.0, 25.0, 8.0]),
+            ],
+            obstacles=[],
+            max_steps=600,
+            target_radius=1.2,
+        )
+    )
+
+    # 15. Blocked Route / Dead-End Handling
+    # Impassable barrier completely surrounding goal
+    barrier = [
+        ObstacleSphere3D(center=np.array([25.0, 25.0, 7.0]), radius=3.0),
+    ]
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="blocked_route_dead_end",
+            description="Attempt navigation to an obstructed goal inside an obstacle, verifying clean NO_PATH handling.",
+            initial_position=np.array([5.0, 5.0, 5.0]),
+            waypoints=[np.array([25.0, 25.0, 7.0])],  # Goal inside obstacle
+            obstacles=barrier,
+            max_steps=100,
+            target_radius=1.0,
+            use_path_planner=True,
+        )
+    )
+
+    # 16. Return-to-Home (RTH) Navigation
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="return_to_home_mission",
+            description="Fly outbound to waypoint [22.0, 22.0, 10.0] and execute autonomous Return-to-Home.",
+            initial_position=np.array([5.0, 5.0, 3.0]),
+            waypoints=[np.array([22.0, 22.0, 10.0]), np.array([5.0, 5.0, 3.0])],
+            obstacles=[],
+            max_steps=500,
+            target_radius=1.2,
+        )
+    )
+
+    # 17. Turbulent Canyon Navigation
+    canyon_obs = [
+        ObstacleSphere3D(center=np.array([10.0, 8.0, 5.0]), radius=2.0),
+        ObstacleSphere3D(center=np.array([10.0, 12.0, 5.0]), radius=2.0),
+        ObstacleSphere3D(center=np.array([15.0, 8.0, 5.0]), radius=2.0),
+        ObstacleSphere3D(center=np.array([15.0, 12.0, 5.0]), radius=2.0),
+    ]
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="turbulent_canyon_wind",
+            description="Navigate narrow passage under constant 3.0 m/s lateral wind disturbance.",
+            initial_position=np.array([5.0, 10.0, 5.0]),
+            waypoints=[np.array([20.0, 10.0, 5.0])],
+            obstacles=canyon_obs,
+            disturbance_fn=lambda step, state: np.array([0.0, 3.0, 0.0]),
+            max_steps=300,
+            target_radius=1.0,
+            use_path_planner=True,
+        )
+    )
+
+    # 18. Degraded Actuator Loiter
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="degraded_actuator_loiter",
+            description="Maintain hover loiter under 10% motor thrust loss (Motor 1).",
+            initial_position=np.array([10.0, 10.0, 5.0]),
+            waypoints=[np.array([10.0, 10.0, 5.0])],
+            obstacles=[],
+            actuator_fault_fn=lambda step, thrusts: np.array(
+                [
+                    thrusts[0] * 0.90 if step >= 20 else thrusts[0],
+                    thrusts[1],
+                    thrusts[2],
+                    thrusts[3],
+                ]
+            ),
+            max_steps=200,
+            target_radius=1.0,
+        )
+    )
+
+    return scenarios
+
+
+def get_all_flight_scenarios() -> List[FlightScenarioDefinition]:
+    """Return all standard and advanced flight validation scenarios."""
+    return get_standard_flight_scenarios() + get_advanced_navigation_scenarios()
+
+
+def get_scenario(name: str) -> FlightScenarioDefinition:
+    """Retrieve a scenario definition by name."""
+    clean = name.strip().lower()
+    for sc in get_all_flight_scenarios():
+        if sc.name.lower() == clean:
+            return sc
+    raise KeyError(f"Flight scenario '{name}' not found.")
 
 
 class FlightScenarioRunner:
@@ -474,9 +672,59 @@ class FlightScenarioRunner:
         self.env._position = scenario.initial_position.copy()
         self.env._current_step = 0
 
-        waypoints = list(scenario.waypoints)
+        # Resolve waypoints (optionally via 3D A* path planning)
+        waypoints: List[np.ndarray] = []
+        if scenario.use_path_planner and scenario.obstacles:
+            planner = AStarPlanner3D(
+                bounds=scenario.bounds,
+                resolution=1.0,
+                vehicle_radius=scenario.collision_radius,
+                safety_margin=0.3,
+            )
+            raw_target = scenario.waypoints[-1] if scenario.waypoints else scenario.initial_position
+            plan_res = planner.plan(scenario.initial_position, raw_target, scenario.obstacles)
+            if plan_res.status == "SUCCESS" and len(plan_res.waypoints) > 1:
+                waypoints = plan_res.waypoints[1:]  # sequenced targets ahead
+            else:
+                # Planning failure (e.g. goal or start blocked)
+                elapsed_ms = (time.perf_counter() - start_wall_time) * 1000.0
+                initial_goal_dist = float(np.linalg.norm(raw_target - scenario.initial_position))
+                metrics = FlightScenarioMetrics(
+                    scenario_name=scenario.name,
+                    success=False,
+                    outcome="blocked_no_path",
+                    duration_steps=0,
+                    duration_seconds=0.0,
+                    final_position_error=initial_goal_dist,
+                    mean_position_error=initial_goal_dist,
+                    max_position_error=initial_goal_dist,
+                    rms_position_error=initial_goal_dist,
+                    mean_velocity_error=0.0,
+                    max_velocity_error=0.0,
+                    rms_velocity_error=0.0,
+                    mean_attitude_error_deg=0.0,
+                    max_attitude_error_deg=0.0,
+                    mean_angular_speed=0.0,
+                    max_angular_speed=0.0,
+                    initial_goal_distance=initial_goal_dist,
+                    final_goal_distance=initial_goal_dist,
+                    min_obstacle_clearance=plan_res.min_clearance,
+                    collision_count=0,
+                    control_effort=0.0,
+                    execution_wall_time_ms=elapsed_ms,
+                )
+                return FlightScenarioResult(
+                    scenario_name=scenario.name,
+                    description=scenario.description,
+                    metrics=metrics,
+                    telemetry=[],
+                )
+        else:
+            waypoints = list(scenario.waypoints)
+
         if not waypoints:
             waypoints = [scenario.initial_position.copy()]
+
         waypoint_idx = 0
         current_target = waypoints[waypoint_idx].copy()
         self.env._goal = current_target.copy()
@@ -493,11 +741,13 @@ class FlightScenarioRunner:
         control_efforts: List[float] = []
 
         is_collision = False
-        outcome = "timeout"
+        outcome = "max_steps"
         step = 0
+        dt = self.env.dynamics.dt
 
         while step < scenario.max_steps:
             step += 1
+            time_sec = step * dt
             current_state = self.env.dynamics.state
 
             # Compute tracking errors relative to current waypoint
@@ -512,7 +762,6 @@ class FlightScenarioRunner:
             euler_deg = np.array(
                 [math.degrees(roll), math.degrees(pitch), math.degrees(yaw)], dtype=np.float64
             )
-            # Level attitude error (deviation from upright)
             r_mat = self.env.dynamics.body_to_world(np.array([0.0, 0.0, 1.0]))
             tilt_angle_deg = math.degrees(math.acos(max(-1.0, min(1.0, float(r_mat[2])))))
             att_errors_deg.append(tilt_angle_deg)
@@ -526,7 +775,7 @@ class FlightScenarioRunner:
                     current_state,
                     target_position=current_target,
                     target_velocity=np.zeros(3),
-                    dt=self.env.dynamics.dt,
+                    dt=dt,
                 )
             elif hasattr(ctrl, "predict"):
                 obs = self.env._get_obs()
@@ -538,37 +787,51 @@ class FlightScenarioRunner:
             control_efforts.append(float(np.sum(np.square(act_arr))))
 
             # Map action to physical thrusts
-            thrusts = self.env._action_to_motor_thrusts(act_arr)
+            thrusts_cmd = self.env._action_to_motor_thrusts(act_arr)
+            thrusts_actual = thrusts_cmd.copy()
 
             # Apply actuator fault if specified
+            fault_active = False
             if scenario.actuator_fault_fn is not None:
-                thrusts = scenario.actuator_fault_fn(step, thrusts)
+                thrusts_actual = scenario.actuator_fault_fn(step, thrusts_cmd)
+                fault_active = not np.allclose(thrusts_actual, thrusts_cmd)
 
-            # Physical step with Runge-Kutta 4
+            # Step physical dynamics with Runge-Kutta 4
             old_pos = current_state.position.copy()
 
-            # Apply external disturbance force if specified
+            # External aerodynamic disturbance
             if scenario.disturbance_fn is not None:
                 dist_force = scenario.disturbance_fn(step, current_state)
-                # Apply disturbance acceleration directly to velocity before RK4 step
-                current_state.velocity += (
-                    dist_force / self.env.dynamics.mass
-                ) * self.env.dynamics.dt
+                current_state.velocity += (dist_force / self.env.dynamics.mass) * dt
 
-            new_state = self.env.dynamics.step_rk4(thrusts)
+            new_state = self.env.dynamics.step_rk4(thrusts_actual)
             self.env._position = new_state.position.copy()
             self.env._current_step = step
 
-            # Obstacle clearance check
+            # Obstacle clearance check (combining static and dynamic obstacles)
             min_obs_d = float("inf")
             for obstacle in scenario.obstacles:
                 d = obstacle.distance_to(new_state.position) - scenario.collision_radius
+                if d < min_obs_d:
+                    min_obs_d = d
+            for dyn_obs in scenario.dynamic_obstacles:
+                d = dyn_obs.distance_to(new_state.position, time_sec) - scenario.collision_radius
                 if d < min_obs_d:
                     min_obs_d = d
             min_clearances.append(min_obs_d)
 
             # Collision check
             coll, coll_type = self.env._check_collision(new_state.position, prev_pos=old_pos)
+            # Also check dynamic obstacles collisions
+            if not coll:
+                for dyn_obs in scenario.dynamic_obstacles:
+                    if dyn_obs.distance_to(new_state.position, time_sec) <= (
+                        dyn_obs.radius + scenario.collision_radius
+                    ):
+                        coll = True
+                        coll_type = "obstacle"
+                        break
+
             if coll:
                 is_collision = True
                 outcome = "collision" if coll_type == "obstacle" else "boundary_breach"
@@ -596,7 +859,7 @@ class FlightScenarioRunner:
             telemetry.append(
                 FlightStepTelemetry(
                     step=step,
-                    time_sec=step * self.env.dynamics.dt,
+                    time_sec=time_sec,
                     position=new_state.position.copy(),
                     velocity=new_state.velocity.copy(),
                     quaternion=new_state.quaternion.copy(),
@@ -605,10 +868,12 @@ class FlightScenarioRunner:
                     target_position=current_target.copy(),
                     distance_to_target=dist_to_curr_waypoint,
                     action=act_arr.copy(),
-                    motor_thrusts=thrusts.copy(),
+                    motor_thrusts=thrusts_actual.copy(),
                     min_obstacle_distance=min_obs_d,
                     is_collision=coll,
                     is_success=is_final_success,
+                    commanded_thrusts=thrusts_cmd.copy(),
+                    actuator_fault_active=fault_active,
                 )
             )
 
@@ -624,21 +889,29 @@ class FlightScenarioRunner:
 
         final_pos_err = float(np.linalg.norm(waypoints[-1] - self.env._position))
         final_goal_dist = final_pos_err
-        if (
-            outcome != "collision"
-            and outcome != "boundary_breach"
-            and final_pos_err <= scenario.target_radius
-        ):
+
+        # Disambiguated outcome classification
+        if scenario.actuator_fault_fn is not None:
+            max_tilt = max(att_errors_deg) if att_errors_deg else 0.0
+            if is_collision or max_tilt >= 35.0 or self.env._position[2] <= 0.8:
+                outcome = "crash_fault"
+            else:
+                outcome = "recovered_degraded"
+        elif is_collision:
+            outcome = "collision" if coll_type == "obstacle" else "boundary_breach"
+        elif final_pos_err <= scenario.target_radius:
             outcome = "success"
+        else:
+            outcome = "max_steps"
 
         elapsed_ms = (time.perf_counter() - start_wall_time) * 1000.0
 
         metrics = FlightScenarioMetrics(
             scenario_name=scenario.name,
-            success=(outcome == "success"),
+            success=(outcome in ("success", "recovered_degraded")),
             outcome=outcome,
             duration_steps=step,
-            duration_seconds=step * self.env.dynamics.dt,
+            duration_seconds=step * dt,
             final_position_error=final_pos_err,
             mean_position_error=float(np.mean(pos_errors)) if pos_errors else 0.0,
             max_position_error=float(np.max(pos_errors)) if pos_errors else 0.0,

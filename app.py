@@ -36,9 +36,10 @@ from adaptive_rl.evaluation.evaluator import (
 from adaptive_rl.flight_testing import (
     FlightBenchmarkSuite,
     FlightScenarioRunner,
-    get_standard_flight_scenarios,
 )
 from adaptive_rl.gui import (
+    build_3d_navigation_trajectory_figure,
+    build_actuator_telemetry_figure,
     build_arena_3d_figure,
     build_comparison_bar_chart,
     build_density_experiment_figure,
@@ -1723,12 +1724,18 @@ def main() -> None:
 
         sub_view = st.radio(
             "Select Validation Module:",
-            ["🎯 10 Autonomous Flight Scenarios", "📊 PPO & SAC Benchmark Suite"],
+            [
+                "🎯 Autonomous Flight Scenarios (Standard & Advanced)",
+                "📊 PPO & SAC Benchmark Suite",
+            ],
             horizontal=True,
         )
 
-        if sub_view == "🎯 10 Autonomous Flight Scenarios":
-            scenarios = get_standard_flight_scenarios()
+        if sub_view == "🎯 Autonomous Flight Scenarios (Standard & Advanced)":
+            from adaptive_rl.controllers import QuadrotorLQRController
+            from adaptive_rl.flight_testing.scenarios import get_all_flight_scenarios
+
+            scenarios = get_all_flight_scenarios()
             scenario_names = [sc.name for sc in scenarios]
 
             sc_col1, sc_col2 = st.columns([1.5, 1.0])
@@ -1737,14 +1744,15 @@ def main() -> None:
                     "Flight Scenario:",
                     options=scenario_names,
                     index=0,
-                    help="Select one of the 10 standardized aerospace flight validation scenarios.",
+                    help="Select one of the 18 standardized and advanced 3D autonomous flight scenarios.",
                 )
             selected_sc = next(sc for sc in scenarios if sc.name == selected_sc_name)
 
             with sc_col2:
-                ctrl_options = ["Reference Flight Controller (Cascaded PID)"] + [
-                    f"Model: {name}" for name in model_names
-                ]
+                ctrl_options = [
+                    "Reference Flight Controller (Cascaded PID)",
+                    "Optimal Flight Controller (LQR)",
+                ] + [f"Model: {name}" for name in model_names]
                 selected_ctrl_name = st.selectbox(
                     "Flight Controller / Policy:",
                     options=ctrl_options,
@@ -1764,7 +1772,8 @@ def main() -> None:
             m_col2.metric(
                 "Target Waypoint", f"[{final_wp[0]:.1f}, {final_wp[1]:.1f}, {final_wp[2]:.1f}] m"
             )
-            m_col3.metric("Obstacles", f"{len(selected_sc.obstacles)} spheres")
+            total_obs = len(selected_sc.obstacles) + len(selected_sc.dynamic_obstacles)
+            m_col3.metric("Obstacles", f"{total_obs} spheres")
             m_col4.metric(
                 "Max Steps", f"{selected_sc.max_steps} ({selected_sc.max_steps * 0.05:.1f}s)"
             )
@@ -1777,6 +1786,8 @@ def main() -> None:
                     controller_inst: Any = None
                     if selected_ctrl_name == "Reference Flight Controller (Cascaded PID)":
                         controller_inst = QuadrotorPIDController(dt=0.05)
+                    elif selected_ctrl_name == "Optimal Flight Controller (LQR)":
+                        controller_inst = QuadrotorLQRController(dt=0.05)
                     else:
                         model_key = selected_ctrl_name.replace("Model: ", "")
                         m_path = next((m for m in available_models if m.name == model_key), None)
@@ -1835,10 +1846,29 @@ def main() -> None:
                 )
                 met6.metric("Control Effort", f"{metrics.control_effort:.1f}")
 
+                # 3D Navigation Scene: Planned vs Flown
+                flown_pts = [t.position for t in res.telemetry]
+                all_obs = list(selected_sc.obstacles) + list(selected_sc.dynamic_obstacles)
+                nav_3d_fig = build_3d_navigation_trajectory_figure(
+                    planned_waypoints=selected_sc.waypoints,
+                    flown_trajectory=flown_pts,
+                    obstacles=all_obs,
+                    bounds=selected_sc.bounds,
+                    title=f"3D Navigation Trajectory — {res.scenario_name}",
+                )
+                st.plotly_chart(nav_3d_fig, width="stretch")
+
+                # Actuator Telemetry: Commanded vs Actual Motor Thrust
+                act_fig = build_actuator_telemetry_figure(
+                    res.telemetry,
+                    title=f"Motor Thrust Telemetry (Commanded vs Actual) — {res.scenario_name}",
+                )
+                st.plotly_chart(act_fig, width="stretch")
+
                 # Synchronized telemetry time-series
                 telemetry_fig = build_telemetry_time_series_figure(
                     res.telemetry,
-                    title=f"Telemetry Time Series — {res.scenario_name} ({metrics.outcome.upper()})",
+                    title=f"Flight Dynamics Telemetry Time Series — {res.scenario_name}",
                 )
                 st.plotly_chart(telemetry_fig, width="stretch")
 

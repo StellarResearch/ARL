@@ -8,7 +8,7 @@ a target, evaluate the trained agent, and visualize the flight demonstration.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, cast
+from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 import typer
 from rich.console import Console
@@ -2013,7 +2013,13 @@ def validate_flight(
         "all",
         "--scenario",
         "-s",
-        help="Scenario name to execute, or 'all' for complete 10-scenario suite",
+        help="Scenario name, 'standard', 'advanced', or 'all' for complete 18-scenario suite",
+    ),
+    controller: str = typer.Option(
+        "pid",
+        "--controller",
+        "-c",
+        help="Flight controller type: 'pid' or 'lqr'",
     ),
     output_dir: Path = typer.Option(
         Path("artifacts/flight_records"),
@@ -2023,39 +2029,55 @@ def validate_flight(
     ),
     export_csv: bool = typer.Option(True, "--csv/--no-csv", help="Export summary metrics to CSV"),
 ) -> None:
-    """Execute reproducible 6-DOF autonomous flight validation scenarios using Reference PID Controller."""
+    """Execute reproducible 6-DOF autonomous flight validation scenarios using Reference PID or LQR Controller."""
     import math
     import time
 
-    from adaptive_rl.controllers.pid import QuadrotorPIDController
+    from adaptive_rl.controllers import QuadrotorLQRController, QuadrotorPIDController
     from adaptive_rl.flight_testing import (
         FlightRecorder,
         FlightScenarioRunner,
+        get_advanced_navigation_scenarios,
+        get_all_flight_scenarios,
         get_standard_flight_scenarios,
     )
 
-    scenarios = get_standard_flight_scenarios()
     clean_target = scenario.strip().lower()
-
-    if clean_target != "all":
-        selected = [sc for sc in scenarios if sc.name.lower() == clean_target]
+    if clean_target in ("all", "18"):
+        target_scenarios = get_all_flight_scenarios()
+    elif clean_target in ("standard", "10"):
+        target_scenarios = get_standard_flight_scenarios()
+    elif clean_target in ("advanced", "nav"):
+        target_scenarios = get_advanced_navigation_scenarios()
+    else:
+        all_scenarios = get_all_flight_scenarios()
+        selected = [sc for sc in all_scenarios if sc.name.lower() == clean_target]
         if not selected:
-            valid_names = ", ".join(sc.name for sc in scenarios)
+            valid_names = ", ".join(sc.name for sc in all_scenarios)
             console.print(
-                f"[bold red]Unknown scenario '{scenario}'.[/bold red] Valid options: {valid_names}, all"
+                f"[bold red]Unknown scenario '{scenario}'.[/bold red] Valid options: standard, advanced, all, {valid_names}"
             )
             raise typer.Exit(code=1)
         target_scenarios = selected
+
+    ctrl_type = controller.strip().lower()
+    flight_ctrl: Any
+    if ctrl_type == "lqr":
+        flight_ctrl = QuadrotorLQRController(dt=0.05)
+    elif ctrl_type == "pid":
+        flight_ctrl = QuadrotorPIDController(dt=0.05)
     else:
-        target_scenarios = scenarios
+        console.print(
+            f"[bold red]Unknown controller type '{controller}'.[/bold red] Valid options: 'pid', 'lqr'"
+        )
+        raise typer.Exit(code=1)
 
     console.print(
-        f"[bold cyan]Running {len(target_scenarios)} autonomous flight scenario(s)...[/bold cyan]"
+        f"[bold cyan]Running {len(target_scenarios)} autonomous flight scenario(s) using {ctrl_type.upper()} controller...[/bold cyan]"
     )
 
     runner = FlightScenarioRunner()
-    ctrl = QuadrotorPIDController(dt=0.05)
-    results = runner.run_all_scenarios(controller=ctrl, scenarios=target_scenarios)
+    results = runner.run_all_scenarios(controller=flight_ctrl, scenarios=target_scenarios)
 
     # Display Rich Results Table
     table = Table(title="Autonomous Flight Validation Results")
@@ -2105,21 +2127,36 @@ def validate_flight(
 
 @app.command(name="benchmark-flight")
 def benchmark_flight(
+    algo: Optional[str] = typer.Option(
+        None,
+        "--algo",
+        "-a",
+        help="Specific algorithm ('ppo', 'sac', or 'random'); defaults to matrix",
+    ),
+    dof: Optional[int] = typer.Option(
+        None, "--dof", "-d", help="Dynamics mode (3 or 6); defaults to both"
+    ),
     profile: str = typer.Option(
         "quick", "--profile", "-p", help="Benchmark profile: 'quick' or 'full'"
+    ),
+    checkpoint: Optional[Path] = typer.Option(
+        None, "--checkpoint", "-c", help="Path to pre-trained model checkpoint"
     ),
     output_dir: Path = typer.Option(
         Path("artifacts/benchmarks"), "--output-dir", "-o", help="Output directory"
     ),
     train_missing: bool = typer.Option(
-        False, "--train-missing", help="Train 512-step smoke policy if checkpoints are missing"
+        False, "--train-missing", help="Train smoke policy if checkpoints are missing"
     ),
     deterministic: bool = typer.Option(
         True, "--deterministic/--stochastic", help="Policy evaluation action mode"
     ),
 ) -> None:
     """Execute standardized PPO & SAC comparative flight benchmarks across 3-DOF and 6-DOF."""
-    from adaptive_rl.benchmarking.flight_benchmark import FlightBenchmarkSuite
+    from adaptive_rl.benchmarking.flight_benchmark import (
+        SUPPORTED_COMBINATIONS,
+        FlightBenchmarkSuite,
+    )
 
     clean_profile = profile.strip().lower()
     if clean_profile not in ("quick", "full"):
@@ -2132,11 +2169,40 @@ def benchmark_flight(
         f"[bold cyan]Running Flight Benchmark Suite (Profile: {clean_profile.upper()})...[/bold cyan]"
     )
     suite = FlightBenchmarkSuite(output_dir=output_dir)
-    report = suite.run_suite(
-        profile=clean_profile,
-        deterministic=deterministic,
-        train_if_missing=train_missing,
-    )
+
+    combos: List[Tuple[str, str]]
+    if algo is not None or dof is not None:
+        selected_algos = [algo.lower()] if algo else ["ppo", "sac"]
+        selected_envs: List[str]
+        if dof == 3:
+            selected_envs = ["drone"]
+        elif dof == 6:
+            selected_envs = ["drone-6dof"]
+        else:
+            selected_envs = ["drone", "drone-6dof"]
+        combos = [(a, e) for a in selected_algos for e in selected_envs]
+    else:
+        combos = list(SUPPORTED_COMBINATIONS)
+
+    chk_map: Dict[Tuple[str, str], Path | str] = {}
+    if checkpoint is not None and len(combos) == 1:
+        chk_map[combos[0]] = checkpoint
+
+    try:
+        report = suite.run_suite(
+            combinations=combos,
+            profile=clean_profile,
+            deterministic=deterministic,
+            checkpoints=chk_map if chk_map else None,
+            train_if_missing=train_missing,
+        )
+    except ValueError as exc:
+        console.print(f"[bold red]Benchmark configuration error:[/bold red] {exc}")
+        console.print(
+            "[yellow]Tip: Pass '--train-missing' to train a quick smoke policy, "
+            "'--checkpoint <path>' to supply a trained model, or '--algo random' to evaluate the random baseline.[/yellow]"
+        )
+        raise typer.Exit(code=1)
 
     table = Table(title=f"Flight Benchmark Results ({clean_profile.upper()} Profile)")
     table.add_column("Algorithm", style="cyan")

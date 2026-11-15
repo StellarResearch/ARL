@@ -5,20 +5,24 @@ Supports all standard matrix combinations:
 - PPO + 6-DOF (Rigid-body dynamics)
 - SAC + 3-DOF (Kinematic)
 - SAC + 6-DOF (Rigid-body dynamics)
+- Explicit RANDOM baseline
 
 Features:
 - Configurable execution profiles:
-    * 'quick': Lightweight verification (small episode counts, smoke-test budget).
-    * 'full': Comprehensive statistical benchmark with multi-seed confidence intervals.
+    * 'quick': Lightweight verification (smoke-test budget, N < 10, no inferential CI claims).
+    * 'full': Comprehensive statistical research benchmark (N >= 10, multi-seed Student-t 95% CIs).
 - Evaluation of both deterministic and stochastic policy actions.
-- Rigorous statistical integrity adhering to established sample size requirements.
+- Rigorous statistical integrity adhering to established sample size requirements (N >= 10).
+- Explicit policy provenance: never silently substitutes random actions under PPO/SAC labels.
 - Standardized safety, performance, and flight trajectory metrics.
+- Disambiguated outcome semantics (SUCCESS, COLLISION, BOUNDARY_BREACH, TIMEOUT, MAX_STEPS).
 - Canonical JSON and CSV report export.
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
 import math
@@ -48,6 +52,8 @@ from adaptive_rl.training.trainer import get_trainer
 
 logger = logging.getLogger(__name__)
 
+MINIMUM_SAMPLES_FOR_CI: int = 10
+
 SUPPORTED_COMBINATIONS = [
     ("ppo", "drone"),
     ("ppo", "drone-6dof"),
@@ -73,9 +79,13 @@ class BenchmarkCombinationResult:
     algorithm: str
     environment: str
     mode: str  # "3-DOF" or "6-DOF"
+    policy_source: str  # "checkpoint", "smoke_trained", or "random"
+    checkpoint_hash: Optional[str]
     deterministic: bool
     evaluation_profile: str
+    is_smoke_test: bool
     total_episodes: int
+    evaluation_seeds: List[int]
     success_rate: float
     collision_rate: float
     timeout_rate: float
@@ -93,6 +103,7 @@ class BenchmarkCombinationResult:
     confidence_intervals: Dict[str, Dict[str, Optional[float]]] = field(default_factory=dict)
     statistical_note: Optional[str] = None
     config_fingerprint: str = ""
+    training_config: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -137,8 +148,10 @@ class BenchmarkSuiteReport:
             "algorithm",
             "environment",
             "mode",
+            "policy_source",
             "deterministic",
             "evaluation_profile",
+            "is_smoke_test",
             "total_episodes",
             "success_rate",
             "collision_rate",
@@ -159,7 +172,6 @@ class BenchmarkSuiteReport:
             writer.writeheader()
             for c in self.combinations_evaluated:
                 row = {k: getattr(c, k) for k in fieldnames}
-                # format floats
                 for k, v in row.items():
                     if isinstance(v, float):
                         row[k] = round(v, 4)
@@ -190,25 +202,27 @@ class FlightBenchmarkSuite:
         deterministic: bool = True,
         seeds: Optional[Sequence[int]] = None,
         train_if_missing: bool = False,
-        smoke_train_steps: int = 512,
+        smoke_train_steps: int = 256,
     ) -> BenchmarkCombinationResult:
         """Run benchmark evaluation for a single (algorithm, environment) combination.
 
         Args:
-            algorithm_name: 'ppo' or 'sac'.
+            algorithm_name: 'ppo', 'sac', or 'random'.
             env_name: 'drone' (3-DOF) or 'drone-6dof' (6-DOF).
             checkpoint_path: Optional path to pre-trained model checkpoint.
-            profile: 'quick' (2 episodes, smoke) or 'full' (multi-seed, statistical).
+            profile: 'quick' (smoke profile, N < 10) or 'full' (research benchmark, N >= 10).
             deterministic: Deterministic action selection (True) or stochastic (False).
-            seeds: Custom seeds sequence.
+            seeds: Custom seeds sequence (must be distinct).
             train_if_missing: If True and checkpoint is missing, train a lightweight policy.
             smoke_train_steps: Timesteps for quick training if required.
         """
         algo_clean = algorithm_name.strip().lower()
         env_clean = env_name.strip().lower()
 
-        if algo_clean not in ("ppo", "sac"):
-            raise ValueError(f"Unsupported algorithm '{algorithm_name}'. Expected 'ppo' or 'sac'.")
+        if algo_clean not in ("ppo", "sac", "random", "random_policy"):
+            raise ValueError(
+                f"Unsupported algorithm '{algorithm_name}'. Expected 'ppo', 'sac', or 'random'."
+            )
         if env_clean not in ("drone", "drone_3d", "drone-6dof", "drone_6dof"):
             raise ValueError(
                 f"Unsupported environment '{env_name}'. Expected 'drone' or 'drone-6dof'."
@@ -216,54 +230,89 @@ class FlightBenchmarkSuite:
 
         mode = "6-DOF" if "6dof" in env_clean or "6-dof" in env_clean else "3-DOF"
 
-        # Resolve seeds and episode budgets based on profile
+        # Statistical sample requirement enforcement
+        is_smoke = profile == "quick"
         if seeds is not None:
-            eval_seeds = list(seeds)
-        elif profile == "quick":
+            eval_seeds = [int(s) for s in seeds]
+        elif is_smoke:
             eval_seeds = [101, 102]
         else:
-            # Full benchmark: 5 distinct seeds
-            eval_seeds = [1001, 1002, 1003, 1004, 1005]
+            # Full benchmark requires N >= 10 distinct seeds
+            eval_seeds = list(range(1001, 1011))
+
+        if not eval_seeds:
+            raise ValueError("Evaluation seeds list cannot be empty.")
+
+        if len(eval_seeds) != len(set(eval_seeds)):
+            raise ValueError(
+                f"Evaluation seeds must be distinct independent observations, got duplicates: {eval_seeds}"
+            )
 
         # 1. Resolve or train policy
         model = None
-        if checkpoint_path is not None:
-            c_path = Path(checkpoint_path)
-            if not c_path.is_file():
-                raise FileNotFoundError(f"Checkpoint not found: {c_path}")
-            # Verify checkpoint compatibility before running
-            chk_info = inspect_model_checkpoint(c_path)
-            if not chk_info.get("valid", True) and chk_info.get("error"):
-                raise ValueError(f"Corrupt checkpoint '{c_path.name}': {chk_info['error']}")
+        policy_source = "random"
+        chk_hash: Optional[str] = None
+        training_cfg_dict: Optional[Dict[str, Any]] = None
 
-            # Check dimension/environment match
-            expected_mode = "6-DOF" if mode == "6-DOF" else "3-DOF"
-            compat_env = chk_info.get("compatible_env")
-            if compat_env and compat_env != expected_mode:
-                raise ValueError(
-                    f"Checkpoint '{c_path.name}' was trained for {compat_env}, but environment is {expected_mode}. "
-                    "Cannot evaluate incompatible policy architecture."
+        if algo_clean in ("ppo", "sac"):
+            if checkpoint_path is not None:
+                c_path = Path(checkpoint_path)
+                if not c_path.is_file():
+                    raise FileNotFoundError(f"Checkpoint not found: {c_path}")
+                # Compute SHA-256 digest of checkpoint
+                with open(c_path, "rb") as f:
+                    chk_hash = hashlib.sha256(f.read()).hexdigest()
+
+                # Verify checkpoint compatibility before running
+                chk_info = inspect_model_checkpoint(c_path)
+                if not chk_info.get("valid", True) and chk_info.get("error"):
+                    raise ValueError(f"Corrupt checkpoint '{c_path.name}': {chk_info['error']}")
+
+                expected_mode = "6-DOF" if mode == "6-DOF" else "3-DOF"
+                compat_env = chk_info.get("compatible_env")
+                if compat_env and compat_env != expected_mode:
+                    raise ValueError(
+                        f"Checkpoint '{c_path.name}' was trained for {compat_env}, but environment is {expected_mode}. "
+                        "Cannot evaluate incompatible policy architecture."
+                    )
+                model = load_algorithm_from_pretrained(algo_clean, c_path)
+                policy_source = "checkpoint"
+            elif train_if_missing:
+                logger.info(
+                    "Training %s on %s for %d smoke steps...",
+                    algo_clean,
+                    env_clean,
+                    smoke_train_steps,
                 )
-            model = load_algorithm_from_pretrained(algo_clean, c_path)
-        elif train_if_missing:
-            logger.info(
-                "Training %s on %s for %d smoke steps...", algo_clean, env_clean, smoke_train_steps
-            )
-            algo_meta = get_algorithm_metadata(algo_clean)
-            exp_cfg = ExperimentConfig(
-                name=f"smoke_{algo_clean}_{env_clean}",
-                seed=eval_seeds[0],
-                algorithm=AlgorithmConfig(
-                    name=algo_clean, parameters=dict(algo_meta.hyperparameters)
-                ),
-                environment=EnvironmentConfig(name=env_clean, parameters=self.env_params),
-                training=TrainingConfig(total_timesteps=smoke_train_steps, checkpoint_freq=0),
-                evaluation=EvaluationConfig(eval_episodes=2, deterministic=True),
-                output_dir=self.output_dir / "temp_training",
-            )
-            trainer = get_trainer(config=exp_cfg)
-            trainer.fit()
-            model = trainer.algorithm
+                algo_meta = get_algorithm_metadata(algo_clean)
+                training_cfg_dict = {
+                    "algorithm": algo_clean,
+                    "timesteps": smoke_train_steps,
+                    "seed": eval_seeds[0],
+                }
+                exp_cfg = ExperimentConfig(
+                    name=f"smoke_{algo_clean}_{env_clean}",
+                    seed=eval_seeds[0],
+                    algorithm=AlgorithmConfig(
+                        name=algo_clean, parameters=dict(algo_meta.hyperparameters)
+                    ),
+                    environment=EnvironmentConfig(name=env_clean, parameters=self.env_params),
+                    training=TrainingConfig(total_timesteps=smoke_train_steps, checkpoint_freq=0),
+                    evaluation=EvaluationConfig(eval_episodes=2, deterministic=True),
+                    output_dir=self.output_dir / "temp_training",
+                )
+                trainer = get_trainer(config=exp_cfg)
+                trainer.fit()
+                model = trainer.algorithm
+                policy_source = "smoke_trained"
+            else:
+                raise ValueError(
+                    f"Evaluation of '{algorithm_name}' requires a valid model checkpoint or train_if_missing=True. "
+                    f"Random actions cannot be silently evaluated under algorithm identity '{algorithm_name}'."
+                )
+        else:
+            algo_clean = "random"
+            policy_source = "random"
 
         # Separate evaluation environment instance
         eval_env = make_env(env_clean, **self.env_params)
@@ -272,12 +321,15 @@ class FlightBenchmarkSuite:
         rewards: List[float] = []
         durations_steps: List[float] = []
         durations_seconds: List[float] = []
-        successes: List[Optional[bool]] = []
-        collisions: List[Optional[bool]] = []
-        truncations: List[bool] = []
         goal_distances: List[float] = []
         pos_errors: List[float] = []
         clearances: List[float] = []
+
+        success_count = 0
+        collision_count = 0
+        boundary_breach_count = 0
+        timeout_count = 0
+        max_step_count = 0
 
         try:
             for s in eval_seeds:
@@ -287,6 +339,8 @@ class FlightBenchmarkSuite:
                 done = False
                 unwrapped = getattr(eval_env, "unwrapped", eval_env)
                 dt_val = getattr(getattr(unwrapped, "dynamics", None), "dt", 0.05)
+                max_env_steps = getattr(unwrapped, "max_steps", 500)
+                last_step_info: Dict[str, Any] = {}
 
                 while not done:
                     if model is not None:
@@ -295,31 +349,50 @@ class FlightBenchmarkSuite:
                         act = eval_env.action_space.sample()
 
                     obs, reward, terminated, truncated, step_info = eval_env.step(act)
+                    last_step_info = dict(step_info or {})
                     ep_reward += float(reward)
                     ep_steps += 1
                     done = terminated or truncated
 
                     # Extract physical tracking metrics
-                    if "distance_to_goal" in step_info:
-                        goal_distances.append(float(step_info["distance_to_goal"]))
-                    if "position" in step_info and "goal" in step_info:
-                        p = np.asarray(step_info["position"])
-                        g = np.asarray(step_info["goal"])
+                    if "distance_to_goal" in last_step_info:
+                        goal_distances.append(float(last_step_info["distance_to_goal"]))
+                    if "position" in last_step_info and "goal" in last_step_info:
+                        p = np.asarray(last_step_info["position"])
+                        g = np.asarray(last_step_info["goal"])
                         pos_errors.append(float(np.linalg.norm(g - p)))
-                    if "min_obstacle_distance" in step_info and math.isfinite(
-                        step_info["min_obstacle_distance"]
+                    if "min_obstacle_distance" in last_step_info and math.isfinite(
+                        last_step_info["min_obstacle_distance"]
                     ):
-                        clearances.append(float(step_info["min_obstacle_distance"]))
+                        clearances.append(float(last_step_info["min_obstacle_distance"]))
 
                 rewards.append(ep_reward)
                 durations_steps.append(float(ep_steps))
                 durations_seconds.append(float(ep_steps * dt_val))
-                last_inf = dict(step_info or {})
-                succ = last_inf.get("success", last_inf.get("is_success"))
-                successes.append(bool(succ) if succ is not None else False)
-                coll = last_inf.get("collision")
-                collisions.append(bool(coll) if coll is not None else False)
-                truncations.append(bool(truncated))
+
+                # Unambiguous outcome classification with strict collision precedence
+                is_coll = bool(last_step_info.get("collision", False))
+                coll_type = str(last_step_info.get("collision_type", "none"))
+                is_succ = bool(
+                    last_step_info.get("success", last_step_info.get("is_success", False))
+                )
+                is_timeout = bool(
+                    last_step_info.get("timeout", last_step_info.get("is_timeout", False))
+                )
+
+                if is_coll:
+                    if coll_type.startswith("boundary") or coll_type == "ground":
+                        boundary_breach_count += 1
+                    else:
+                        collision_count += 1
+                elif is_succ:
+                    success_count += 1
+                elif is_timeout:
+                    timeout_count += 1
+                elif truncated or ep_steps >= max_env_steps:
+                    max_step_count += 1
+                else:
+                    max_step_count += 1
         finally:
             eval_env.close()
 
@@ -327,9 +400,12 @@ class FlightBenchmarkSuite:
 
         # Compute empirical descriptive and statistical metrics
         n_episodes = len(rewards)
-        succ_rate = float(sum(1 for s in successes if s)) / n_episodes if n_episodes > 0 else 0.0
-        coll_rate = float(sum(1 for c in collisions if c)) / n_episodes if n_episodes > 0 else 0.0
-        trunc_rate = float(sum(1 for t in truncations if t)) / n_episodes if n_episodes > 0 else 0.0
+        succ_rate = float(success_count / n_episodes) if n_episodes > 0 else 0.0
+        coll_rate = (
+            float((collision_count + boundary_breach_count) / n_episodes) if n_episodes > 0 else 0.0
+        )
+        timeout_rate = float(timeout_count / n_episodes) if n_episodes > 0 else 0.0
+        max_step_rate = float(max_step_count / n_episodes) if n_episodes > 0 else 0.0
 
         mean_rew = float(np.mean(rewards)) if rewards else 0.0
         median_rew = float(np.median(rewards)) if rewards else 0.0
@@ -343,11 +419,11 @@ class FlightBenchmarkSuite:
         mean_pos_e = float(np.mean(pos_errors)) if pos_errors else 0.0
         min_clear = float(min(clearances)) if clearances else float("inf")
 
-        # Statistical integrity: compute 95% CI across seed summaries if N >= 2
+        # Statistical integrity: enforce MINIMUM_SAMPLES_FOR_CI
         confidence_intervals: Dict[str, Dict[str, Optional[float]]] = {}
         stat_note: Optional[str] = None
 
-        if n_episodes >= 2:
+        if n_episodes >= MINIMUM_SAMPLES_FOR_CI:
             rew_stat = summarize_seed_values(rewards)
             confidence_intervals["reward"] = {
                 "mean": rew_stat.mean,
@@ -360,10 +436,14 @@ class FlightBenchmarkSuite:
                 "ci95_lower": dur_stat.ci95_lower,
                 "ci95_upper": dur_stat.ci95_upper,
             }
+            stat_note = (
+                f"Sample size N={n_episodes} satisfies research criteria (N >= {MINIMUM_SAMPLES_FOR_CI}). "
+                "95% Student's t confidence intervals computed across independent seed evaluations."
+            )
         else:
             stat_note = (
-                f"Sample size N={n_episodes} is insufficient for inferential statistics or confidence intervals. "
-                "Only descriptive episode values are reported."
+                f"Sample size N={n_episodes} is below minimum threshold (N >= {MINIMUM_SAMPLES_FOR_CI}) "
+                "for inferential statistics. Confidence intervals are omitted. Only descriptive statistics are reported."
             )
 
         # Config fingerprint for verification
@@ -374,6 +454,9 @@ class FlightBenchmarkSuite:
                 "deterministic": deterministic,
                 "profile": profile,
                 "env_params": self.env_params,
+                "policy_source": policy_source,
+                "checkpoint_hash": chk_hash,
+                "evaluation_seeds": eval_seeds,
             }
         )
 
@@ -381,13 +464,17 @@ class FlightBenchmarkSuite:
             algorithm=algo_clean.upper(),
             environment=env_clean,
             mode=mode,
+            policy_source=policy_source,
+            checkpoint_hash=chk_hash,
             deterministic=deterministic,
             evaluation_profile=profile,
+            is_smoke_test=is_smoke,
             total_episodes=n_episodes,
+            evaluation_seeds=eval_seeds,
             success_rate=succ_rate,
             collision_rate=coll_rate,
-            timeout_rate=trunc_rate,
-            max_step_termination_rate=trunc_rate,
+            timeout_rate=timeout_rate,
+            max_step_termination_rate=max_step_rate,
             mean_reward=mean_rew,
             median_reward=median_rew,
             std_reward=std_rew,
@@ -401,6 +488,7 @@ class FlightBenchmarkSuite:
             confidence_intervals=confidence_intervals,
             statistical_note=stat_note,
             config_fingerprint=cfg_fingerprint,
+            training_config=training_cfg_dict,
         )
 
     def run_suite(

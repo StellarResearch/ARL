@@ -1,6 +1,8 @@
 """Browser GUI and interactive 3D visualization utilities for AdaptiveRL."""
 
 from adaptive_rl.gui.visualizer import (
+    build_3d_navigation_trajectory_figure,
+    build_actuator_telemetry_figure,
     build_arena_3d_figure,
     build_comparison_bar_chart,
     build_density_experiment_figure,
@@ -15,6 +17,8 @@ from adaptive_rl.gui.visualizer import (
 )
 
 __all__ = [
+    "build_3d_navigation_trajectory_figure",
+    "build_actuator_telemetry_figure",
     "build_arena_3d_figure",
     "build_comparison_bar_chart",
     "build_density_experiment_figure",

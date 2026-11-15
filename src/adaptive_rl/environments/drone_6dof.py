@@ -313,6 +313,10 @@ class DroneDynamics6DOF:
         angular_damping: float = 0.02,
         dt: float = 0.05,
         substeps: int = 5,
+        enable_motor_dynamics: bool = False,
+        motor_time_constant: float = 0.03,
+        wind_vector: Optional[np.ndarray | Sequence[float]] = None,
+        enable_ground_effect: bool = False,
     ) -> None:
         for name, val in [
             ("mass", mass),
@@ -365,6 +369,20 @@ class DroneDynamics6DOF:
 
         self.inv_inertia = 1.0 / self.inertia_diag
         self.hover_thrust_per_motor = (self.mass * self.gravity) / 4.0
+
+        # Actuator first-order response dynamics
+        self.enable_motor_dynamics = bool(enable_motor_dynamics)
+        self.motor_time_constant = max(1e-4, float(motor_time_constant))
+        self.actual_motor_thrusts = np.full(4, self.hover_thrust_per_motor, dtype=np.float64)
+
+        # Continuous aerodynamic wind vector [vx, vy, vz] in world frame
+        if wind_vector is not None:
+            self.wind_vector = np.asarray(wind_vector, dtype=np.float64).copy()
+        else:
+            self.wind_vector = np.zeros(3, dtype=np.float64)
+
+        # Simplified Cheeseman-Bennett ground effect model
+        self.enable_ground_effect = bool(enable_ground_effect)
 
         self.state = DroneState6DOF(
             position=np.zeros(3, dtype=np.float64),
@@ -459,8 +477,14 @@ class DroneDynamics6DOF:
         else:
             self.state.angular_velocity = np.zeros(3, dtype=np.float64)
 
-    def compute_forces_and_torques(self, motor_thrusts: np.ndarray) -> Tuple[float, np.ndarray]:
+        self.actual_motor_thrusts = np.full(4, self.hover_thrust_per_motor, dtype=np.float64)
+
+    def compute_forces_and_torques(
+        self, motor_thrusts: np.ndarray, altitude: Optional[float] = None
+    ) -> Tuple[float, np.ndarray]:
         """Compute collective thrust and body torques from 4 individual rotor thrusts.
+
+        Supports optional Cheeseman-Bennett ground effect model when enabled.
 
         Rotor configuration (X-quadrotor):
           F1: Front-Right (+d, -d) CCW
@@ -477,6 +501,15 @@ class DroneDynamics6DOF:
         # Sanitize non-finite values safely
         f_sanitized = np.nan_to_num(f_arr, nan=0.0, posinf=self.max_thrust_per_motor, neginf=0.0)
         f = np.clip(f_sanitized, 0.0, self.max_thrust_per_motor)
+
+        # Ground effect amplification (Cheeseman-Bennett model)
+        if self.enable_ground_effect and altitude is not None and altitude > 0.0:
+            r_blade = self.rotor_radius
+            z_eff = max(0.5 * r_blade, float(altitude))
+            ratio = r_blade / (4.0 * z_eff)
+            ige_factor = min(1.30, max(1.0, 1.0 / (1.0 - (ratio * ratio))))
+            f = f * ige_factor
+
         f1, f2, f3, f4 = f[0], f[1], f[2], f[3]
 
         total_thrust = float(f1 + f2 + f3 + f4)
@@ -499,11 +532,12 @@ class DroneDynamics6DOF:
         # 1. Position derivative: dp/dt = vel
         d_pos = vel.copy()
 
-        # 2. Velocity derivative: dv/dt = [0, 0, -g] + (1/m)*R(q)*[0, 0, T] - (D_v/m)*v
+        # 2. Velocity derivative: dv/dt = [0, 0, -g] + (1/m)*R(q)*[0, 0, T] - (D_v/m)*(v - v_wind)
         r_mat = quaternion_to_rotation_matrix(quat)
         thrust_world = r_mat @ np.array([0.0, 0.0, total_thrust], dtype=np.float64)
         gravity_world = np.array([0.0, 0.0, -self.mass * self.gravity], dtype=np.float64)
-        drag_force = -self.linear_damping * vel
+        v_rel = vel - self.wind_vector
+        drag_force = -self.linear_damping * v_rel
         d_vel = (gravity_world + thrust_world + drag_force) / self.mass
 
         # 3. Quaternion derivative: dq/dt = 0.5 * q (x) [0, omega]
@@ -519,8 +553,8 @@ class DroneDynamics6DOF:
 
     def step_rk4(self, motor_thrusts: np.ndarray) -> DroneState6DOF:
         """Advance physical state by dt using Runge-Kutta 4th-order integration over substeps."""
-        total_thrust, torques = self.compute_forces_and_torques(motor_thrusts)
         h = self.substep_dt
+        f_cmd = np.asarray(motor_thrusts, dtype=np.float64)
 
         pos = self.state.position.copy()
         vel = self.state.velocity.copy()
@@ -528,6 +562,19 @@ class DroneDynamics6DOF:
         omega = self.state.angular_velocity.copy()
 
         for _ in range(self.substeps):
+            # Integrate actuator first-order response if enabled
+            if self.enable_motor_dynamics:
+                d_thrust = (h / self.motor_time_constant) * (f_cmd - self.actual_motor_thrusts)
+                self.actual_motor_thrusts = np.clip(
+                    self.actual_motor_thrusts + d_thrust, 0.0, self.max_thrust_per_motor
+                )
+            else:
+                self.actual_motor_thrusts = np.clip(f_cmd, 0.0, self.max_thrust_per_motor)
+
+            total_thrust, torques = self.compute_forces_and_torques(
+                self.actual_motor_thrusts, altitude=pos[2]
+            )
+
             # k1
             k1_p, k1_v, k1_q, k1_w = self._state_derivatives(
                 pos, vel, quat, omega, total_thrust, torques
@@ -570,8 +617,6 @@ class DroneDynamics6DOF:
             q_norm = np.linalg.norm(quat)
             if q_norm > 1e-12:
                 quat /= q_norm
-            else:
-                quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
             omega += (h / 6.0) * (k1_w + 2.0 * k2_w + 2.0 * k3_w + k4_w)
 
         self.state.position = pos

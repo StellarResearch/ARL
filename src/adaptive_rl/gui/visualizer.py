@@ -2357,7 +2357,203 @@ def build_flight_benchmark_figure(
     return fig
 
 
+def build_actuator_telemetry_figure(
+    telemetry_records: Sequence[Any],
+    title: str = "Motor Actuation Telemetry (Commanded vs Actual Thrust)",
+) -> go.Figure:
+    """Build 4-panel subplot displaying commanded vs actual thrust for all 4 motors.
+
+    Demonstrates first-order motor lag, saturation clipping, and fault degradation.
+    """
+    fig = make_subplots(
+        rows=2,
+        cols=2,
+        shared_xaxes=True,
+        subplot_titles=(
+            "Motor 1 (Front-Right)",
+            "Motor 2 (Front-Left)",
+            "Motor 3 (Rear-Left)",
+            "Motor 4 (Rear-Right)",
+        ),
+    )
+
+    if not telemetry_records:
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#080c14",
+            plot_bgcolor="#080c14",
+            title=title,
+        )
+        return fig
+
+    times: List[float] = []
+    cmd_m: List[List[float]] = [[] for _ in range(4)]
+    act_m: List[List[float]] = [[] for _ in range(4)]
+
+    for item in telemetry_records:
+        d = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        t_sec = float(d.get("time_sec", 0.0))
+        times.append(t_sec)
+
+        thrusts = d.get("motor_thrusts", [0.0, 0.0, 0.0, 0.0])
+        cmd_thrusts = d.get("commanded_thrusts", thrusts)
+
+        for i in range(4):
+            act_m[i].append(float(thrusts[i]) if i < len(thrusts) else 0.0)
+            cmd_m[i].append(float(cmd_thrusts[i]) if i < len(cmd_thrusts) else 0.0)
+
+    panels = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    colors = ["#38bdf8", "#34d399", "#f59e0b", "#a78bfa"]
+
+    for i in range(4):
+        r, c = panels[i]
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=cmd_m[i],
+                mode="lines",
+                name=f"M{i + 1} Cmd",
+                line=dict(color="#64748b", width=1.5, dash="dot"),
+                showlegend=(i == 0),
+            ),
+            row=r,
+            col=c,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=act_m[i],
+                mode="lines",
+                name=f"M{i + 1} Actual",
+                line=dict(color=colors[i], width=2.0),
+                showlegend=(i == 0),
+            ),
+            row=r,
+            col=c,
+        )
+        fig.update_yaxes(title_text="Thrust (N)", row=r, col=c)
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#080c14",
+        plot_bgcolor="#0a101f",
+        height=550,
+        title=dict(text=title, font=dict(size=16, color="#f1f5f9")),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+        margin=dict(l=50, r=30, t=80, b=40),
+    )
+    fig.update_xaxes(title_text="Time (s)", row=2, col=1)
+    fig.update_xaxes(title_text="Time (s)", row=2, col=2)
+    return fig
+
+
+def build_3d_navigation_trajectory_figure(
+    planned_waypoints: Sequence[np.ndarray],
+    flown_trajectory: Sequence[np.ndarray],
+    obstacles: Optional[Sequence[Any]] = None,
+    bounds: Tuple[float, float, float] = (30.0, 30.0, 15.0),
+    title: str = "3D Autonomous Navigation: Planned vs Actual Flight Trajectory",
+) -> go.Figure:
+    """Build interactive 3D scene comparing planned A* waypoints against real flown trajectory."""
+    fig = go.Figure()
+
+    # 1. Planned Waypoints Path
+    if planned_waypoints:
+        pw = np.asarray(planned_waypoints, dtype=np.float64)
+        fig.add_trace(
+            go.Scatter3d(
+                x=pw[:, 0],
+                y=pw[:, 1],
+                z=pw[:, 2],
+                mode="lines+markers",
+                name="Planned A* Path",
+                line=dict(color="#f59e0b", width=4, dash="dash"),
+                marker=dict(size=5, color="#fbbf24", symbol="circle"),
+            )
+        )
+
+    # 2. Flown Physical Trajectory
+    if flown_trajectory:
+        ft = np.asarray(flown_trajectory, dtype=np.float64)
+        fig.add_trace(
+            go.Scatter3d(
+                x=ft[:, 0],
+                y=ft[:, 1],
+                z=ft[:, 2],
+                mode="lines",
+                name="Flown Trajectory",
+                line=dict(color="#00f2fe", width=6),
+            )
+        )
+        # Start marker
+        fig.add_trace(
+            go.Scatter3d(
+                x=[ft[0, 0]],
+                y=[ft[0, 1]],
+                z=[ft[0, 2]],
+                mode="markers",
+                name="Start",
+                marker=dict(size=8, color="#10b981", symbol="diamond"),
+            )
+        )
+        # End marker
+        fig.add_trace(
+            go.Scatter3d(
+                x=[ft[-1, 0]],
+                y=[ft[-1, 1]],
+                z=[ft[-1, 2]],
+                mode="markers",
+                name="Current / Arrival",
+                marker=dict(size=8, color="#ec4899", symbol="cross"),
+            )
+        )
+
+    # 3. Obstacle Spheres
+    obs_list = obstacles or []
+    for idx, obs in enumerate(obs_list):
+        c = getattr(obs, "center", getattr(obs, "center_initial", np.array([0, 0, 0])))
+        r = getattr(obs, "radius", 1.0)
+        # Generate sphere mesh
+        u = np.linspace(0, 2 * np.pi, 16)
+        v = np.linspace(0, np.pi, 16)
+        x_s = float(c[0]) + float(r) * np.outer(np.cos(u), np.sin(v))
+        y_s = float(c[1]) + float(r) * np.outer(np.sin(u), np.sin(v))
+        z_s = float(c[2]) + float(r) * np.outer(np.ones(np.size(u)), np.cos(v))
+
+        fig.add_trace(
+            go.Surface(
+                x=x_s,
+                y=y_s,
+                z=z_s,
+                opacity=0.35,
+                colorscale=[[0, "#ef4444"], [1, "#f97316"]],
+                showscale=False,
+                name=f"Obstacle {idx + 1}",
+                hoverinfo="name",
+            )
+        )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#080c14",
+        scene=dict(
+            xaxis=dict(title="X (East) [m]", range=[0, bounds[0]], backgroundcolor="#0a101f"),
+            yaxis=dict(title="Y (North) [m]", range=[0, bounds[1]], backgroundcolor="#0a101f"),
+            zaxis=dict(title="Z (Altitude) [m]", range=[0, bounds[2]], backgroundcolor="#0a101f"),
+            aspectmode="manual",
+            aspectratio=dict(x=bounds[0] / 30.0, y=bounds[1] / 30.0, z=bounds[2] / 15.0),
+        ),
+        title=dict(text=title, font=dict(size=16, color="#f1f5f9")),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+        margin=dict(l=20, r=20, t=60, b=20),
+        height=650,
+    )
+    return fig
+
+
 __all__ = [
+    "build_3d_navigation_trajectory_figure",
+    "build_actuator_telemetry_figure",
     "build_arena_3d_figure",
     "build_comparison_bar_chart",
     "build_density_experiment_figure",

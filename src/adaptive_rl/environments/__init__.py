@@ -23,6 +23,10 @@ from adaptive_rl.environments.drone_6dof import (
     world_to_body_vector,
 )
 from adaptive_rl.environments.metadata import EnvironmentMetadata
+from adaptive_rl.environments.randomization import (
+    DomainRandomizationConfig,
+    DomainRandomizer,
+)
 from adaptive_rl.environments.registry import (
     EnvironmentRegistry,
     RegistryError,
@@ -192,6 +196,8 @@ __all__ = [
     "DroneNavigation3DEnv",
     "DroneState3D",
     "DroneState6DOF",
+    "DomainRandomizationConfig",
+    "DomainRandomizer",
     "DynamicObstacleSphere3D",
     "EnvironmentMetadata",
     "EnvironmentRegistry",
