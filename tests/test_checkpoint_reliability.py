@@ -174,3 +174,67 @@ def test_checkpoint_manager_metadata_embedding(tmp_path: Path) -> None:
     assert step150_info["metadata_source"] == "embedded"
     env.close()
 
+
+def test_sidecar_metadata_discovery_both_names(tmp_path: Path) -> None:
+    """Verify inspection finds sidecar metadata named either <model>_metadata.json or <model>_training.json."""
+    import json
+
+    # 1. Model with <model>_metadata.json sidecar
+    m1_path = tmp_path / "model1.zip"
+    with zipfile.ZipFile(m1_path, "w") as z:
+        z.writestr(
+            "data",
+            b'{"policy_class": {"__module__": "stable_baselines3.ppo.policies"}, "observation_space": {"_shape": [29]}, "action_space": {"_shape": [3]}}',
+        )
+    meta1_path = tmp_path / "model1_metadata.json"
+    meta1_path.write_text(
+        json.dumps({"environment_id": "drone", "algorithm": "ppo", "schema_version": "1.0.0"})
+    )
+
+    info1 = inspect_model_checkpoint(m1_path)
+    assert info1["valid"] is True
+    assert info1["compatibility_status"] == "verified"
+    assert info1["metadata_source"] == "sidecar"
+    assert info1["metadata"]["schema_version"] == "1.0.0"
+
+    # 2. Model with <model>_training.json sidecar
+    m2_path = tmp_path / "model2.zip"
+    with zipfile.ZipFile(m2_path, "w") as z:
+        z.writestr(
+            "data",
+            b'{"policy_class": {"__module__": "stable_baselines3.sac.policies"}, "observation_space": {"_shape": [36]}, "action_space": {"_shape": [4]}}',
+        )
+    meta2_path = tmp_path / "model2_training.json"
+    meta2_path.write_text(
+        json.dumps({"environment_id": "drone-6dof", "algorithm": "sac", "schema_version": "1.0.0"})
+    )
+
+    info2 = inspect_model_checkpoint(m2_path)
+    assert info2["valid"] is True
+    assert info2["compatibility_status"] == "verified"
+    assert info2["metadata_source"] == "sidecar"
+    assert info2["metadata"]["environment_id"] == "drone-6dof"
+
+
+def test_metadata_conflict_detection(tmp_path: Path) -> None:
+    """Verify conflict between embedded and sidecar metadata is detected as metadata_mismatch."""
+    import json
+
+    m_path = tmp_path / "conflicted_model.zip"
+    with zipfile.ZipFile(m_path, "w") as z:
+        z.writestr(
+            "arl_metadata.json",
+            json.dumps({"environment_id": "drone-6dof", "algorithm": "ppo"}),
+        )
+        z.writestr(
+            "data",
+            b'{"policy_class": {"__module__": "stable_baselines3.ppo.policies"}, "observation_space": {"_shape": [36]}, "action_space": {"_shape": [4]}}',
+        )
+    # Conflicting sidecar claims 3-DOF
+    sidecar_path = tmp_path / "conflicted_model_metadata.json"
+    sidecar_path.write_text(json.dumps({"environment_id": "drone", "algorithm": "ppo"}))
+
+    info = inspect_model_checkpoint(m_path)
+    assert info["valid"] is False
+    assert info["compatibility_status"] == "metadata_mismatch"
+    assert "conflict" in info["error"].lower()

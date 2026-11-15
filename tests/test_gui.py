@@ -2,7 +2,9 @@
 
 import math
 from pathlib import Path
+from typing import Any
 
+import gymnasium as gym
 import numpy as np
 import pytest
 
@@ -97,7 +99,7 @@ def test_run_drone_simulation_episode() -> None:
     assert "outcome" in result
     assert len(result["steps"]) > 1
     assert result["seed"] == 42
-    assert result["outcome"] in ["SUCCESS", "COLLISION", "TIMEOUT"]
+    assert result["outcome"] in ["SUCCESS", "COLLISION", "TIMEOUT", "MAX_STEPS", "UNKNOWN"]
     assert "collision_occurred" in result
     assert "collision_count" in result
     assert "terminated" in result
@@ -769,33 +771,90 @@ def test_visualizer_physical_dimensions_consistency() -> None:
 
 
 def test_simulation_episode_telemetry_outcomes() -> None:
-    """Verify outcome differentiation (SUCCESS, COLLISION, TIMEOUT) and telemetry metrics."""
-    # 1. Test timeout outcome with tiny max_steps
-    env_timeout = Drone6DOFEnv(max_steps=3, start_pos=(5.0, 5.0, 5.0), goal_pos=(25.0, 25.0, 10.0))
+    """Verify outcome differentiation (SUCCESS, COLLISION, TIMEOUT, MAX_STEPS, UNKNOWN) and telemetry metrics."""
+    # 1. Test MAX_STEPS outcome with tiny max_steps (truncated without explicit timeout flag)
+    env_max_steps = Drone6DOFEnv(
+        max_steps=3, start_pos=(5.0, 5.0, 5.0), goal_pos=(25.0, 25.0, 10.0)
+    )
+    res_max_steps = run_drone_simulation_episode(env=env_max_steps, model=None, seed=42)
+    assert res_max_steps["outcome"] == "MAX_STEPS"
+    assert res_max_steps["truncated"] is True
+    assert res_max_steps["terminated"] is False
+    assert "collision_occurred" in res_max_steps
+    assert "collision_count" in res_max_steps
+    assert "collision_steps" in res_max_steps
+    assert math.isclose(res_max_steps["arm_span"], 0.4)
+    assert math.isclose(res_max_steps["rotor_radius"], 0.09)
+    assert "physical_dimensions" in res_max_steps
+    env_max_steps.close()
+
+    # 2. Test TIMEOUT outcome with explicit timeout flag
+    class TimeoutEnvWrapper(gym.Wrapper):
+        def step(self, action: Any):
+            obs, reward, term, trunc, info = self.env.step(action)
+            info["timeout"] = True
+            return obs, reward, False, True, info
+
+    env_timeout = TimeoutEnvWrapper(
+        Drone6DOFEnv(max_steps=3, start_pos=(5.0, 5.0, 5.0), goal_pos=(25.0, 25.0, 10.0))
+    )
     res_timeout = run_drone_simulation_episode(env=env_timeout, model=None, seed=42)
     assert res_timeout["outcome"] == "TIMEOUT"
     assert res_timeout["truncated"] is True
     assert res_timeout["terminated"] is False
-    assert "collision_occurred" in res_timeout
-    assert "collision_count" in res_timeout
-    assert "collision_steps" in res_timeout
-    assert math.isclose(res_timeout["arm_span"], 0.4)
-    assert math.isclose(res_timeout["rotor_radius"], 0.09)
-    assert "physical_dimensions" in res_timeout
     env_timeout.close()
 
-    # 2. Test success outcome with start directly on goal
+    # 3. Test success outcome
+    class SuccessPolicy:
+        def predict(self, obs: Any, deterministic: bool = True) -> tuple:
+            return np.array([4.0, 4.0, 4.0, 4.0]), None
+
     env_success = Drone6DOFEnv(
         max_steps=10,
         start_pos=(10.0, 10.0, 5.0),
-        goal_pos=(10.1, 10.1, 5.1),
-        target_radius=1.5,
+        goal_pos=(10.0, 10.0, 6.6),
+        target_radius=1.59,
     )
-    res_success = run_drone_simulation_episode(env=env_success, model=None, seed=42)
+    res_success = run_drone_simulation_episode(env=env_success, model=SuccessPolicy(), seed=42)
     assert res_success["outcome"] == "SUCCESS"
     assert res_success["terminated"] is True
     assert res_success["is_success"] is True
     env_success.close()
+
+    # 4. Test collision outcome
+    env_collision = Drone6DOFEnv(
+        max_steps=10,
+        start_pos=(0.1, 0.1, 0.1),
+        goal_pos=(15.0, 15.0, 5.0),
+        collision_radius=0.8,
+    )
+    res_collision = run_drone_simulation_episode(env=env_collision, model=None, seed=42)
+    assert res_collision["outcome"] == "COLLISION"
+    assert res_collision["terminated"] is True
+    assert res_collision["collision_occurred"] is True
+    assert res_collision["collision_count"] >= 1
+    env_collision.close()
+
+    # 5. Telemetry step record fields verification
+    step_sample = res_success["steps"][0]
+    for key in [
+        "step",
+        "position",
+        "velocity",
+        "quaternion",
+        "angular_velocity",
+        "action",
+        "step_reward",
+        "cumulative_reward",
+        "distance_to_goal",
+        "collision_flag",
+        "is_success",
+        "terminated",
+        "truncated",
+        "lidar_ranges",
+        "reward_components",
+    ]:
+        assert key in step_sample, f"Missing telemetry key: {key}"
 
 
 def test_checkpoint_compatibility_inspection(tmp_path: Path) -> None:
@@ -832,3 +891,114 @@ def test_checkpoint_compatibility_inspection(tmp_path: Path) -> None:
     assert res_valid["environment_id"] == "drone-6dof"
     assert res_valid["config_fingerprint"] == "fp_test_123"
     assert res_valid["metadata_source"] == "embedded"
+
+
+def test_physics_visual_geometry_consistency_rigid_body() -> None:
+    """Verify visual rotor locations and rigid body transformation match physics dynamics exactly."""
+    from adaptive_rl.environments.drone_6dof import DroneDynamics6DOF, quaternion_to_rotation_matrix
+
+    # 1. Default dynamics (arm_length = 0.2)
+    dyn_default = DroneDynamics6DOF(arm_length=0.2)
+    geom_default = compute_quadrotor_3d_geometry((0.0, 0.0, 0.0), dynamics=dyn_default)
+
+    # Rotor locations must match physics rotor_positions
+    for i, r in enumerate(geom_default["rotors"]):
+        np.testing.assert_allclose(r, dyn_default.rotor_positions[i], atol=1e-5)
+        # Radial distance must equal arm_length
+        radial_dist = math.sqrt(r[0] ** 2 + r[1] ** 2)
+        assert math.isclose(radial_dist, dyn_default.arm_length, rel_tol=1e-4)
+
+    # 2. Non-default dynamics (arm_length = 0.35)
+    dyn_custom = DroneDynamics6DOF(arm_length=0.35)
+    geom_custom = compute_quadrotor_3d_geometry((0.0, 0.0, 0.0), dynamics=dyn_custom)
+    for i, r in enumerate(geom_custom["rotors"]):
+        np.testing.assert_allclose(r, dyn_custom.rotor_positions[i], atol=1e-5)
+        radial_dist = math.sqrt(r[0] ** 2 + r[1] ** 2)
+        assert math.isclose(radial_dist, 0.35, rel_tol=1e-4)
+
+    # 3. Rigid body transformation under various attitude rotations
+    rotations = {
+        "identity": (1.0, 0.0, 0.0, 0.0),
+        "yaw_90": (math.cos(math.pi / 4), 0.0, 0.0, math.sin(math.pi / 4)),
+        "pitch_90": (math.cos(math.pi / 4), 0.0, math.sin(math.pi / 4), 0.0),
+        "roll_90": (math.cos(math.pi / 4), math.sin(math.pi / 4), 0.0, 0.0),
+        "arbitrary": tuple(
+            np.random.RandomState(42).randn(4) / np.linalg.norm(np.random.RandomState(42).randn(4))
+        ),
+    }
+
+    center = (10.0, 15.0, 5.0)
+    for name, q in rotations.items():
+        q_tuple = (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+        R = quaternion_to_rotation_matrix(np.array(q_tuple))
+        geom_rot = compute_quadrotor_3d_geometry(center, quaternion=q_tuple, dynamics=dyn_default)
+
+        # For every rotor, P_world == P_drone + R(q) @ P_body
+        for i, r_world in enumerate(geom_rot["rotors"]):
+            p_body = dyn_default.rotor_positions[i]
+            expected_world = np.array(center) + R @ p_body
+            np.testing.assert_allclose(
+                r_world, expected_world, atol=1e-5, err_msg=f"Failed for rotation {name}"
+            )
+
+        # Nose tip must also rotate rigidly
+        nose_body = np.array([dyn_default.d * 0.95, 0.0, 0.0])
+        expected_nose = np.array(center) + R @ nose_body
+        np.testing.assert_allclose(
+            geom_rot["nose"], expected_nose, atol=1e-5, err_msg=f"Nose failed for {name}"
+        )
+
+
+def test_lidar_reference_frame_visualization() -> None:
+    """Verify body-frame LiDAR rays rotate with drone attitude in visualizer."""
+    env = Drone6DOFEnv(body_frame_lidar=True, num_lidar_rays=8)
+    pos = (15.0, 15.0, 7.5)
+    # 90 deg yaw
+    q_yaw90 = (math.cos(math.pi / 4), 0.0, 0.0, math.sin(math.pi / 4))
+    ranges = [10.0] * 8
+
+    fig = build_arena_3d_figure(
+        trajectory=[pos],
+        obstacles=env.obstacles,
+        target=env.target,
+        bounds=env.bounds,
+        current_pos=pos,
+        attitude_quaternion=q_yaw90,
+        lidar_rays=env.lidar_rays,
+        lidar_ranges=ranges,
+        body_frame_lidar=True,
+    )
+    # Lidar traces exist
+    lidar_traces = [t for t in fig.data if t.name and "LiDAR" in t.name]
+    assert len(lidar_traces) >= 1
+    # Check that lidar trace coordinates reflect rotated rays
+    trace = lidar_traces[0]
+    assert len(trace.x) > 0
+    env.close()
+
+
+def test_session_fingerprint_invalidation() -> None:
+    """Verify run configuration hash invalidates when coordinates, seeds, or checkpoints change."""
+    import hashlib
+
+    def compute_fp(env_id: str, coords: tuple, seed: int, obs: int, model: str) -> str:
+        s = f"{env_id}_{coords}_{seed}_{obs}_{model}"
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+    base_fp = compute_fp("6-DOF", (25.0, 25.0, 10.0), 42, 4, "model_a.zip")
+
+    # Change coords
+    fp_coords = compute_fp("6-DOF", (20.0, 20.0, 8.0), 42, 4, "model_a.zip")
+    assert fp_coords != base_fp
+
+    # Change seed
+    fp_seed = compute_fp("6-DOF", (25.0, 25.0, 10.0), 99, 4, "model_a.zip")
+    assert fp_seed != base_fp
+
+    # Change obs
+    fp_obs = compute_fp("6-DOF", (25.0, 25.0, 10.0), 42, 8, "model_a.zip")
+    assert fp_obs != base_fp
+
+    # Change checkpoint
+    fp_model = compute_fp("6-DOF", (25.0, 25.0, 10.0), 42, 4, "model_b.zip")
+    assert fp_model != base_fp

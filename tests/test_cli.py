@@ -765,4 +765,3 @@ def test_cli_target_option_validation(tmp_path: Path) -> None:
     clean_close = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_close.output)
     assert "Target validation failed" in clean_close
     assert "too close to" in clean_close and "launch position" in clean_close
-

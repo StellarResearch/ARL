@@ -182,30 +182,57 @@ class RLTrainer:
         finished_at = time.time()
         duration = finished_at - started_at
 
-        # Save training metadata JSON
+        # Save training metadata JSON (<experiment>_metadata.json and <experiment>_training.json)
         metadata_dir = self.config.output_dir / "metadata"
         metadata_dir.mkdir(parents=True, exist_ok=True)
-        metadata_path = metadata_dir / f"{self.config.name}_training.json"
+        metadata_path = metadata_dir / f"{self.config.name}_metadata.json"
+        training_path = metadata_dir / f"{self.config.name}_training.json"
+
+        obs_shape_val = getattr(getattr(self.env, "observation_space", None), "shape", None)
+        obs_shape = list(obs_shape_val) if isinstance(obs_shape_val, tuple) else None
+        act_shape_val = getattr(getattr(self.env, "action_space", None), "shape", None)
+        act_shape = list(act_shape_val) if isinstance(act_shape_val, tuple) else None
+        custom_target = self.config.environment.parameters.get("goal_pos")
+        if custom_target is not None and hasattr(custom_target, "tolist"):
+            custom_target = custom_target.tolist()
+        elif isinstance(custom_target, (list, tuple)):
+            custom_target = [float(v) for v in custom_target]
+
+        physics_params = getattr(self.env, "physical_dimensions", None)
+        body_frame_lidar = bool(getattr(self.env, "body_frame_lidar", False))
+        lidar_ref = "body_fixed" if body_frame_lidar else "world_fixed"
 
         meta_dict = {
+            "schema_version": "1.0.0",
             "experiment_name": self.config.name,
             "algorithm": self.config.algorithm.name,
+            "environment_id": self.config.environment.name,
             "environment": self.config.environment.name,
+            "environment_parameters": self.config.environment.parameters,
+            "observation_space_shape": obs_shape,
+            "action_space_shape": act_shape,
             "seed": self.config.seed,
             "total_timesteps": self.config.training.total_timesteps,
+            "training_timestep_budget": self.config.training.total_timesteps,
+            "custom_target": custom_target,
+            "physics_parameters": physics_params,
+            "lidar_reference_frame": lidar_ref,
+            "checkpoint_path": str(final_model_path),
+            "final_model_path": str(final_model_path),
+            "created_at": datetime.fromtimestamp(finished_at, tz=timezone.utc).isoformat(),
+            "duration_seconds": round(duration, 2),
+            "training_time_seconds": training_time_seconds,
             "episodes_completed": self.metric_logger.total_episodes,
             "mean_reward": float(self.metric_logger.mean_reward),
             "success_rate": self.metric_logger.success_rate,
             "collision_rate": self.metric_logger.collision_rate,
-            "final_model_path": str(final_model_path),
-            "duration_seconds": round(duration, 2),
-            "training_time_seconds": training_time_seconds,
-            "created_at": datetime.fromtimestamp(finished_at, tz=timezone.utc).isoformat(),
             "episode_rewards": [round(float(r), 2) for r in self.metric_logger.episode_rewards],
             "episode_lengths": [int(length) for length in self.metric_logger.episode_lengths],
             "version": adaptive_rl.__version__,
         }
         with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(meta_dict, f, indent=2)
+        with open(training_path, "w", encoding="utf-8") as f:
             json.dump(meta_dict, f, indent=2)
 
         # Embed arl_metadata.json into the saved model zip archive for self-contained environment verification
@@ -218,10 +245,15 @@ class RLTrainer:
                     json.dumps(cfg_dict, sort_keys=True, default=str).encode("utf-8")
                 ).hexdigest()[:16]
                 embed_meta = {
+                    "schema_version": "1.0.0",
                     "environment_id": self.config.environment.name,
                     "algorithm": self.config.algorithm.name,
                     "seed": self.config.seed,
                     "config_fingerprint": config_fp,
+                    "observation_space_shape": obs_shape,
+                    "action_space_shape": act_shape,
+                    "custom_target": custom_target,
+                    "lidar_reference_frame": lidar_ref,
                     "created_at": datetime.fromtimestamp(finished_at, tz=timezone.utc).isoformat(),
                     "version": adaptive_rl.__version__,
                 }

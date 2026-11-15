@@ -157,3 +157,34 @@ Where:
 * $w_{\text{tilt}} = 0.1$ (penalizes tilt deviation from level flight, where $R_{33} = \hat{z}_B \cdot \hat{z}_W$).
 
 All components are exposed in `info["reward_components"]` for evaluation and analysis.
+
+---
+
+## 9. Physical/Visual Geometry Synchronization & Sensing Frames
+
+### 9.1 Exact Rigid-Body Dimensions
+All visual airframe representations and collision volumes are strictly derived from the underlying physics dynamics object (`DroneDynamics6DOF`):
+* Arm length: $L = 0.2\text{ m}$ (radial distance from CoM to rotor centers).
+* Diagonal rotor offset: $d = \frac{L}{\sqrt{2}} \approx 0.1414\text{ m}$.
+* Rotor body positions:
+  $$\mathbf{r}_1 = (+d, -d, 0), \quad \mathbf{r}_2 = (+d, +d, 0), \quad \mathbf{r}_3 = (-d, +d, 0), \quad \mathbf{r}_4 = (-d, -d, 0)$$
+* Total arm span: $2L = 0.4\text{ m}$.
+* Propeller disc radius: $r_{\text{prop}} = 0.45 L = 0.09\text{ m}$.
+* Body-to-world rigid transformation: $\mathbf{p}_W = \mathbf{p}_{\text{drone}} + R(\mathbf{q}) \mathbf{p}_B$ is enforced identically across fuselage, arms, motor mounts, propeller blades, landing gear, and forward sensor nosecone.
+
+### 9.2 LiDAR Reference Frames
+The environment supports configurable LiDAR beam reference frames:
+* **World-Fixed (`body_frame_lidar=False`, default)**: Rays are distributed on the unit sphere in the world inertial frame.
+* **Body-Fixed (`body_frame_lidar=True`)**: Rays rotate with the quadrotor attitude matrix $R(\mathbf{q}) \mathbf{d}_{\text{ray}}$, accurately modeling an onboard gimbal-less sensor pod.
+* Both modes report active reference frame semantics in step info (`info["lidar_reference_frame"]`).
+
+---
+
+## 10. Outcome Categorization & Telemetry Semantics
+
+Simulation episodes evaluate Gymnasium termination/truncation signals into five canonical, mutually exclusive outcomes:
+1. **`SUCCESS`**: Target arrival radius reached ($d_{\text{goal}} \le r_{\text{target}}$) with `terminated=True, is_success=True`.
+2. **`COLLISION`**: Obstacle or arena boundary collision detected with `terminated=True, collision_occurred=True` (or non-terminal collision when `terminate_on_collision=False`).
+3. **`TIMEOUT`**: Wall-clock or environment duration timeout signal (`info["timeout"]=True`).
+4. **`MAX_STEPS`**: Maximum episode step budget exhausted without goal or collision (`truncated=True, step_count >= max_steps`).
+5. **`UNKNOWN`**: Unexpected non-terminal truncation or unclassified exit.

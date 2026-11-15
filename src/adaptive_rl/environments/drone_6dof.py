@@ -83,6 +83,7 @@ from adaptive_rl.environments.drone import (
     compute_lidar_3d_readings,
     generate_drone_obstacles,
     generate_lidar_3d_ray_directions,
+    validate_target_coordinates,
 )
 
 
@@ -549,12 +550,32 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         else:
             self.default_start = np.array([5.0, 5.0, 5.0], dtype=np.float64)
 
+        # Target and collision radius: positive finite values
+        if not math.isfinite(target_radius) or target_radius <= 0.0:
+            raise ValueError(f"target_radius must be a positive finite float, got {target_radius}")
+        if not math.isfinite(collision_radius) or collision_radius <= 0.0:
+            raise ValueError(
+                f"collision_radius must be a positive finite float, got {collision_radius}"
+            )
+        self.target_radius = float(target_radius)
+        self.collision_radius = float(collision_radius)
+
         if goal_pos is not None:
             g_arr = np.asarray(goal_pos, dtype=np.float64)
             if g_arr.shape != (3,) or not np.all(np.isfinite(g_arr)):
                 raise ValueError(f"goal_pos must be a finite 3-element vector, got {goal_pos}")
             if any(g_arr[i] < 0.0 or g_arr[i] > self.bounds[i] for i in range(3)):
-                raise ValueError(f"goal_pos {g_arr} is outside valid arena bounds {self.bounds}")
+                raise ValueError(f"goal_pos {goal_pos} is outside valid arena bounds {self.bounds}")
+
+            is_valid, err_msg = validate_target_coordinates(
+                target=goal_pos,
+                bounds=self.bounds,
+                start_pos=self.default_start,
+                target_radius=self.target_radius,
+                collision_radius=self.collision_radius,
+            )
+            if not is_valid:
+                raise ValueError(f"goal_pos {goal_pos} is invalid: {err_msg}")
             self.default_goal = g_arr
         else:
             self.default_goal = np.array(
@@ -574,14 +595,6 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         if not math.isfinite(obstacle_radius) or obstacle_radius <= 0.0:
             raise ValueError(
                 f"Obstacle radius must be a positive finite float, got {obstacle_radius}"
-            )
-
-        # Target and collision radius: positive finite values
-        if not math.isfinite(target_radius) or target_radius <= 0.0:
-            raise ValueError(f"target_radius must be a positive finite float, got {target_radius}")
-        if not math.isfinite(collision_radius) or collision_radius <= 0.0:
-            raise ValueError(
-                f"collision_radius must be a positive finite float, got {collision_radius}"
             )
 
         # LiDAR ray count: positive integer
@@ -870,6 +883,8 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
             "num_obstacles": len(self._obstacles),
             "min_obstacle_distance": min_obs_dist if self._obstacles else float("inf"),
             "altitude": float(state.position[2]),
+            "body_frame_lidar": self.body_frame_lidar,
+            "lidar_reference_frame": "body_fixed" if self.body_frame_lidar else "world_fixed",
             "lidar_noise_std": self.lidar_noise_std,
             "lidar_dropout_prob": self.lidar_dropout_prob,
             "lidar_min_range": self.lidar_min_range,
@@ -971,16 +986,17 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
 
         self._position = self.default_start.copy()
         if options and "goal_pos" in options and options["goal_pos"] is not None:
-            g_opt = np.asarray(options["goal_pos"], dtype=np.float64)
-            if g_opt.shape != (3,) or not np.all(np.isfinite(g_opt)):
-                raise ValueError(
-                    f"goal_pos in options must be a finite 3-element vector, got {options['goal_pos']}"
-                )
-            if any(g_opt[i] < 0.0 or g_opt[i] > self.bounds[i] for i in range(3)):
-                raise ValueError(
-                    f"goal_pos in options {g_opt} is outside valid arena bounds {self.bounds}"
-                )
-            self._goal = g_opt
+            g_opt = options["goal_pos"]
+            is_valid, err_msg = validate_target_coordinates(
+                target=g_opt,
+                bounds=self.bounds,
+                start_pos=self._position,
+                target_radius=self.target_radius,
+                collision_radius=self.collision_radius,
+            )
+            if not is_valid:
+                raise ValueError(f"goal_pos in options {g_opt} is invalid: {err_msg}")
+            self._goal = np.asarray(g_opt, dtype=np.float64)
         else:
             self._goal = self.default_goal.copy()
 

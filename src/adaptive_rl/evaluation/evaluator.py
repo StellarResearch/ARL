@@ -873,17 +873,17 @@ def evaluate_random_policy(
             env.close()
 
 
-def evaluate_ppo_policy(
+def evaluate_policy(
     algorithm: BaseAlgorithm,
     env: Optional[gym.Env] = None,
     num_episodes: int = 20,
     base_seed: Optional[int] = 42,
     deterministic: bool = True,
 ) -> EvaluationMetrics:
-    """Evaluate a trained PPO policy under controlled benchmark seeds.
+    """Evaluate a trained policy (PPO, SAC, or any BaseAlgorithm) under controlled benchmark seeds.
 
     Args:
-        algorithm: Initialized or loaded PPOAlgorithm wrapper.
+        algorithm: Initialized or loaded BaseAlgorithm wrapper.
         env: Optional Gymnasium environment instance (defaults to standard DroneNavigation3DEnv).
         num_episodes: Total evaluation episodes to run.
         base_seed: Deterministic base seed.
@@ -906,6 +906,34 @@ def evaluate_ppo_policy(
     finally:
         if close_env:
             env.close()
+
+
+def evaluate_ppo_policy(
+    algorithm: BaseAlgorithm,
+    env: Optional[gym.Env] = None,
+    num_episodes: int = 20,
+    base_seed: Optional[int] = 42,
+    deterministic: bool = True,
+) -> EvaluationMetrics:
+    """Evaluate a trained PPO policy under controlled benchmark seeds.
+
+    Args:
+        algorithm: Initialized or loaded PPOAlgorithm wrapper.
+        env: Optional Gymnasium environment instance (defaults to standard DroneNavigation3DEnv).
+        num_episodes: Total evaluation episodes to run.
+        base_seed: Deterministic base seed.
+        deterministic: Whether to use deterministic mode.
+
+    Returns:
+        EvaluationMetrics containing empirical benchmark metrics.
+    """
+    return evaluate_policy(
+        algorithm=algorithm,
+        env=env,
+        num_episodes=num_episodes,
+        base_seed=base_seed,
+        deterministic=deterministic,
+    )
 
 
 def compare_policies(
@@ -1422,6 +1450,7 @@ __all__ = [
     "compare_policies",
     "compare_with_planner",
     "evaluate_planner",
+    "evaluate_policy",
     "evaluate_ppo_policy",
     "evaluate_random_policy",
     "run_obstacle_density_experiment",

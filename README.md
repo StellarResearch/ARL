@@ -79,7 +79,8 @@ AdaptiveRL is an educational reinforcement-learning project in which a PPO agent
 | Attitude | Not modeled | Quaternion |
 | Angular velocity | Not modeled | 3-axis |
 - **Proper 3D Quadrotor Geometry & Visualization**:
-  - Full geometric airframe with central fuselage, 4 arms in X configuration, 4 rotor hub assemblies, and circular propeller blade paths.
+  - Full geometric airframe with central fuselage, 4 arms in X configuration, 4 rotor hub assemblies, circular propeller blade paths, and labeled rotor identifiers (`R1 (FR)`, `R2 (FL)`, `R3 (RL)`, `R4 (RR)`).
+  - Exact physical dimensions synchronized directly with physics dynamics: `arm_span = 0.4 m` ($2 \times \text{arm\_length}$), `rotor_radius = 0.09 m`, and diagonal offset $d = 0.2 / \sqrt{2} \approx 0.1414\text{ m}$.
   - Distinct front (red) and rear (blue) arm/rotor visual identification plus forward heading nosecone pointer (+X_B direction).
   - Exact body-to-world rigid-body coordinate transformation: $\mathbf{p}_W = \mathbf{p}_{\text{drone}} + R(\mathbf{q}) \mathbf{p}_B$.
 - **Reinforcement Learning (PPO & SAC)**:
@@ -92,9 +93,10 @@ AdaptiveRL is an educational reinforcement-learning project in which a PPO agent
     - Pre-flight validation strictly checks finite numbers, arena boundary limits (`30.0 × 30.0 × 15.0 m`), boundary collision safety margins (`0.8 m`), and launch point separation (`> 1.5 m`). Invalid inputs block simulation launch without silent clamping.
     - The physics environments (`DroneNavigation3DEnv` and `Drone6DOFEnv`) directly instantiate `goal_pos`, ensuring observations, relative goal vectors, progress rewards, obstacle generation clearance, and arrival detection use the exact user-defined waypoint.
     - Trajectory visualization renders an emerald diamond destination waypoint with exact `[X, Y, Z]` metres annotations, a 3D arrival radius boundary (`1.5 m`), altitude beacon column, and ground projection pad.
-    - Coordinate-keyed state caching invalidates stale simulation trajectories when targets are changed.
+    - Run configuration fingerprinting (SHA-256) invalidates stale flight data when target coordinates, random seed, obstacle count, or policy checkpoint change.
+    - Five canonical flight outcomes distinctly handled: `SUCCESS`, `COLLISION`, `TIMEOUT`, `MAX_STEPS`, and `UNKNOWN`.
     - Custom targets are fully integrated into RL training (`EnvironmentConfig.parameters["goal_pos"]`) and comparative policy evaluation.
-  - Trajectory playback scrubber updating quadrotor position, attitude, arm orientations, LiDAR, velocity, and telemetry (altitude, speed, Euler roll/pitch/yaw in degrees, angular velocity, goal distance).
+  - Trajectory playback scrubber updating quadrotor position, attitude, arm orientations, LiDAR (body-fixed or world-fixed), velocity, and telemetry (altitude, speed, Euler roll/pitch/yaw in degrees, angular velocity, goal distance).
   - Explicit simulation playback mode indicator distinguishing educational simulation playback from live physical hardware.
 - **16-Ray Simulated LiDAR**: Spherical rangefinder calculating analytical distances to obstacles and arena boundaries with configurable noise and dropout.
 - **Procedurally Generated Spherical Obstacles**: Placed with guaranteed clearance from launch and goal points.

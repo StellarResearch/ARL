@@ -170,3 +170,19 @@ print("Angular Rate Penalty:", components["rate_penalty"])
 print("Tilt Angle Penalty:", components["tilt_penalty"])
 print("Terminal Reward:", components["terminal_reward"])
 ```
+
+---
+
+## 5. Checkpoint Provenance & Metadata Verification
+
+Training sessions automatically export structured, versioned metadata ensuring 100% reproducible model provenance:
+1. **Versioned Metadata Schema (`schema_version: "1.0.0"`)**:
+   - Records experiment name, algorithm (`ppo` / `sac`), environment ID (`drone-6dof`), full environment parameters, observation/action shapes, total timesteps, training budget, seed, physics parameters, and custom target coordinates.
+2. **Dual-Sidecar Discovery**:
+   - The trainer writes both `<experiment>_metadata.json` and `<experiment>_training.json` alongside the checkpoint archive, ensuring compatibility across all inspection entrypoints.
+3. **Embedded Provenance (`arl_metadata.json`)**:
+   - Saved directly inside the checkpoint `.zip` archive.
+4. **Automated Conflict Detection**:
+   - `inspect_model_checkpoint` cross-checks embedded metadata against sidecar files. If an embedded environment ID contradicts the sidecar, the model is flagged with `compatibility_status: "metadata_mismatch"` and blocked from unsafe loading.
+5. **Interactive Evaluation & Baseline Analysis**:
+   - Tab 3 of the Flight Deck (`app.py`) evaluates both 3-DOF and 6-DOF models across configurable episode counts, deterministic base seeds, and obstacle densities.

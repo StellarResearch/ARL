@@ -7,6 +7,7 @@ autonomous drone flight systems, rigid-body 6-DOF dynamics, 3-DOF kinematic simu
 
 from __future__ import annotations
 
+import hashlib
 import math
 import time
 from pathlib import Path
@@ -27,7 +28,7 @@ from adaptive_rl.environments.drone import (
 from adaptive_rl.environments.drone_6dof import Drone6DOFEnv, quaternion_to_euler_angles
 from adaptive_rl.evaluation.evaluator import (
     Evaluator,
-    evaluate_ppo_policy,
+    evaluate_policy,
     evaluate_random_policy,
     run_obstacle_density_experiment,
 )
@@ -555,9 +556,40 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
-        sim_key = f"flight_data_{'6dof' if is_6dof else '3dof'}_{selected_target[0]:.2f}_{selected_target[1]:.2f}_{selected_target[2]:.2f}"
+        # Compute run-configuration fingerprint covering all selected inputs
+        # (environment, destination coords, seed, obstacle count, and policy checkpoint identity)
+        policy_id = selected_policy
+        if not selected_policy.startswith("Random Action Baseline") and available_models:
+            raw_name = selected_policy.split(": ", 1)[-1].strip()
+            matching = [p for p in available_models if p.name == raw_name]
+            if matching:
+                policy_id = f"{raw_name}_{matching[0].stat().st_mtime}"
 
-        if launch_clicked:
+        sim_fingerprint = hashlib.sha256(
+            f"{env_choice}|{selected_target[0]:.2f}_{selected_target[1]:.2f}_{selected_target[2]:.2f}|{int(demo_seed)}|{int(num_obs)}|{policy_id}".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:16]
+
+        sim_key = f"flight_data_{sim_fingerprint}"
+        active_fingerprint = st.session_state.get("active_sim_fingerprint")
+        inputs_have_changed = (
+            active_fingerprint is not None and active_fingerprint != sim_fingerprint
+        )
+
+        if inputs_have_changed:
+            st.markdown(
+                """
+                <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.4); border-left: 4px solid #f59e0b; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #fbbf24;">
+                    ⚠️ <b>CONFIGURATION MODIFIED:</b> Target destination, environment model, seed, obstacles, or policy checkpoint have changed. Previous simulation results are invalidated. Click <b>'🚀 Execute Sim'</b> to simulate the active configuration.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        should_run_sim = launch_clicked or (active_fingerprint is None and is_target_valid)
+
+        if should_run_sim:
             if not is_target_valid:
                 st.error(f"Cannot execute simulation with invalid target: {target_err_msg}")
             else:
@@ -620,60 +652,19 @@ def main() -> None:
                                             f"Could not load checkpoint ({exc}); using random actions."
                                         )
 
-                        st.session_state[sim_key] = run_drone_simulation_episode(
+                        run_res = run_drone_simulation_episode(
                             env=env,
                             model=model_to_use,
                             seed=int(demo_seed),
                         )
+                        st.session_state["flight_data"] = run_res
+                        st.session_state[sim_key] = run_res
+                        st.session_state["active_sim_fingerprint"] = sim_fingerprint
                     finally:
                         env.close()
-        elif sim_key not in st.session_state and is_target_valid:
-            with st.spinner(
-                f"Executing {env_choice} numerical dynamics simulation to [{selected_target[0]:.2f}, {selected_target[1]:.2f}, {selected_target[2]:.2f}] m..."
-            ):
-                env = (
-                    Drone6DOFEnv(goal_pos=selected_target, num_obstacles=int(num_obs))
-                    if is_6dof
-                    else DroneNavigation3DEnv(goal_pos=selected_target, num_obstacles=int(num_obs))
-                )
-                try:
-                    model_to_use = None
-                    if (
-                        not selected_policy.startswith("Random Action Baseline")
-                        and available_models
-                    ):
-                        raw_name = selected_policy.split(": ", 1)[-1].strip()
-                        matching = [p for p in available_models if p.name == raw_name]
-                        if matching:
-                            target_p = matching[0]
-                            info = model_info_map[target_p.name]
-                            if (
-                                info["valid"]
-                                and info["obs_shape"] == env.observation_space.shape
-                                and info["action_shape"] == env.action_space.shape
-                            ):
-                                try:
-                                    if info["algorithm"] == "sac":
-                                        from stable_baselines3 import SAC
 
-                                        model_to_use = SAC.load(str(target_p))
-                                    else:
-                                        from stable_baselines3 import PPO
-
-                                        model_to_use = PPO.load(str(target_p))
-                                except Exception:
-                                    pass
-
-                    st.session_state[sim_key] = run_drone_simulation_episode(
-                        env=env,
-                        model=model_to_use,
-                        seed=int(demo_seed),
-                    )
-                finally:
-                    env.close()
-
-        if sim_key in st.session_state:
-            flight_data = st.session_state[sim_key]
+        if not inputs_have_changed and "flight_data" in st.session_state and is_target_valid:
+            flight_data = st.session_state["flight_data"]
             steps = flight_data["steps"]
             total_steps = len(steps) - 1
 
@@ -682,6 +673,7 @@ def main() -> None:
             is_success = outcome_status == "SUCCESS"
             is_collision = outcome_status == "COLLISION"
             is_timeout = outcome_status == "TIMEOUT"
+            is_max_steps = outcome_status == "MAX_STEPS"
 
             if is_success:
                 banner_cls = "success"
@@ -696,6 +688,10 @@ def main() -> None:
                 banner_cls = "timeout"
                 badge_cls = "arl-pill-amber"
                 outcome_banner_text = "MISSION EXPIRED — TIMEOUT"
+            elif is_max_steps:
+                banner_cls = "timeout"
+                badge_cls = "arl-pill-amber"
+                outcome_banner_text = "MISSION EXPIRED — MAX STEPS REACHED"
             else:
                 banner_cls = "failure"
                 badge_cls = "arl-pill-red"
@@ -833,8 +829,10 @@ def main() -> None:
                     show_trajectory=show_traj,
                     propeller_phase=selected_step * 0.45,
                     arm_span=flight_data.get("arm_span", 0.4),
+                    arm_length=flight_data.get("arm_length", 0.2),
                     rotor_radius=flight_data.get("rotor_radius", 0.09),
                     target_radius=flight_data.get("target_radius", 1.5),
+                    body_frame_lidar=flight_data.get("body_frame_lidar", False),
                 )
                 # Give viewport substantial height for dominance
                 fig.update_layout(height=660)
@@ -1312,11 +1310,11 @@ def main() -> None:
     with tabs[2]:
         st.subheader("Policy Evaluation & Random Baseline Comparison")
         st.markdown(
-            "Empirically compare the trained **PPO agent** against an **untrained Random Policy baseline** "
-            "under identical environment seeds and episode counts."
+            "Empirically compare trained **RL policies (PPO & SAC)** against an **untrained Random Policy baseline** "
+            "under identical environment seeds, obstacles, destination targets, and episode counts."
         )
 
-        e_col1, e_col2, e_col3 = st.columns([2, 1, 1])
+        e_col1, e_col2, e_col3, e_col4, e_col5 = st.columns([1.8, 0.8, 0.8, 0.8, 1.2])
         with e_col1:
             eval_model_name = st.selectbox(
                 "Evaluation Model:",
@@ -1326,8 +1324,15 @@ def main() -> None:
         with e_col2:
             eval_episodes = st.slider("Episodes:", min_value=5, max_value=50, value=20, step=5)
         with e_col3:
+            eval_base_seed = st.number_input(
+                "Base Seed:", min_value=0, max_value=999999, value=42, step=1
+            )
+        with e_col4:
+            eval_num_obs = st.slider("Obstacles:", min_value=0, max_value=8, value=4, step=1)
+        with e_col5:
             eval_mode = st.radio(
-                "Mode:", ["Compare Both (PPO vs Random)", "PPO Only", "Random Only"]
+                "Mode:",
+                ["Compare Both (Trained vs Random)", "Trained Policy Only", "Random Policy Only"],
             )
 
         # Evaluation Destination Configuration
@@ -1412,11 +1417,13 @@ def main() -> None:
                     eval_env = (
                         Drone6DOFEnv(
                             max_steps=200,
+                            num_obstacles=int(eval_num_obs),
                             goal_pos=eval_target if use_custom_eval_target else None,
                         )
                         if is_eval_6dof
                         else DroneNavigation3DEnv(
                             max_steps=200,
+                            num_obstacles=int(eval_num_obs),
                             goal_pos=eval_target if use_custom_eval_target else None,
                         )
                     )
@@ -1424,7 +1431,7 @@ def main() -> None:
                     metrics_to_plot: Dict[str, Any] = {}
 
                     # Evaluate Model
-                    if eval_mode in ["Compare Both (PPO vs Random)", "PPO Only"]:
+                    if eval_mode in ["Compare Both (Trained vs Random)", "Trained Policy Only"]:
                         if target_path is not None and info is not None:
                             if not info["valid"]:
                                 st.warning(
@@ -1444,11 +1451,12 @@ def main() -> None:
                                 trained_algo = load_algorithm_from_pretrained(
                                     target_path, env=eval_env
                                 )
-                                trained_res = evaluate_ppo_policy(
+
+                                trained_res = evaluate_policy(
                                     algorithm=trained_algo,
                                     env=eval_env,
                                     num_episodes=int(eval_episodes),
-                                    base_seed=42,
+                                    base_seed=int(eval_base_seed),
                                 )
                                 algo_title = (
                                     f"{info['algorithm'].upper()} Policy ({'6-DOF' if is_eval_6dof else '3-DOF'})"
@@ -1467,11 +1475,11 @@ def main() -> None:
                             )
 
                     # Evaluate Random Policy
-                    if eval_mode in ["Compare Both (PPO vs Random)", "Random Only"]:
+                    if eval_mode in ["Compare Both (Trained vs Random)", "Random Policy Only"]:
                         rand_res = evaluate_random_policy(
                             env=eval_env,
                             num_episodes=int(eval_episodes),
-                            base_seed=42,
+                            base_seed=int(eval_base_seed),
                         )
                         metrics_to_plot[
                             f"Random Policy ({'6-DOF' if is_eval_6dof else '3-DOF'})"

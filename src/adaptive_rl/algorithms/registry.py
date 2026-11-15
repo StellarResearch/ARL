@@ -226,17 +226,25 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
     env_id: Optional[str] = None
     config_fingerprint: Optional[str] = None
     metadata_source: Optional[str] = None
+    sidecar_data: Optional[Dict[str, Any]] = None
+    embedded_data: Optional[Dict[str, Any]] = None
+    sidecar_error: Optional[str] = None
+    embedded_error: Optional[str] = None
 
-    # Check sidecar metadata JSON if present
+    # Check sidecar metadata JSON if present (supports *_metadata.json, *_training.json, *_manifest.json)
     candidate_metadata_paths = [
         model_path.with_name(f"{model_path.stem}_metadata.json"),
         model_path.with_name(f"{model_path.stem}_training.json"),
         model_path.with_name(f"{model_path.stem}_manifest.json"),
+        model_path.parent / f"{model_path.stem.replace('_final', '')}_metadata.json",
         model_path.parent / f"{model_path.stem.replace('_final', '')}_training.json",
         model_path.parent / f"{model_path.stem.replace('_final', '')}_manifest.json",
-        model_path.parent / f"{model_path.stem.replace('_final', '')}_metadata.json",
+        model_path.parent.parent / "metadata" / f"{model_path.stem}_metadata.json",
         model_path.parent.parent / "metadata" / f"{model_path.stem}_training.json",
         model_path.parent.parent / "metadata" / f"{model_path.stem}_manifest.json",
+        model_path.parent.parent
+        / "metadata"
+        / f"{model_path.stem.replace('_final', '')}_metadata.json",
         model_path.parent.parent
         / "metadata"
         / f"{model_path.stem.replace('_final', '')}_training.json",
@@ -253,8 +261,12 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
                     sidecar_data = json.load(f)
                 if not algo and sidecar_data.get("algorithm"):
                     algo = str(sidecar_data["algorithm"]).lower().strip()
-                if not env_id and sidecar_data.get("environment"):
-                    env_id = str(sidecar_data["environment"])
+                if not env_id and (
+                    sidecar_data.get("environment_id") or sidecar_data.get("environment")
+                ):
+                    env_id = str(
+                        sidecar_data.get("environment_id") or sidecar_data.get("environment")
+                    )
                 if not config_fingerprint:
                     if sidecar_data.get("config_fingerprint"):
                         config_fingerprint = str(sidecar_data["config_fingerprint"])
@@ -262,8 +274,8 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
                         config_fingerprint = str(sidecar_data["config_hash"])
                 metadata_source = "sidecar"
                 break
-            except Exception:
-                pass
+            except Exception as exc:
+                sidecar_error = f"Malformed sidecar JSON in '{meta_p.name}': {exc}"
 
     try:
         with zipfile.ZipFile(model_path, "r") as z:
@@ -275,16 +287,37 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
                     import json
 
                     raw_meta = z.read("arl_metadata.json").decode("utf-8", errors="ignore")
-                    embedded_meta = json.loads(raw_meta)
-                    if not algo and embedded_meta.get("algorithm"):
-                        algo = str(embedded_meta["algorithm"]).lower().strip()
-                    if embedded_meta.get("environment_id"):
-                        env_id = str(embedded_meta["environment_id"])
-                    if embedded_meta.get("config_fingerprint"):
-                        config_fingerprint = str(embedded_meta["config_fingerprint"])
+                    embedded_data = json.loads(raw_meta)
+                    if not algo and embedded_data.get("algorithm"):
+                        algo = str(embedded_data["algorithm"]).lower().strip()
+                    if embedded_data.get("environment_id"):
+                        env_id = str(embedded_data["environment_id"])
+                    if embedded_data.get("config_fingerprint"):
+                        config_fingerprint = str(embedded_data["config_fingerprint"])
                     metadata_source = "embedded"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    embedded_error = f"Malformed embedded JSON in 'arl_metadata.json': {exc}"
+
+            # Check for conflicting metadata between sidecar and embedded archive
+            if sidecar_data is not None and embedded_data is not None:
+                s_env = sidecar_data.get("environment_id") or sidecar_data.get("environment")
+                e_env = embedded_data.get("environment_id") or embedded_data.get("environment")
+                if s_env and e_env and str(s_env).strip().lower() != str(e_env).strip().lower():
+                    return {
+                        "algorithm": algo,
+                        "obs_shape": None,
+                        "action_shape": None,
+                        "compatible_env": None,
+                        "compatibility_status": "metadata_mismatch",
+                        "environment_id": None,
+                        "config_fingerprint": config_fingerprint,
+                        "metadata_source": "conflict",
+                        "valid": False,
+                        "error": (
+                            f"Metadata conflict in '{model_path.name}': archive embedded environment "
+                            f"'{e_env}' contradicts sidecar environment '{s_env}'"
+                        ),
+                    }
 
             if "data" not in namelist:
                 return {
@@ -395,15 +428,34 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
             compatible_env = None
             compatibility_status = "incompatible"
 
+    compat_note = (
+        "Full environment identity is unverified: matched solely by observation/action space dimensions without authoritative metadata."
+        if compatibility_status == "unverified_shape_match"
+        else None
+    )
+
+    meta_obj = embedded_data or sidecar_data or {}
+
     return {
         "algorithm": algo,
         "obs_shape": obs_shape,
         "action_shape": act_shape,
         "compatible_env": compatible_env,
         "compatibility_status": compatibility_status,
+        "compatibility_note": compat_note,
         "environment_id": env_id,
         "config_fingerprint": config_fingerprint,
         "metadata_source": metadata_source,
+        "schema_version": meta_obj.get("schema_version"),
+        "custom_target": meta_obj.get("custom_target"),
+        "lidar_reference_frame": meta_obj.get("lidar_reference_frame"),
+        "physics_parameters": meta_obj.get("physics_parameters"),
+        "total_timesteps": meta_obj.get("total_timesteps"),
+        "seed": meta_obj.get("seed"),
+        "created_at": meta_obj.get("created_at"),
+        "sidecar_error": sidecar_error,
+        "embedded_error": embedded_error,
+        "metadata": meta_obj,
         "valid": True,
         "error": None,
     }

@@ -396,10 +396,12 @@ def _transform_mesh(
 def compute_quadrotor_3d_geometry(
     center_pos: np.ndarray | Sequence[float],
     quaternion: Optional[np.ndarray | Sequence[float]] = None,
-    arm_span: float = 0.4,
-    rotor_radius: float = 0.09,
+    arm_span: Optional[float] = None,
+    rotor_radius: Optional[float] = None,
     n_propeller_points: int = 16,
     propeller_phase: float = 0.0,
+    arm_length: Optional[float] = None,
+    dynamics: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Compute 3D world-coordinate geometry for an X-configuration quadrotor.
 
@@ -432,19 +434,72 @@ def compute_quadrotor_3d_geometry(
     else:
         rot_mat = np.eye(3, dtype=np.float64)
 
-    # Arm offset in local body frame (+X forward, +Y left, +Z up)
-    # Rotor 1: (+d, -d, 0) [Front-Right]
-    # Rotor 2: (+d, +d, 0) [Front-Left]
-    # Rotor 3: (-d, +d, 0) [Rear-Left]
-    # Rotor 4: (-d, -d, 0) [Rear-Right]
-    d = float(arm_span) / (2.0 * math.sqrt(2.0))
-
-    body_rotors = [
-        np.array([d, -d, 0.0], dtype=np.float64),  # R1 Front-Right
-        np.array([d, d, 0.0], dtype=np.float64),  # R2 Front-Left
-        np.array([-d, d, 0.0], dtype=np.float64),  # R3 Rear-Left
-        np.array([-d, -d, 0.0], dtype=np.float64),  # R4 Rear-Right
-    ]
+    # Resolve physical dimensions directly from dynamics object or explicit parameters
+    if dynamics is not None:
+        dyn = getattr(dynamics, "dynamics", dynamics)
+        if hasattr(dyn, "d"):
+            d = float(dyn.d)
+            resolved_arm_length = float(getattr(dyn, "arm_length", d * math.sqrt(2.0)))
+            resolved_arm_span = float(getattr(dyn, "arm_span", 2.0 * resolved_arm_length))
+            if rotor_radius is None:
+                rotor_radius = float(getattr(dyn, "rotor_radius", 0.45 * resolved_arm_length))
+            if hasattr(dyn, "rotor_positions"):
+                body_rotors = [np.asarray(r, dtype=np.float64).copy() for r in dyn.rotor_positions]
+            else:
+                body_rotors = [
+                    np.array([d, -d, 0.0], dtype=np.float64),
+                    np.array([d, d, 0.0], dtype=np.float64),
+                    np.array([-d, d, 0.0], dtype=np.float64),
+                    np.array([-d, -d, 0.0], dtype=np.float64),
+                ]
+        else:
+            resolved_arm_length = 0.2
+            resolved_arm_span = 0.4
+            d = resolved_arm_length / math.sqrt(2.0)
+            if rotor_radius is None:
+                rotor_radius = 0.09
+            body_rotors = [
+                np.array([d, -d, 0.0], dtype=np.float64),
+                np.array([d, d, 0.0], dtype=np.float64),
+                np.array([-d, d, 0.0], dtype=np.float64),
+                np.array([-d, -d, 0.0], dtype=np.float64),
+            ]
+    elif arm_length is not None:
+        resolved_arm_length = float(arm_length)
+        d = resolved_arm_length / math.sqrt(2.0)
+        resolved_arm_span = 2.0 * resolved_arm_length
+        if rotor_radius is None:
+            rotor_radius = 0.45 * resolved_arm_length
+        body_rotors = [
+            np.array([d, -d, 0.0], dtype=np.float64),
+            np.array([d, d, 0.0], dtype=np.float64),
+            np.array([-d, d, 0.0], dtype=np.float64),
+            np.array([-d, -d, 0.0], dtype=np.float64),
+        ]
+    elif arm_span is not None:
+        resolved_arm_span = float(arm_span)
+        resolved_arm_length = resolved_arm_span / 2.0
+        d = resolved_arm_length / math.sqrt(2.0)
+        if rotor_radius is None:
+            rotor_radius = 0.45 * resolved_arm_length
+        body_rotors = [
+            np.array([d, -d, 0.0], dtype=np.float64),
+            np.array([d, d, 0.0], dtype=np.float64),
+            np.array([-d, d, 0.0], dtype=np.float64),
+            np.array([-d, -d, 0.0], dtype=np.float64),
+        ]
+    else:
+        resolved_arm_length = 0.2
+        resolved_arm_span = 0.4
+        d = resolved_arm_length / math.sqrt(2.0)
+        if rotor_radius is None:
+            rotor_radius = 0.09
+        body_rotors = [
+            np.array([d, -d, 0.0], dtype=np.float64),
+            np.array([d, d, 0.0], dtype=np.float64),
+            np.array([-d, d, 0.0], dtype=np.float64),
+            np.array([-d, -d, 0.0], dtype=np.float64),
+        ]
 
     # Transform rotors to world coordinates
     world_rotors = [c_pos + rot_mat @ r_b for r_b in body_rotors]
@@ -664,9 +719,16 @@ def compute_quadrotor_3d_geometry(
         "mesh_heading_indicator": mesh_heading,
         "rot_mat": rot_mat,
         "body_rotors": body_rotors,
-        "arm_span": arm_span,
+        "arm_length": resolved_arm_length,
+        "arm_span": resolved_arm_span,
         "rotor_radius": rotor_radius,
         "d": d,
+        "rotor_labels": [
+            "R1 (Front-Right)",
+            "R2 (Front-Left)",
+            "R3 (Rear-Left)",
+            "R4 (Rear-Right)",
+        ],
     }
 
 
@@ -810,14 +872,19 @@ def build_arena_3d_figure(
     lidar_ranges: Optional[Sequence[float] | np.ndarray] = None,
     show_lidar: bool = True,
     title: str = "3D Drone Flight Arena",
-    arm_span: float = 0.4,
-    rotor_radius: float = 0.09,
+    arm_span: Optional[float] = None,
+    rotor_radius: Optional[float] = None,
     camera_preset: str = "Arena Overview",
     show_floor: bool = True,
+    show_walls: bool = False,
     show_safety_zones: bool = True,
     show_trajectory: bool = True,
     propeller_phase: float = 0.0,
     target_radius: float = 1.5,
+    arm_length: Optional[float] = None,
+    dynamics: Optional[Any] = None,
+    body_frame_lidar: bool = False,
+    show_rotor_labels: bool = True,
 ) -> go.Figure:
     """Build an interactive 3D Plotly flight arena visualizer.
 
@@ -872,7 +939,7 @@ def build_arena_3d_figure(
             )
         )
 
-    # 2. Arena Boundary Box Wireframe
+    # 2. Arena Boundary Box Wireframe & Optional Translucent Walls
     box_x, box_y, box_z = _generate_box_wireframe(bounds)
     fig.add_trace(
         go.Scatter3d(
@@ -885,6 +952,29 @@ def build_arena_3d_figure(
             hoverinfo="skip",
         )
     )
+    if show_walls:
+        wall_panels = [
+            ([0.0, 0.0, 0.0, 0.0], [0.0, by, by, 0.0], [0.0, 0.0, bz, bz]),
+            ([bx, bx, bx, bx], [0.0, by, by, 0.0], [0.0, 0.0, bz, bz]),
+            ([0.0, bx, bx, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, bz, bz]),
+            ([0.0, bx, bx, 0.0], [by, by, by, by], [0.0, 0.0, bz, bz]),
+        ]
+        for w_xp, w_yp, w_zp in wall_panels:
+            fig.add_trace(
+                go.Mesh3d(
+                    x=w_xp,
+                    y=w_yp,
+                    z=w_zp,
+                    i=[0, 0],
+                    j=[1, 2],
+                    k=[2, 3],
+                    color="#1e3a66",
+                    opacity=0.06,
+                    name="Arena Wall",
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
 
     # 3. Obstacles (3D Spheres with Proximity / Safety Zones)
     if obstacles:
@@ -1048,13 +1138,19 @@ def build_arena_3d_figure(
         )
 
     # 7. 16-Ray LiDAR Beams with Distance-Based Color-Coding and Contact Points
-    if (
-        show_lidar
-        and current_pos is not None
-        and lidar_rays is not None
-        and lidar_ranges is not None
-    ):
+    if show_lidar and current_pos is not None and lidar_ranges is not None:
         c_pos = np.asarray(current_pos, dtype=np.float64)
+        if lidar_rays is not None:
+            active_rays = np.asarray(lidar_rays, dtype=np.float64)
+        else:
+            n_rays = len(lidar_ranges)
+            angles = np.linspace(0, 2 * np.pi, n_rays, endpoint=False)
+            active_rays = np.column_stack([np.cos(angles), np.sin(angles), np.zeros_like(angles)])
+
+        if body_frame_lidar and attitude_quaternion is not None:
+            rot_mat_lidar = quaternion_to_rotation_matrix(attitude_quaternion)
+            active_rays = np.asarray([rot_mat_lidar @ ray for ray in active_rays], dtype=np.float64)
+
         lx: List[Optional[float]] = []
         ly: List[Optional[float]] = []
         lz: List[Optional[float]] = []
@@ -1063,7 +1159,7 @@ def build_arena_3d_figure(
         hit_y: List[float] = []
         hit_z: List[float] = []
 
-        for ray_dir, dist in zip(lidar_rays, lidar_ranges):
+        for ray_dir, dist in zip(active_rays, lidar_ranges):
             end_pt = c_pos + ray_dir * dist
             lx.extend([c_pos[0], end_pt[0], None])
             ly.extend([c_pos[1], end_pt[1], None])
@@ -1104,6 +1200,8 @@ def build_arena_3d_figure(
             arm_span=arm_span,
             rotor_radius=rotor_radius,
             propeller_phase=propeller_phase,
+            arm_length=arm_length,
+            dynamics=dynamics,
         )
 
         def _add_mesh(
@@ -1188,6 +1286,31 @@ def build_arena_3d_figure(
             opacity=1.0,
             showlegend=True,
         )
+
+        # Rotor Hub Identifiers (R1 Front-Right, R2 Front-Left, R3 Rear-Left, R4 Rear-Right)
+        if show_rotor_labels and "rotors" in geom:
+            r_pts = geom["rotors"]
+            r_tags = ["R1 (FR)", "R2 (FL)", "R3 (RL)", "R4 (RR)"]
+            r_clrs = ["#ef4444", "#ef4444", "#3b82f6", "#3b82f6"]
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[p[0] for p in r_pts],
+                    y=[p[1] for p in r_pts],
+                    z=[p[2] + 0.03 for p in r_pts],
+                    mode="markers+text",
+                    marker=dict(size=4, color=r_clrs),
+                    text=r_tags,
+                    textposition="top center",
+                    textfont=dict(size=9, color="#94a3b8"),
+                    name="Rotor Identifiers",
+                    hoverinfo="text",
+                    hovertext=[
+                        f"<b>{tag}</b><br>Pos: [{p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}]"
+                        for tag, p in zip(r_tags, r_pts)
+                    ],
+                    showlegend=False,
+                )
+            )
 
         # Center Marker (Drone Trace)
         fig.add_trace(
@@ -1385,9 +1508,14 @@ def run_drone_simulation_episode(
     num_rays = int(getattr(env, "num_lidar_rays", 16))
     lidar_range = float(getattr(env, "lidar_range", 20.0))
     act_shape = env.action_space.shape if hasattr(env, "action_space") else (3,)
-    arm_span = float(getattr(env, "arm_span", 0.4))
-    rotor_radius = float(getattr(env, "rotor_radius", 0.09))
+    arm_length = float(
+        getattr(env, "arm_length", getattr(getattr(env, "dynamics", None), "arm_length", 0.2))
+    )
+    arm_span = float(getattr(env, "arm_span", 2.0 * arm_length))
+    rotor_radius = float(getattr(env, "rotor_radius", 0.45 * arm_length))
     physical_dims = getattr(env, "physical_dimensions", {})
+    body_frame_lidar = bool(getattr(env, "body_frame_lidar", False))
+    lidar_reference_frame = "body_fixed" if body_frame_lidar else "world_fixed"
 
     raw_lidar_init = obs[-num_rays:] if len(obs) >= num_rays else np.zeros(num_rays)
     lidar_ranges_init = (raw_lidar_init * lidar_range).copy()
@@ -1398,29 +1526,46 @@ def run_drone_simulation_episode(
             "position": info["position"].copy(),
             "velocity": info["velocity"].copy(),
             "speed": float(info.get("speed", 0.0)),
+            "quaternion": (
+                info["quaternion"].copy()
+                if "quaternion" in info and info["quaternion"] is not None
+                else None
+            ),
             "angular_velocity": (
-                info["angular_velocity"].copy() if "angular_velocity" in info else None
+                info["angular_velocity"].copy()
+                if "angular_velocity" in info and info["angular_velocity"] is not None
+                else None
             ),
             "angular_speed": float(info.get("angular_speed", 0.0)),
             "altitude": float(info.get("altitude", info["position"][2])),
             "distance_to_goal": float(info.get("distance_to_goal", 0.0)),
             "min_obstacle_distance": float(info.get("min_obstacle_distance", 0.0)),
             "reward": 0.0,
+            "step_reward": 0.0,
             "cumulative_reward": 0.0,
             "lidar_ranges": lidar_ranges_init,
+            "lidar_readings": lidar_ranges_init,
             "action": np.zeros(act_shape, dtype=np.float32),
             "collision": False,
+            "collision_flag": False,
             "collision_type": "none",
             "is_success": False,
+            "success": False,
+            "success_flag": False,
             "terminated": False,
+            "termination_flag": False,
             "truncated": False,
-            "quaternion": info.get("quaternion").copy() if "quaternion" in info else None,
+            "truncation_flag": False,
             "wind_vector": info.get("wind_vector"),
             "reward_components": info.get("reward_components"),
         }
     )
 
-    while not (terminated or truncated) and step_count < env.max_steps:
+    max_env_steps = int(
+        getattr(env, "max_steps", getattr(getattr(env, "unwrapped", None), "max_steps", 1000))
+    )
+
+    while not (terminated or truncated) and step_count < max_env_steps:
         step_count += 1
         if model is not None:
             action, _ = model.predict(obs, deterministic=True)
@@ -1440,6 +1585,8 @@ def run_drone_simulation_episode(
             collision_count += 1
             collision_steps.append(step_count)
 
+        is_step_success = bool(info.get("is_success", False) or info.get("success", False))
+
         raw_lidar_norm = obs[-num_rays:] if len(obs) >= num_rays else np.zeros(num_rays)
         lidar_ranges = (raw_lidar_norm * lidar_range).copy()
 
@@ -1448,24 +1595,37 @@ def run_drone_simulation_episode(
                 "step": step_count,
                 "position": pos,
                 "velocity": vel,
-                "speed": float(info.get("speed", 0.0)),
+                "speed": float(info.get("speed", np.linalg.norm(vel))),
+                "quaternion": (
+                    info["quaternion"].copy()
+                    if "quaternion" in info and info["quaternion"] is not None
+                    else None
+                ),
                 "angular_velocity": (
-                    info["angular_velocity"].copy() if "angular_velocity" in info else None
+                    info["angular_velocity"].copy()
+                    if "angular_velocity" in info and info["angular_velocity"] is not None
+                    else None
                 ),
                 "angular_speed": float(info.get("angular_speed", 0.0)),
                 "altitude": float(info.get("altitude", pos[2])),
                 "distance_to_goal": float(info.get("distance_to_goal", 0.0)),
                 "min_obstacle_distance": float(info.get("min_obstacle_distance", 0.0)),
                 "reward": float(reward),
+                "step_reward": float(reward),
                 "cumulative_reward": float(total_reward),
                 "lidar_ranges": lidar_ranges,
+                "lidar_readings": lidar_ranges,
                 "action": np.asarray(action, dtype=np.float32).copy(),
                 "collision": step_collision,
+                "collision_flag": step_collision,
                 "collision_type": str(info.get("collision_type", "none")),
-                "is_success": bool(info.get("is_success", False) or info.get("success", False)),
+                "is_success": is_step_success,
+                "success": is_step_success,
+                "success_flag": is_step_success,
                 "terminated": bool(terminated),
+                "termination_flag": bool(terminated),
                 "truncated": bool(truncated),
-                "quaternion": info.get("quaternion").copy() if "quaternion" in info else None,
+                "truncation_flag": bool(truncated),
                 "wind_vector": info.get("wind_vector"),
                 "reward_components": info.get("reward_components"),
             }
@@ -1473,28 +1633,53 @@ def run_drone_simulation_episode(
 
     last_step = steps_data[-1]
     is_goal_reached = bool(last_step["is_success"])
-    is_terminal_collision = bool(last_step["collision"]) or (terminated and not is_goal_reached)
-    is_time_limit = bool(
-        truncated
-        or (step_count >= env.max_steps and not is_goal_reached and not is_terminal_collision)
+    is_terminal_collision = bool(last_step["collision"]) or (
+        terminated and bool(info.get("collision", False))
     )
 
+    # Outcome classification per Gymnasium and AdaptiveRL semantics:
+    # SUCCESS: goal waypoint reached within target arrival radius
+    # COLLISION: terminal impact with boundary or obstacle
+    # TIMEOUT: explicit time limit / duration timeout
+    # MAX_STEPS: maximum environment step budget reached without goal arrival
+    # UNKNOWN: unclassified or abnormal termination
     if is_goal_reached:
         outcome = "SUCCESS"
         termination_reason = "goal_reached"
     elif is_terminal_collision:
         outcome = "COLLISION"
-        coll_t = str(last_step.get("collision_type", "boundary_or_obstacle"))
+        coll_t = str(
+            last_step.get("collision_type", info.get("collision_type", "boundary_or_obstacle"))
+        )
         termination_reason = f"collision ({coll_t})"
-    elif is_time_limit:
+    elif bool(
+        info.get("timeout")
+        or last_step.get("timeout")
+        or info.get("is_timeout")
+        or info.get("timed_out")
+    ):
         outcome = "TIMEOUT"
-        termination_reason = "time_limit_truncated"
+        termination_reason = "time_limit_exceeded"
+    elif truncated or (getattr(env, "max_steps", None) is not None and step_count >= env.max_steps):
+        if bool(info.get("timeout") or last_step.get("timeout")):
+            outcome = "TIMEOUT"
+            termination_reason = "time_limit_truncated"
+        elif bool(info.get("max_steps") or info.get("max_steps_reached")):
+            outcome = "MAX_STEPS"
+            termination_reason = "max_steps_reached"
+        else:
+            outcome = (
+                "MAX_STEPS" if step_count >= getattr(env, "max_steps", step_count) else "TIMEOUT"
+            )
+            termination_reason = (
+                "max_steps_reached" if outcome == "MAX_STEPS" else "time_limit_truncated"
+            )
     elif terminated:
-        outcome = "TERMINATED"
-        termination_reason = "environment_terminated"
+        outcome = "UNKNOWN"
+        termination_reason = "environment_terminated_unknown"
     else:
-        outcome = "TIMEOUT"
-        termination_reason = "time_limit_reached"
+        outcome = "UNKNOWN"
+        termination_reason = "episode_incomplete_unknown"
 
     return {
         "trajectory": trajectory,
@@ -1505,12 +1690,14 @@ def run_drone_simulation_episode(
         "terminated": bool(terminated),
         "truncated": bool(truncated),
         "is_success": is_goal_reached,
+        "success": is_goal_reached,
         "collision": is_terminal_collision,
         "collision_occurred": collision_occurred,
         "collision_count": collision_count,
         "collision_steps": collision_steps,
-        "collision_type": str(last_step.get("collision_type", "none")),
+        "collision_type": str(last_step.get("collision_type", info.get("collision_type", "none"))),
         "termination_reason": termination_reason,
+        "arm_length": arm_length,
         "arm_span": arm_span,
         "rotor_radius": rotor_radius,
         "physical_dimensions": physical_dims,
@@ -1520,11 +1707,25 @@ def run_drone_simulation_episode(
             env, "target", getattr(env, "_goal", getattr(env, "goal", np.zeros(3)))
         ).copy(),
         "target_radius": float(getattr(env, "target_radius", 1.5)),
-        "bounds": env.bounds,
-        "start_pos": getattr(env, "default_start", getattr(env, "_start_pos", np.zeros(3))).copy(),
-        "lidar_rays": env.lidar_rays,
+        "bounds": getattr(
+            env, "bounds", getattr(getattr(env, "unwrapped", None), "bounds", (30.0, 30.0, 15.0))
+        ),
+        "start_pos": getattr(
+            env,
+            "default_start",
+            getattr(
+                env,
+                "_start_pos",
+                getattr(getattr(env, "unwrapped", None), "default_start", np.zeros(3)),
+            ),
+        ).copy(),
+        "lidar_rays": getattr(
+            env, "lidar_rays", getattr(getattr(env, "unwrapped", None), "lidar_rays", None)
+        ),
+        "body_frame_lidar": body_frame_lidar,
+        "lidar_reference_frame": lidar_reference_frame,
         "wind_vector": info.get("wind_vector"),
-        "quaternion": info.get("quaternion"),
+        "quaternion": last_step.get("quaternion"),
     }
 
 
