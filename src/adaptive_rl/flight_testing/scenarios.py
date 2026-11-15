@@ -90,6 +90,13 @@ class FlightStepTelemetry:
     estimated_velocity: Optional[np.ndarray] = None
     position_estimation_error: Optional[float] = None
     attitude_estimation_error_deg: Optional[float] = None
+    mission_state: Optional[str] = None
+    replan_reason: Optional[str] = None
+    waiting_duration: Optional[float] = None
+    min_predicted_clearance: Optional[float] = None
+    planned_vs_actual_deviation: Optional[float] = None
+    active_route_cost: Optional[float] = None
+    state_source: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         cmd_thrusts = (
@@ -128,6 +135,24 @@ class FlightStepTelemetry:
             d["position_estimation_error"] = round(float(self.position_estimation_error), 4)
         if self.attitude_estimation_error_deg is not None:
             d["attitude_estimation_error_deg"] = round(float(self.attitude_estimation_error_deg), 3)
+        if self.mission_state is not None:
+            d["mission_state"] = self.mission_state
+        if self.replan_reason is not None:
+            d["replan_reason"] = self.replan_reason
+        if self.waiting_duration is not None:
+            d["waiting_duration"] = round(float(self.waiting_duration), 4)
+        if self.min_predicted_clearance is not None:
+            d["min_predicted_clearance"] = (
+                round(float(self.min_predicted_clearance), 4)
+                if math.isfinite(self.min_predicted_clearance)
+                else -1.0
+            )
+        if self.planned_vs_actual_deviation is not None:
+            d["planned_vs_actual_deviation"] = round(float(self.planned_vs_actual_deviation), 4)
+        if self.active_route_cost is not None:
+            d["active_route_cost"] = round(float(self.active_route_cost), 4)
+        if self.state_source is not None:
+            d["state_source"] = self.state_source
         return d
 
 
@@ -698,6 +723,7 @@ class FlightScenarioDefinition:
     collision_radius: float = 0.8
     step_duration_sec: float = 0.05
     use_path_planner: bool = False
+    use_time_aware_planner: bool = False
     settling_velocity_threshold: float = 0.5
     max_recovery_tilt_deg: float = 35.0
     min_recovery_altitude: float = 0.8
@@ -774,6 +800,7 @@ class FlightScenarioDefinition:
             "collision_radius": float(self.collision_radius),
             "step_duration_sec": float(self.step_duration_sec),
             "use_path_planner": self.use_path_planner,
+            "use_time_aware_planner": self.use_time_aware_planner,
             "settling_velocity_threshold": float(self.settling_velocity_threshold),
             "max_recovery_tilt_deg": float(self.max_recovery_tilt_deg),
             "min_recovery_altitude": float(self.min_recovery_altitude),
@@ -1124,9 +1151,235 @@ def get_advanced_navigation_scenarios() -> List[FlightScenarioDefinition]:
     return scenarios
 
 
+def get_phase4_predictive_scenarios() -> List[FlightScenarioDefinition]:
+    """Phase IV: Predictive Autonomous Mission Planning and Intelligent Navigation Scenarios."""
+    scenarios: List[FlightScenarioDefinition] = []
+
+    # 20. Dynamic Obstacle Crossing with Time-Aware Planning
+    crossing_obs = DynamicObstacleSphere3D(
+        center_initial=np.array([10.0, 8.0, 5.0]),
+        radius=1.2,
+        velocity=np.array([0.0, 1.5, 0.0]),
+        bounds=(30.0, 30.0, 15.0),
+        motion_type="bounce",
+    )
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="dynamic_obstacle_crossing_time_aware",
+            description="Time-aware 4D planning anticipates a moving obstacle crossing perpendicular to flight path.",
+            initial_position=np.array([3.0, 15.0, 5.0]),
+            waypoints=[np.array([18.0, 15.0, 5.0])],
+            obstacles=[],
+            dynamic_obstacles=[crossing_obs],
+            max_steps=400,
+            target_radius=1.5,
+            collision_radius=0.3,
+            settling_velocity_threshold=1.5,
+            use_path_planner=True,
+            use_time_aware_planner=True,
+        )
+    )
+
+    # 21. Multi-Dynamic Obstacle Corridor
+    multi_obs = [
+        DynamicObstacleSphere3D(
+            center_initial=np.array([9.0, 8.0, 5.0]),
+            radius=1.2,
+            velocity=np.array([0.0, 1.5, 0.0]),
+            bounds=(30.0, 30.0, 15.0),
+            motion_type="bounce",
+        ),
+        DynamicObstacleSphere3D(
+            center_initial=np.array([15.0, 22.0, 5.0]),
+            radius=1.2,
+            velocity=np.array([0.0, -1.5, 0.0]),
+            bounds=(30.0, 30.0, 15.0),
+            motion_type="bounce",
+        ),
+    ]
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="multi_dynamic_obstacle_corridor",
+            description="Navigate a corridor populated by multiple crossing dynamic obstacles.",
+            initial_position=np.array([3.0, 15.0, 5.0]),
+            waypoints=[np.array([20.0, 15.0, 5.0])],
+            obstacles=[],
+            dynamic_obstacles=multi_obs,
+            max_steps=450,
+            target_radius=1.5,
+            collision_radius=0.3,
+            settling_velocity_threshold=2.0,
+            use_path_planner=True,
+            use_time_aware_planner=True,
+        )
+    )
+
+    # 22. Temporary Corridor Blockage & Wait
+    slot_static_obs = [
+        ObstacleSphere3D(center=np.array([15.0, 10.0, 5.0]), radius=2.5),
+        ObstacleSphere3D(center=np.array([15.0, 20.0, 5.0]), radius=2.5),
+    ]
+    slot_dyn_obs = DynamicObstacleSphere3D(
+        center_initial=np.array([15.0, 12.0, 5.0]),
+        radius=1.2,
+        velocity=np.array([0.0, 2.0, 0.0]),
+        bounds=(30.0, 30.0, 15.0),
+        motion_type="bounce",
+    )
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="temporary_corridor_blockage_wait",
+            description="Drone waits for a temporary dynamic blockage to clear a narrow passage.",
+            initial_position=np.array([5.0, 15.0, 5.0]),
+            waypoints=[np.array([25.0, 15.0, 5.0])],
+            obstacles=slot_static_obs,
+            dynamic_obstacles=[slot_dyn_obs],
+            max_steps=450,
+            target_radius=1.5,
+            use_path_planner=True,
+            use_time_aware_planner=True,
+        )
+    )
+
+    # 23. Sequential Multi-Waypoint Adaptive Mission
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="sequential_multi_waypoint_adaptive",
+            description="Execute 4-waypoint sequential mission adapting to dynamic moving obstacles.",
+            initial_position=np.array([3.0, 8.0, 4.0]),
+            waypoints=[
+                np.array([8.0, 14.0, 5.0]),
+                np.array([13.0, 8.0, 5.0]),
+                np.array([18.0, 14.0, 6.0]),
+                np.array([23.0, 8.0, 5.0]),
+            ],
+            obstacles=[],
+            dynamic_obstacles=[
+                DynamicObstacleSphere3D(
+                    center_initial=np.array([15.0, 18.0, 5.5]),
+                    radius=1.2,
+                    velocity=np.array([0.0, -1.0, 0.0]),
+                    bounds=(30.0, 30.0, 15.0),
+                    motion_type="bounce",
+                )
+            ],
+            max_steps=600,
+            target_radius=1.5,
+            collision_radius=0.3,
+            settling_velocity_threshold=2.0,
+            use_path_planner=True,
+            use_time_aware_planner=True,
+        )
+    )
+
+    # 24. Repeated Dynamic Replanning
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="repeated_dynamic_replanning",
+            description="Continually update routes under active oscillating obstacle interference.",
+            initial_position=np.array([3.0, 15.0, 5.0]),
+            waypoints=[np.array([20.0, 15.0, 5.0])],
+            obstacles=[],
+            dynamic_obstacles=[
+                DynamicObstacleSphere3D(
+                    center_initial=np.array([10.0, 15.0, 5.0]),
+                    radius=0.9,
+                    velocity=np.zeros(3),
+                    bounds=(30.0, 30.0, 15.0),
+                    motion_type="oscillate",
+                    oscillation_period=4.0,
+                    oscillation_amplitude=np.array([0.0, 2.5, 0.0]),
+                ),
+                DynamicObstacleSphere3D(
+                    center_initial=np.array([15.0, 15.0, 5.0]),
+                    radius=0.9,
+                    velocity=np.zeros(3),
+                    bounds=(30.0, 30.0, 15.0),
+                    motion_type="oscillate",
+                    oscillation_period=4.5,
+                    oscillation_amplitude=np.array([0.0, 0.0, 2.0]),
+                ),
+            ],
+            max_steps=500,
+            target_radius=1.5,
+            collision_radius=0.3,
+            settling_velocity_threshold=2.0,
+            use_path_planner=True,
+            use_time_aware_planner=True,
+        )
+    )
+
+    # 25. Sensor-in-the-Loop Predictive Navigation
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="sensor_in_the_loop_navigation",
+            description="Autonomous navigation driven by state-estimation avionics under IMU noise and drift.",
+            initial_position=np.array([5.0, 15.0, 5.0]),
+            waypoints=[np.array([20.0, 15.0, 5.0])],
+            obstacles=[ObstacleSphere3D(center=np.array([12.0, 15.0, 5.0]), radius=1.5)],
+            dynamic_obstacles=[],
+            max_steps=400,
+            target_radius=1.5,
+            enable_sensor_estimation=True,
+            sensor_in_the_loop=True,
+            sensor_seed=202,
+            use_path_planner=True,
+            use_time_aware_planner=True,
+        )
+    )
+
+    # 26. Unreachable Mission Safe Blocked
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="unreachable_mission_safe_blocked",
+            description="Identify unfeasible route when goal is completely enclosed, commanding safe blocked hover.",
+            initial_position=np.array([5.0, 15.0, 5.0]),
+            waypoints=[np.array([25.0, 15.0, 5.0])],
+            obstacles=[ObstacleSphere3D(center=np.array([25.0, 15.0, 5.0]), radius=3.0)],
+            dynamic_obstacles=[],
+            max_steps=100,
+            target_radius=1.5,
+            use_path_planner=True,
+            use_time_aware_planner=True,
+        )
+    )
+
+    # 27. Prediction Divergence Recovery
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="prediction_divergence_recovery",
+            description="Receding-horizon replanning recovers safely when moving obstacle trajectory changes.",
+            initial_position=np.array([3.0, 15.0, 5.0]),
+            waypoints=[np.array([18.0, 15.0, 5.0])],
+            obstacles=[],
+            dynamic_obstacles=[
+                DynamicObstacleSphere3D(
+                    center_initial=np.array([10.0, 6.0, 5.0]),
+                    radius=1.0,
+                    velocity=np.array([0.0, 1.4, 0.0]),
+                    bounds=(30.0, 30.0, 15.0),
+                    motion_type="bounce",
+                )
+            ],
+            max_steps=400,
+            target_radius=1.5,
+            collision_radius=0.3,
+            settling_velocity_threshold=1.5,
+            use_path_planner=True,
+            use_time_aware_planner=True,
+        )
+    )
+
+    return scenarios
+
+
 def get_all_flight_scenarios() -> List[FlightScenarioDefinition]:
-    """Return all standard and advanced flight validation scenarios."""
-    return get_standard_flight_scenarios() + get_advanced_navigation_scenarios()
+    """Return all standard, advanced, and Phase IV predictive flight validation scenarios."""
+    return (
+        get_standard_flight_scenarios()
+        + get_advanced_navigation_scenarios()
+        + get_phase4_predictive_scenarios()
+    )
 
 
 def get_scenario(name: str) -> FlightScenarioDefinition:
@@ -1199,11 +1452,25 @@ class FlightScenarioRunner:
                 vehicle_radius=scenario.collision_radius,
                 safety_margin=0.3,
             )
+            time_aware_planner = None
+            if getattr(scenario, "use_time_aware_planner", False):
+                from adaptive_rl.navigation.time_aware_planner import TimeAwareAStarPlanner3D
+
+                time_aware_planner = TimeAwareAStarPlanner3D(
+                    bounds=scenario.bounds,
+                    spatial_resolution=1.0,
+                    time_resolution=0.5,
+                    vehicle_radius=scenario.collision_radius,
+                    safety_margin=0.3,
+                )
+
             raw_target = scenario.waypoints[-1] if scenario.waypoints else scenario.initial_position
             mission_manager = MissionManager(
                 planner=planner,
+                time_aware_planner=time_aware_planner,
                 waypoint_acceptance_radius=scenario.target_radius,
                 replan_clearance_threshold=scenario.collision_radius + 0.5,
+                state_source="estimated" if scenario.sensor_in_the_loop else "ground_truth",
             )
             targets = scenario.waypoints if scenario.waypoints else [scenario.initial_position]
             ok = mission_manager.start_mission(
@@ -1275,7 +1542,13 @@ class FlightScenarioRunner:
             imu_sensor = IMUSensor(
                 gravity=self.env.dynamics.gravity, seed=scenario.sensor_seed or 42
             )
-            state_estimator = ComplementaryFilter(gravity=self.env.dynamics.gravity)
+            state_estimator = ComplementaryFilter(
+                gravity=self.env.dynamics.gravity,
+                kp_accel=0.2,
+                ki_accel=0.001,
+                kp_pos=5.0,
+                kp_vel=3.0,
+            )
             state_estimator.reset(
                 position=scenario.initial_position,
                 velocity=scenario.initial_velocity,
@@ -1311,8 +1584,9 @@ class FlightScenarioRunner:
             )
 
             # Predictive dynamic obstacle avoidance via MissionManager
+            mission_telemetry = None
             if mission_manager is not None:
-                current_target, _ = mission_manager.update(
+                current_target, mission_telemetry = mission_manager.update(
                     drone_state=feedback_state,
                     time_sec=time_sec,
                     static_obstacles=scenario.obstacles,
@@ -1535,6 +1809,25 @@ class FlightScenarioRunner:
                     estimated_velocity=est_vel,
                     position_estimation_error=pos_est_err,
                     attitude_estimation_error_deg=att_est_err,
+                    mission_state=mission_telemetry.state.value if mission_telemetry else None,
+                    replan_reason=mission_telemetry.replan_reason if mission_telemetry else None,
+                    waiting_duration=mission_telemetry.waiting_duration
+                    if mission_telemetry
+                    else None,
+                    min_predicted_clearance=(
+                        mission_telemetry.min_predicted_clearance if mission_telemetry else None
+                    ),
+                    planned_vs_actual_deviation=(
+                        mission_telemetry.planned_vs_actual_deviation if mission_telemetry else None
+                    ),
+                    active_route_cost=(
+                        mission_telemetry.active_route_cost if mission_telemetry else None
+                    ),
+                    state_source=(
+                        mission_telemetry.state_source
+                        if mission_telemetry
+                        else ("estimated" if scenario.sensor_in_the_loop else "ground_truth")
+                    ),
                 )
             )
 
