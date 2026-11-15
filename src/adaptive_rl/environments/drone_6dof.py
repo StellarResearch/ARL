@@ -392,6 +392,7 @@ class DroneDynamics6DOF:
             quaternion=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
             angular_velocity=np.zeros(3, dtype=np.float64),
         )
+        self.last_substep_positions: List[np.ndarray] = [self.state.position.copy()]
 
     @property
     def arm_span(self) -> float:
@@ -567,6 +568,8 @@ class DroneDynamics6DOF:
         quat = self.state.quaternion.copy()
         omega = self.state.angular_velocity.copy()
 
+        substep_positions = [pos.copy()]
+
         for _ in range(self.substeps):
             f_0 = self.actual_motor_thrusts.copy()
 
@@ -636,6 +639,9 @@ class DroneDynamics6DOF:
                 quat /= q_norm
             omega += (h / 6.0) * (k1_w + 2.0 * k2_w + 2.0 * k3_w + k4_w)
 
+            substep_positions.append(pos.copy())
+
+        self.last_substep_positions = substep_positions
         self.state.position = pos
         self.state.velocity = vel
         self.state.quaternion = quat

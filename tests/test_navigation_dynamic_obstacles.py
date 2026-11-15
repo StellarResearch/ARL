@@ -338,19 +338,19 @@ def test_failed_replan_hovers_safely_without_advancing_mission() -> None:
 def test_oscillating_obstacle_speed_bound_and_collision_detection() -> None:
     """Oscillating obstacle with zero linear velocity calculates valid speed bound and detects swept collision."""
     obs = DynamicObstacleSphere3D(
-        center_initial=np.array([10.0, 10.0, 5.0]),
+        center_initial=np.array([15.0, 10.0, 5.0]),
         radius=1.0,
         velocity=np.zeros(3),  # Zero linear velocity
         motion_type="oscillate",
         oscillation_period=2.0,  # omega = 2*pi / 2 = pi
-        oscillation_amplitude=np.array([10.0, 0.0, 0.0]),  # Amplitude 10m
+        oscillation_amplitude=np.array([10.0, 0.0, 0.0]),  # Amplitude 10m; envelope [5.0, 25.0]
     )
     max_spd = obs.max_speed()
     assert abs(max_spd - (np.pi * 10.0)) < 1e-4
 
     coll = obs.check_continuous_collision(
-        prev_drone_pos=np.array([19.8, 10.0, 5.0]),
-        curr_drone_pos=np.array([19.8, 10.0, 5.0]),
+        prev_drone_pos=np.array([24.8, 10.0, 5.0]),
+        curr_drone_pos=np.array([24.8, 10.0, 5.0]),
         prev_time=0.4,
         curr_time=0.6,
         vehicle_radius=0.5,
@@ -515,7 +515,7 @@ def test_predict_occupied_spheres_computational_limit_conservative() -> None:
         bounds=(100.0, 100.0, 50.0),
     )
     spheres = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=1.0, dt=1.0, max_spheres=100)
-    assert len(spheres) == 101
+    assert len(spheres) == 100
 
     eff_r = spheres[0].radius
     assert eff_r > obs.radius
@@ -613,3 +613,249 @@ def test_end_to_end_repeated_replanning_sequential_progression() -> None:
     assert mgr.state == MissionState.ARRIVED
     assert telem.state == MissionState.ARRIVED
     assert telem.replan_count == 2
+
+
+def test_predict_occupied_spheres_parameter_safety() -> None:
+    """predict_occupied_spheres enforces strict parameter validation and never fails open."""
+    import pytest
+
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([10.0, 10.0, 5.0]),
+        radius=1.0,
+        velocity=np.array([5.0, 0.0, 0.0]),
+        bounds=(30.0, 30.0, 15.0),
+    )
+
+    # 1. Invalid max_spheres (zero, negative, float, bool, non-finite)
+    for bad_limit in [0, -1, -100, 10.5, True, False, float("inf"), float("nan"), "100"]:
+        with pytest.raises(ValueError):
+            obs.predict_occupied_spheres(t_start=0.0, horizon_sec=2.0, max_spheres=bad_limit)  # type: ignore[arg-type]
+
+    # 2. Valid max_spheres boundary limits: 1, 2, large
+    s1 = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=2.0, max_spheres=1)
+    assert len(s1) == 1
+    assert s1[0].radius >= obs.radius  # Inflated conservatively to cover the trajectory
+
+    s2 = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=2.0, max_spheres=2)
+    assert len(s2) == 2
+    assert s2[0].radius >= obs.radius
+
+    s_large = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=2.0, max_spheres=10000)
+    assert len(s_large) <= 10000
+    assert len(s_large) > 2
+
+    # 3. Invalid t_start and horizon_sec
+    with pytest.raises(ValueError, match="t_start must be a finite float"):
+        obs.predict_occupied_spheres(t_start=float("nan"), horizon_sec=2.0)
+    with pytest.raises(ValueError, match="t_start must be a finite float"):
+        obs.predict_occupied_spheres(t_start=float("inf"), horizon_sec=2.0)
+    with pytest.raises(ValueError, match="t_start must be a finite float"):
+        obs.predict_occupied_spheres(t_start="0.0", horizon_sec=2.0)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="horizon_sec must be non-negative"):
+        obs.predict_occupied_spheres(t_start=0.0, horizon_sec=-1.0)
+    with pytest.raises(ValueError, match="horizon_sec must be a finite float"):
+        obs.predict_occupied_spheres(t_start=0.0, horizon_sec=float("inf"))
+
+    # 4. Zero-length horizon returns exactly 1 sphere at t_start
+    s_zero = obs.predict_occupied_spheres(t_start=1.5, horizon_sec=0.0)
+    assert len(s_zero) == 1
+    np.testing.assert_allclose(s_zero[0].center, obs.center_at(1.5))
+    assert s_zero[0].radius == obs.radius
+
+    # 5. dt validation contract
+    with pytest.raises(ValueError, match="dt must be a strictly positive finite float"):
+        obs.predict_occupied_spheres(t_start=0.0, horizon_sec=1.0, dt=-0.5)
+    with pytest.raises(ValueError, match="dt must be a strictly positive finite float"):
+        obs.predict_occupied_spheres(t_start=0.0, horizon_sec=1.0, dt=0.0)
+    with pytest.raises(ValueError, match="dt must be a strictly positive finite float"):
+        obs.predict_occupied_spheres(t_start=0.0, horizon_sec=1.0, dt=float("inf"))
+
+
+def test_narrow_valid_arena_bounce_no_artificial_floor() -> None:
+    """Narrow arena with span < 0.1m reflects deterministically within [R, bounds - R]."""
+    # bounds[0] = 1.05m, radius = 0.5m -> b_min = 0.5m, b_max = 0.55m -> span = 0.05m (< 0.1m)
+    obs_pos = DynamicObstacleSphere3D(
+        center_initial=np.array([0.5, 10.0, 5.0]),
+        radius=0.5,
+        velocity=np.array([1.0, 0.0, 0.0]),  # Positive velocity
+        bounds=(1.05, 30.0, 15.0),
+        motion_type="bounce",
+    )
+
+    # Test positive velocity over multiple reflections
+    for step in range(100):
+        t = step * 0.01
+        c = obs_pos.center_at(t)
+        # Center x must strictly stay in [0.5, 0.55]
+        assert 0.5 - 1e-9 <= c[0] <= 0.55 + 1e-9, f"Violation at t={t}: c[0]={c[0]}"
+
+    # Test negative velocity
+    obs_neg = DynamicObstacleSphere3D(
+        center_initial=np.array([0.55, 10.0, 5.0]),
+        radius=0.5,
+        velocity=np.array([-1.0, 0.0, 0.0]),  # Negative velocity
+        bounds=(1.05, 30.0, 15.0),
+        motion_type="bounce",
+    )
+    for step in range(100):
+        t = step * 0.01
+        c = obs_neg.center_at(t)
+        assert 0.5 - 1e-9 <= c[0] <= 0.55 + 1e-9, f"Violation at t={t}: c[0]={c[0]}"
+
+
+def test_oscillation_envelope_validation() -> None:
+    """Oscillation envelope exceeding permitted center region raises ValueError."""
+    import pytest
+
+    # Permitted center region for radius=1.0, bounds=(30, 30, 15) is [1.0, 29.0] x [1.0, 29.0] x [1.0, 14.0]
+    # Valid oscillation approaching boundary:
+    # center_initial = 25.0, amplitude = 4.0 -> envelope [21.0, 29.0] <= 29.0 -> VALID
+    obs_valid = DynamicObstacleSphere3D(
+        center_initial=np.array([25.0, 10.0, 5.0]),
+        radius=1.0,
+        bounds=(30.0, 30.0, 15.0),
+        motion_type="oscillate",
+        oscillation_amplitude=np.array([4.0, 0.0, 0.0]),
+    )
+    assert obs_valid is not None
+
+    # Invalid oscillation exceeding upper boundary:
+    # center_initial = 26.0, amplitude = 4.0 -> envelope [22.0, 30.0] > 29.0 -> INVALID
+    with pytest.raises(ValueError, match="Oscillation envelope along axis 0"):
+        DynamicObstacleSphere3D(
+            center_initial=np.array([26.0, 10.0, 5.0]),
+            radius=1.0,
+            bounds=(30.0, 30.0, 15.0),
+            motion_type="oscillate",
+            oscillation_amplitude=np.array([4.0, 0.0, 0.0]),
+        )
+
+    # Invalid oscillation exceeding lower boundary:
+    # center_initial = 4.0, amplitude = 4.0 -> envelope [0.0, 8.0], 0.0 < 1.0 -> INVALID
+    with pytest.raises(ValueError, match="Oscillation envelope along axis 0"):
+        DynamicObstacleSphere3D(
+            center_initial=np.array([4.0, 10.0, 5.0]),
+            radius=1.0,
+            bounds=(30.0, 30.0, 15.0),
+            motion_type="oscillate",
+            oscillation_amplitude=np.array([4.0, 0.0, 0.0]),
+        )
+
+
+def test_continuous_collision_curved_vehicle_trajectory() -> None:
+    """Continuous collision evaluates actual curved 6-DOF vehicle path between endpoints."""
+    vehicle_radius = 0.3
+    t0 = 0.0
+    t1 = 1.0
+
+    # Consider a case where straight chord is CLEAR, but curved trajectory curves INTO the obstacle:
+    # Obstacle is at (10.0, 11.0, 5.0) with radius 0.5m. Threshold = 0.5 + 0.3 = 0.8m.
+    # Straight chord: from (8.0, 10.0, 5.0) to (12.0, 10.0, 5.0).
+    # Closest distance on chord to (10, 11, 5) is 1.0m > 0.8m (CLEAR!)
+    obs_offset = DynamicObstacleSphere3D(
+        center_initial=np.array([10.0, 11.0, 5.0]),
+        radius=0.5,
+        velocity=np.zeros(3),
+        bounds=(50.0, 50.0, 20.0),
+    )
+    # Threshold = 0.5 + 0.3 = 0.8m
+    p_start = np.array([8.0, 10.0, 5.0])
+    p_end = np.array([12.0, 10.0, 5.0])
+
+    # Straight chord: y is constantly 10.0, obstacle y is 11.0, dist = 1.0m > 0.8m
+    # But curved trajectory bulges along y to y = 10.7m! Closest dist = 0.3m <= 0.8m!
+    curved_positions = [
+        np.array([8.0, 10.0, 5.0]),
+        np.array([9.0, 10.4, 5.0]),
+        np.array([10.0, 10.7, 5.0]),  # Curved intrusion! Dist = 0.3m <= 0.8m
+        np.array([11.0, 10.4, 5.0]),
+        np.array([12.0, 10.0, 5.0]),
+    ]
+
+    coll_curved = obs_offset.check_continuous_collision(
+        prev_drone_pos=p_start,
+        curr_drone_pos=p_end,
+        prev_time=t0,
+        curr_time=t1,
+        vehicle_radius=vehicle_radius,
+        intermediate_drone_positions=curved_positions,
+    )
+    assert coll_curved is True, "Curved trajectory intrusion must be detected!"
+
+    # Safe clearance curved trajectory that remains > 1.5m away
+    safe_positions = [
+        np.array([8.0, 9.0, 5.0]),
+        np.array([9.0, 9.2, 5.0]),
+        np.array([10.0, 9.3, 5.0]),
+        np.array([11.0, 9.2, 5.0]),
+        np.array([12.0, 9.0, 5.0]),
+    ]
+    coll_safe = obs_offset.check_continuous_collision(
+        prev_drone_pos=safe_positions[0],
+        curr_drone_pos=safe_positions[-1],
+        prev_time=t0,
+        curr_time=t1,
+        vehicle_radius=vehicle_radius,
+        intermediate_drone_positions=safe_positions,
+    )
+    assert coll_safe is False, "Safe clearance curved trajectory must not trigger collision!"
+
+
+def test_real_closed_loop_flight_scenario_repeated_replanning() -> None:
+    """Real closed-loop mission with 6-DOF dynamics, PID control, moving obstacles, and 2 replans."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioDefinition,
+        FlightScenarioRunner,
+    )
+
+    # 3 sequential waypoints across the arena
+    wp1 = np.array([5.0, 5.0, 4.0])
+    wp2 = np.array([11.0, 5.0, 4.0])
+    wp3 = np.array([17.0, 5.0, 4.0])
+
+    # Dynamic obstacle 1: moving across segment 1 (x=3) from y=2 to y=6
+    obs1 = DynamicObstacleSphere3D(
+        center_initial=np.array([3.0, 2.0, 4.0]),
+        radius=0.7,
+        velocity=np.array([0.0, 0.4, 0.0]),
+        bounds=(30.0, 30.0, 15.0),
+    )
+
+    # Dynamic obstacle 2: moving across segment 2 (x=8) from y=8 to y=3
+    obs2 = DynamicObstacleSphere3D(
+        center_initial=np.array([8.0, 8.0, 4.0]),
+        radius=0.7,
+        velocity=np.array([0.0, -0.4, 0.0]),
+        bounds=(30.0, 30.0, 15.0),
+    )
+
+    sc = FlightScenarioDefinition(
+        name="closed_loop_sequential_replanning_mission",
+        description="Closed-loop 6-DOF PID flight through 3 sequential waypoints with dynamic obstacle evasion",
+        initial_position=np.array([1.0, 5.0, 4.0]),
+        waypoints=[wp1, wp2, wp3],
+        dynamic_obstacles=[obs1, obs2],
+        use_path_planner=True,
+        collision_radius=0.25,
+        target_radius=1.5,
+        settling_velocity_threshold=1.5,
+        max_steps=650,
+    )
+
+    runner = FlightScenarioRunner()
+    result = runner.run_scenario(sc)
+
+    # Assertions on real flight execution:
+    # 1. Controller-driven actual 6-DOF motion occurred:
+    assert len(result.telemetry) > 20
+    assert result.metrics.control_effort > 0.0
+
+    # 2. Sequential waypoints were achieved in order:
+    assert result.metrics.replan_count >= 2
+    assert result.metrics.outcome == "success"
+    assert result.metrics.success is True
+    assert result.metrics.collision_count == 0
+
+    # 3. Final position error within target radius:
+    assert result.metrics.final_position_error <= sc.target_radius

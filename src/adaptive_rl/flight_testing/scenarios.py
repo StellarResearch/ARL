@@ -281,11 +281,14 @@ class FlightScenarioResult:
         return path
 
 
-def _safe_provenance_value(val: Any) -> Tuple[Any, bool]:
+def _safe_provenance_value(val: Any, _visited: Optional[set[int]] = None) -> Tuple[Any, bool]:
     """Deterministically serialize a value for provenance hashing without leaking memory addresses.
 
     Returns (serialized_value, is_complete).
     """
+    if _visited is None:
+        _visited = set()
+
     if val is None or isinstance(val, bool):
         return val, True
     if isinstance(val, (int, np.integer)):
@@ -303,38 +306,73 @@ def _safe_provenance_value(val: Any) -> Tuple[Any, bool]:
             return cleaned, False
         return val, True
     if isinstance(val, np.ndarray):
-        items, ok = _safe_provenance_value(val.tolist())
+        items, ok = _safe_provenance_value(val.tolist(), _visited=_visited)
         return items, ok
     if isinstance(val, (list, tuple)):
-        list_results = [_safe_provenance_value(x) for x in val]
+        list_results = [_safe_provenance_value(x, _visited=_visited) for x in val]
         return [r[0] for r in list_results], all(r[1] for r in list_results)
     if isinstance(val, dict):
         dict_results = {
-            str(k): _safe_provenance_value(v)
+            str(k): _safe_provenance_value(v, _visited=_visited)
             for k, v in sorted(val.items(), key=lambda item: str(item[0]))
         }
         return {k: r[0] for k, r in dict_results.items()}, all(r[1] for r in dict_results.values())
     if hasattr(val, "to_dict") and callable(getattr(val, "to_dict")):
         try:
-            return _safe_provenance_value(val.to_dict())
+            return _safe_provenance_value(val.to_dict(), _visited=_visited)
         except Exception:
             return f"unserializable:{type(val).__name__}", False
     if hasattr(val, "metadata"):
         meta = getattr(val, "metadata")
         if meta is not None:
-            return _safe_provenance_value(meta)
+            return _safe_provenance_value(meta, _visited=_visited)
     if inspect.ismodule(val):
         return f"module:{val.__name__}", True
-    if inspect.isfunction(val) or inspect.isclass(val):
-        return (
-            f"callable:{getattr(val, '__qualname__', getattr(val, '__name__', str(type(val))))}",
-            True,
-        )
+
+    # Referenced helper function or method
+    if inspect.isfunction(val) or inspect.ismethod(val):
+        if id(val) in _visited:
+            qual = getattr(val, "__qualname__", getattr(val, "__name__", str(val)))
+            return {"recursion_ref": qual}, True
+        fn_prov = extract_callable_provenance(val, _visited=set(_visited))
+        return fn_prov, fn_prov.get("provenance_complete", True)
+
+    # Class dependency
+    if inspect.isclass(val):
+        if id(val) in _visited:
+            qual = getattr(val, "__qualname__", getattr(val, "__name__", str(val)))
+            return {"recursion_ref": qual}, True
+        _visited.add(id(val))
+        mod = getattr(val, "__module__", "")
+        qual = getattr(val, "__qualname__", getattr(val, "__name__", str(val)))
+        if mod == "builtins" or mod.startswith("numpy") or mod.startswith("scipy"):
+            return f"class:{mod}.{qual}", True
+        # User/custom class: fingerprint class attributes
+        cls_attrs: Dict[str, Any] = {}
+        cls_complete = True
+        for k, v in sorted(val.__dict__.items(), key=lambda item: str(item[0])):
+            if not k.startswith("__"):
+                ser_v, ok_v = _safe_provenance_value(v, _visited=_visited)
+                cls_attrs[k] = ser_v
+                if not ok_v:
+                    cls_complete = False
+        return {"class": f"{mod}.{qual}", "attributes": cls_attrs}, cls_complete
+
+    # Callable class instance
+    if callable(val) and hasattr(val, "__call__"):
+        if id(val) in _visited:
+            return {"recursion_ref": type(val).__qualname__}, True
+        inst_prov = extract_callable_provenance(val, _visited=set(_visited))
+        return inst_prov, inst_prov.get("provenance_complete", True)
+
     if hasattr(val, "__dict__"):
+        if id(val) in _visited:
+            return {"recursion_ref": type(val).__qualname__}, True
+        _visited.add(id(val))
         try:
             custom_attrs = {k: v for k, v in val.__dict__.items() if not k.startswith("__")}
             if custom_attrs:
-                return _safe_provenance_value(custom_attrs)
+                return _safe_provenance_value(custom_attrs, _visited=_visited)
         except Exception:
             pass
         return f"object:{type(val).__qualname__}", False
@@ -346,16 +384,28 @@ def _safe_provenance_value(val: Any) -> Tuple[Any, bool]:
     return s, False
 
 
-def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
+def extract_callable_provenance(fn: Any, _visited: Optional[set[int]] = None) -> Dict[str, Any]:
     """Extract a stable, deterministic provenance record for a callable.
 
     Captures function identity, module, qualified name, function defaults, keyword defaults,
-    referenced global dependencies, closure variables, custom attributes, explicit metadata,
-    and a SHA-256 digest of code object bytecode, constants, and referenced names.
+    referenced global dependencies (recursively), closure variables, custom attributes,
+    explicit metadata, and a SHA-256 digest of code object bytecode, constants, and referenced names.
     Guarantees different callback configurations generate different digests.
     """
     if fn is None:
         return {}
+
+    if _visited is None:
+        _visited = set()
+
+    if id(fn) in _visited:
+        return {
+            "recursion_ref": getattr(
+                fn, "__qualname__", getattr(fn, "__name__", type(fn).__name__)
+            ),
+            "provenance_complete": True,
+        }
+    _visited.add(id(fn))
 
     provenance_complete = True
 
@@ -363,8 +413,8 @@ def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
     partial_args: List[Any] = []
     partial_keywords: Dict[str, Any] = {}
     if isinstance(fn, functools.partial):
-        partial_args, ok_args = _safe_provenance_value(fn.args)
-        partial_keywords, ok_kw = _safe_provenance_value(fn.keywords or {})
+        partial_args, ok_args = _safe_provenance_value(fn.args, _visited=set(_visited))
+        partial_keywords, ok_kw = _safe_provenance_value(fn.keywords or {}, _visited=set(_visited))
         if not (ok_args and ok_kw):
             provenance_complete = False
         fn = fn.func
@@ -405,14 +455,14 @@ def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
     # Function positional defaults and keyword-only defaults
     defaults = getattr(target_fn, "__defaults__", None)
     if defaults is not None:
-        ser_defaults, ok_def = _safe_provenance_value(defaults)
+        ser_defaults, ok_def = _safe_provenance_value(defaults, _visited=set(_visited))
         info["defaults"] = ser_defaults
         if not ok_def:
             provenance_complete = False
 
     kwdefaults = getattr(target_fn, "__kwdefaults__", None)
     if kwdefaults is not None:
-        ser_kwdefaults, ok_kwdef = _safe_provenance_value(kwdefaults)
+        ser_kwdefaults, ok_kwdef = _safe_provenance_value(kwdefaults, _visited=set(_visited))
         info["kwdefaults"] = ser_kwdefaults
         if not ok_kwdef:
             provenance_complete = False
@@ -420,7 +470,7 @@ def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
     # Explicit metadata contract
     if hasattr(fn, "metadata"):
         meta = getattr(fn, "metadata")
-        ser_meta, ok_meta = _safe_provenance_value(meta)
+        ser_meta, ok_meta = _safe_provenance_value(meta, _visited=set(_visited))
         info["metadata"] = ser_meta
         if isinstance(meta, dict) and meta.get("provenance_complete") is False:
             provenance_complete = False
@@ -438,7 +488,7 @@ def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
             if not k.startswith("__") and k != "metadata"
         }
         if custom_attrs:
-            ser_attrs, ok_attrs = _safe_provenance_value(custom_attrs)
+            ser_attrs, ok_attrs = _safe_provenance_value(custom_attrs, _visited=set(_visited))
             info["attributes"] = ser_attrs
             if not ok_attrs:
                 provenance_complete = False
@@ -450,7 +500,7 @@ def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
         for var_name, cell in zip(co_freevars, target_fn.__closure__):
             try:
                 contents = cell.cell_contents
-                ser_val, ok_val = _safe_provenance_value(contents)
+                ser_val, ok_val = _safe_provenance_value(contents, _visited=set(_visited))
                 closure_vars[var_name] = ser_val
                 if not ok_val:
                     provenance_complete = False
@@ -459,7 +509,7 @@ def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
     if closure_vars:
         info["closure"] = {k: closure_vars[k] for k in sorted(closure_vars.keys())}
 
-    # Global dependencies referenced in code.co_names
+    # Global dependencies referenced in code.co_names (recursively fingerprinted)
     if code is not None and fn_globals:
         co_names = getattr(code, "co_names", ())
         builtin_names = set(dir(builtins))
@@ -467,7 +517,7 @@ def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
         for name in sorted(set(co_names)):
             if name in fn_globals and name not in builtin_names:
                 g_val = fn_globals[name]
-                ser_g, ok_g = _safe_provenance_value(g_val)
+                ser_g, ok_g = _safe_provenance_value(g_val, _visited=set(_visited))
                 ref_globals[name] = ser_g
                 if not ok_g:
                     provenance_complete = False
@@ -1263,6 +1313,7 @@ class FlightScenarioRunner:
             coll, coll_type = self.env._check_collision(new_state.position, prev_pos=old_pos)
             # Continuous swept dynamic obstacle collision check
             if not coll:
+                intermediate_positions = getattr(self.env.dynamics, "last_substep_positions", None)
                 for dyn_obs in scenario.dynamic_obstacles:
                     if dyn_obs.check_continuous_collision(
                         prev_drone_pos=old_pos,
@@ -1270,6 +1321,7 @@ class FlightScenarioRunner:
                         prev_time=time_sec - dt,
                         curr_time=time_sec,
                         vehicle_radius=scenario.collision_radius,
+                        intermediate_drone_positions=intermediate_positions,
                     ):
                         coll = True
                         coll_type = "obstacle"
@@ -1445,6 +1497,7 @@ class FlightScenarioRunner:
             collision_count=1 if is_collision else 0,
             control_effort=float(np.sum(control_efforts)) if control_efforts else 0.0,
             execution_wall_time_ms=elapsed_ms,
+            replan_count=mission_manager.replan_count if mission_manager is not None else 0,
         )
 
         return FlightScenarioResult(

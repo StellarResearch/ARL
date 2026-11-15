@@ -388,6 +388,11 @@ class FlightRecorder:
         if not expected_scenario_names and not scenario_provenance:
             provenance_complete = True
 
+        # Map executed scenario definitions by name
+        exec_sc_by_name = {
+            s.get("name"): s for s in scenario_provenance if isinstance(s, dict) and "name" in s
+        }
+
         # Build comprehensive ExperimentConfigurationFingerprint
         if configuration is not None:
             if isinstance(configuration, ExperimentConfigurationFingerprint):
@@ -404,13 +409,27 @@ class FlightRecorder:
                 if not expected_scenario_names.issubset(cfg_names):
                     cfg_valid = False
 
-                cfg_sc_names = set(
-                    s.get("name")
+                cfg_sc_by_name = {
+                    s.get("name"): s
                     for s in exp_config.scenarios
                     if isinstance(s, dict) and "name" in s
-                )
-                if not expected_scenario_names.issubset(cfg_sc_names):
+                }
+                if not expected_scenario_names.issubset(cfg_sc_by_name.keys()):
                     cfg_valid = False
+
+                # Compare canonical serialized scenario definitions (not only names)
+                for sc_name in expected_scenario_names:
+                    exec_def = exec_sc_by_name.get(sc_name)
+                    cfg_def = cfg_sc_by_name.get(sc_name)
+                    if exec_def is None or cfg_def is None:
+                        cfg_valid = False
+                        break
+                    # Normalize comparison: compare behavior-affecting content
+                    exec_content = {k: v for k, v in exec_def.items() if k != "provenance_complete"}
+                    cfg_content = {k: v for k, v in cfg_def.items() if k != "provenance_complete"}
+                    if canonical_json_dumps(exec_content) != canonical_json_dumps(cfg_content):
+                        cfg_valid = False
+                        break
 
                 for sc in exp_config.scenarios:
                     if isinstance(sc, dict) and sc.get("provenance_complete") is False:

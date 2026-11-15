@@ -619,3 +619,203 @@ def test_explicit_configuration_conflicting_completeness_detected(tmp_path: Path
     # Both verifications must catch the inconsistency!
     assert record.verify_config_fingerprint() is False
     assert record.verify_record_digest() is False
+
+
+# Global helpers for referenced callable dependency testing
+def _global_helper_v1(x: float) -> float:
+    return x * 2.0
+
+
+def _global_helper_v2(x: float) -> float:
+    return x * 10.0
+
+
+def test_referenced_global_helper_code_change_alters_provenance() -> None:
+    """Changing a referenced global helper's code changes the parent callable's provenance digest."""
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    # Function referencing global helper
+    def parent_fn(x: float) -> float:
+        return _global_helper_v1(x)
+
+    def parent_fn_v2(x: float) -> float:
+        return _global_helper_v2(x)
+
+    prov1 = extract_callable_provenance(parent_fn)
+    prov2 = extract_callable_provenance(parent_fn_v2)
+
+    # Both parent functions have identical names, signatures, but different referenced helpers
+    assert canonical_json_dumps(prov1) != canonical_json_dumps(prov2)
+    assert (
+        prov1["referenced_globals"]["_global_helper_v1"]["code_hash"]
+        != (prov2["referenced_globals"]["_global_helper_v2"]["code_hash"])
+    )
+
+
+def test_referenced_global_helper_defaults_and_closures_alter_provenance() -> None:
+    """Changing helper default arguments or closure variables alters the parent callback's provenance."""
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    def make_parent(gain: float):
+        def inner_helper(val: float, scale: float = 1.0) -> float:
+            return val * scale * gain
+
+        def parent_cb(x: float) -> float:
+            return inner_helper(x)
+
+        return parent_cb
+
+    cb1 = make_parent(gain=2.0)
+    cb2 = make_parent(gain=5.0)
+
+    p1 = extract_callable_provenance(cb1)
+    p2 = extract_callable_provenance(cb2)
+
+    assert canonical_json_dumps(p1) != canonical_json_dumps(p2)
+
+
+def _module_recursive_factorial(n: int) -> int:
+    return 1 if n <= 1 else n * _module_recursive_factorial(n - 1)
+
+
+def test_recursive_callable_dependencies_terminate_safely() -> None:
+    """Self-recursive and mutually recursive callable dependencies terminate deterministically without error."""
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    prov_fact = extract_callable_provenance(_module_recursive_factorial)
+    assert prov_fact["provenance_complete"] is True
+    # The referenced global '_module_recursive_factorial' contains a recursion reference
+    assert "_module_recursive_factorial" in prov_fact["referenced_globals"]
+    assert "recursion_ref" in prov_fact["referenced_globals"]["_module_recursive_factorial"]
+
+
+def test_explicit_configuration_content_mismatch_marked_incomplete(tmp_path: Path) -> None:
+    """Explicit configuration with matching scenario names but differing scenario definitions is marked incomplete."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioDefinition,
+        FlightScenarioRunner,
+    )
+
+    runner = FlightScenarioRunner()
+    sc_real = FlightScenarioDefinition(
+        name="hover_scenario",
+        description="real execution",
+        initial_position=np.array([1.0, 1.0, 1.0]),
+        max_steps=5,
+    )
+    res = runner.run_scenario(sc_real)
+
+    physics = PhysicsSimulationFingerprint(
+        mass=1.0,
+        gravity=9.81,
+        arm_length=0.2,
+        arm_span=0.4,
+        rotor_offset_d=0.1414,
+        rotor_radius=0.09,
+        max_thrust_per_motor=5.0,
+        torque_to_thrust_ratio=0.01,
+        linear_damping=0.1,
+        angular_damping=0.02,
+        inertia=[0.01, 0.01, 0.02],
+        dt=0.05,
+        substeps=5,
+        substep_dt=0.01,
+        body_frame_lidar=False,
+        num_lidar_rays=16,
+        lidar_range=20.0,
+    )
+
+    # Construct false configuration: same name "hover_scenario", but different initial_position [9.0, 9.0, 9.0]!
+    sc_fake = FlightScenarioDefinition(
+        name="hover_scenario",
+        description="falsified execution",
+        initial_position=np.array([9.0, 9.0, 9.0]),
+        max_steps=5,
+    )
+
+    cfg = ExperimentConfigurationFingerprint(
+        physics=physics,
+        environment_bounds=[30.0, 30.0, 15.0],
+        algorithm_name="test",
+        checkpoint_hash=None,
+        random_seed=42,
+        scenario_names=["hover_scenario"],
+        scenarios=[sc_fake.to_dict()],
+        provenance_complete=True,
+    )
+
+    recorder = FlightRecorder(output_dir=tmp_path)
+    record = recorder.create_record(
+        experiment_id="content_mismatch_test",
+        physics_params={"mass": 1.0, "gravity": 9.81},
+        scenario_results=[res],
+        configuration=cfg,
+    )
+
+    # Content mismatch MUST result in provenance_complete = False!
+    assert record.provenance_complete is False
+    assert record.configuration.provenance_complete is False
+    assert record.verify_config_fingerprint() is True
+
+
+def test_explicit_configuration_fully_equivalent_preserved(tmp_path: Path) -> None:
+    """Explicit configuration with matching scenario content preserves provenance_complete = True."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioDefinition,
+        FlightScenarioRunner,
+    )
+
+    runner = FlightScenarioRunner()
+    sc = FlightScenarioDefinition(
+        name="hover_scenario_equiv",
+        description="legitimate execution",
+        initial_position=np.array([2.0, 2.0, 2.0]),
+        max_steps=5,
+    )
+    res = runner.run_scenario(sc)
+
+    physics = PhysicsSimulationFingerprint(
+        mass=1.0,
+        gravity=9.81,
+        arm_length=0.2,
+        arm_span=0.4,
+        rotor_offset_d=0.1414,
+        rotor_radius=0.09,
+        max_thrust_per_motor=5.0,
+        torque_to_thrust_ratio=0.01,
+        linear_damping=0.1,
+        angular_damping=0.02,
+        inertia=[0.01, 0.01, 0.02],
+        dt=0.05,
+        substeps=5,
+        substep_dt=0.01,
+        body_frame_lidar=False,
+        num_lidar_rays=16,
+        lidar_range=20.0,
+    )
+
+    # Legitimate matching configuration
+    cfg = ExperimentConfigurationFingerprint(
+        physics=physics,
+        environment_bounds=[30.0, 30.0, 15.0],
+        algorithm_name="test",
+        checkpoint_hash=None,
+        random_seed=42,
+        scenario_names=["hover_scenario_equiv"],
+        scenarios=[sc.to_dict()],
+        provenance_complete=True,
+    )
+
+    recorder = FlightRecorder(output_dir=tmp_path)
+    record = recorder.create_record(
+        experiment_id="content_match_test",
+        physics_params={"mass": 1.0, "gravity": 9.81},
+        scenario_results=[res],
+        configuration=cfg,
+    )
+
+    # Legitimate match MUST preserve provenance_complete = True!
+    assert record.provenance_complete is True
+    assert record.configuration.provenance_complete is True
+    assert record.verify_config_fingerprint() is True
+    assert record.verify_record_digest() is True
