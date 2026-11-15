@@ -28,8 +28,13 @@ from adaptive_rl.environments.drone import ObstacleSphere3D
 from adaptive_rl.environments.drone_6dof import (
     Drone6DOFEnv,
     DroneDynamics6DOF,
+    body_to_world_vector,
+    euler_to_quaternion,
+    quaternion_conjugate,
+    quaternion_multiply,
     quaternion_to_euler_angles,
     quaternion_to_rotation_matrix,
+    world_to_body_vector,
 )
 
 
@@ -458,3 +463,249 @@ def test_reward_components_decomposition() -> None:
     assert math.isclose(reward, component_sum, abs_tol=1e-5)
 
     env.close()
+
+
+# ---------------------------------------------------------------------------
+# 15. Coordinate Transformations: World-to-Body and Body-to-World
+# ---------------------------------------------------------------------------
+def test_coordinate_transformations_and_quaternion_algebra() -> None:
+    """Validate body_to_world, world_to_body, euler_to_quaternion, and quaternion algebra."""
+    # 1. Identity quaternion: body and world frames are coincident
+    q_ident = np.array([1.0, 0.0, 0.0, 0.0])
+    v_b = np.array([1.0, 2.0, 3.0])
+    assert np.allclose(body_to_world_vector(v_b, q_ident), v_b, atol=1e-9)
+    assert np.allclose(world_to_body_vector(v_b, q_ident), v_b, atol=1e-9)
+
+    # 2. 90-degree yaw rotation (pi/2 about +Z):
+    # Body +X (East/Forward) rotates into World +Y (North)
+    q_yaw90 = euler_to_quaternion(roll=0.0, pitch=0.0, yaw=math.pi / 2.0)
+    v_forward = np.array([1.0, 0.0, 0.0])
+    v_w = body_to_world_vector(v_forward, q_yaw90)
+    assert np.allclose(v_w, [0.0, 1.0, 0.0], atol=1e-6)
+
+    # Invert transformation back: world to body
+    v_b_rec = world_to_body_vector(v_w, q_yaw90)
+    assert np.allclose(v_b_rec, v_forward, atol=1e-6)
+
+    # 3. Arbitrary nontrivial 3D orientation roundtrip
+    rng = np.random.default_rng(777)
+    for _ in range(25):
+        roll_in = rng.uniform(-math.pi / 3, math.pi / 3)
+        pitch_in = rng.uniform(-math.pi / 4, math.pi / 4)
+        yaw_in = rng.uniform(-math.pi, math.pi)
+
+        q = euler_to_quaternion(roll=roll_in, pitch=pitch_in, yaw=yaw_in)
+        assert math.isclose(np.linalg.norm(q), 1.0, abs_tol=1e-6)
+
+        # Roundtrip Euler angles
+        r_out, p_out, y_out = quaternion_to_euler_angles(q)
+        assert math.isclose(roll_in, r_out, abs_tol=1e-5)
+        assert math.isclose(pitch_in, p_out, abs_tol=1e-5)
+        assert math.isclose(yaw_in, y_out, abs_tol=1e-5)
+
+        # Inversion invariant: v_B == R^T * (R * v_B)
+        v_rand = rng.normal(size=3)
+        v_world = body_to_world_vector(v_rand, q)
+        v_body_back = world_to_body_vector(v_world, q)
+        assert np.allclose(v_rand, v_body_back, atol=1e-6)
+
+        # Quaternion conjugate property: q (x) q* == [1, 0, 0, 0]
+        q_star = quaternion_conjugate(q)
+        q_identity_res = quaternion_multiply(q, q_star)
+        assert np.allclose(q_identity_res, [1.0, 0.0, 0.0, 0.0], atol=1e-6)
+
+    # 4. Method calls on DroneDynamics6DOF
+    dynamics = DroneDynamics6DOF()
+    dynamics.reset(quaternion=q_yaw90)
+    assert np.allclose(dynamics.body_to_world(v_forward), [0.0, 1.0, 0.0], atol=1e-6)
+    assert np.allclose(dynamics.world_to_body([0.0, 1.0, 0.0]), v_forward, atol=1e-6)
+
+    # 5. Invalid vector and quaternion inputs
+    with pytest.raises(ValueError, match="vector_b"):
+        body_to_world_vector([1.0, 2.0], q_ident)
+    with pytest.raises(ValueError, match="vector_w"):
+        world_to_body_vector([1.0, 2.0, 3.0, 4.0], q_ident)
+    with pytest.raises(ValueError, match="finite"):
+        body_to_world_vector([float("nan"), 0.0, 0.0], q_ident)
+    with pytest.raises(ValueError, match="Quaternions must have shape"):
+        quaternion_multiply([1.0, 0.0], q_ident)
+
+
+# ---------------------------------------------------------------------------
+# 16. Axis Isolation & Rotational Coupling
+# ---------------------------------------------------------------------------
+def test_axis_isolation_and_rotational_cross_coupling() -> None:
+    """Verify independent vertical response, torque isolation, and gyroscopic cross-coupling."""
+    mass = 1.0
+    gravity = 9.81
+    dynamics = DroneDynamics6DOF(
+        mass=mass,
+        gravity=gravity,
+        inertia=(0.01, 0.02, 0.03),
+        linear_damping=0.0,
+        angular_damping=0.0,
+        dt=0.01,
+        substeps=1,
+    )
+
+    # 1. Pure vertical acceleration: Collective thrust exceeding gravity
+    # Hover thrust per motor = 9.81 / 4 = 2.4525 N. Command +1.0 N delta per motor.
+    f_hover = dynamics.hover_thrust_per_motor
+    delta_f = 0.5
+
+    d_pos, d_vel, d_quat, d_omega = dynamics._state_derivatives(
+        dynamics.state.position,
+        dynamics.state.velocity,
+        dynamics.state.quaternion,
+        dynamics.state.angular_velocity,
+        float(4.0 * (f_hover + delta_f)),
+        np.zeros(3),
+    )
+    expected_az = (4.0 * delta_f) / mass  # (2.0 N) / 1.0 kg = 2.0 m/s^2
+    assert math.isclose(d_vel[0], 0.0, abs_tol=1e-9)
+    assert math.isclose(d_vel[1], 0.0, abs_tol=1e-9)
+    assert math.isclose(d_vel[2], expected_az, rel_tol=1e-5)
+    assert np.allclose(d_omega, 0.0, atol=1e-9)
+
+    # 2. Gyroscopic cross-coupling: omega x (I * omega)
+    # When rotating simultaneously about X (p) and Y (q), asymmetric inertia (Ixx != Iyy)
+    # induces a non-zero gyroscopic angular acceleration along Z:
+    # d_omega_z = (1/Izz) * (tau_z - (Iyy - Ixx) * p * q)
+    p_rate, q_rate = 5.0, 8.0
+    omega_init = np.array([p_rate, q_rate, 0.0])
+    dynamics.reset(angular_velocity=omega_init)
+
+    _, _, _, d_omega_coupled = dynamics._state_derivatives(
+        dynamics.state.position,
+        dynamics.state.velocity,
+        dynamics.state.quaternion,
+        dynamics.state.angular_velocity,
+        dynamics.hover_thrust_per_motor * 4.0,
+        np.zeros(3),  # zero applied torque
+    )
+
+    # Analytical Euler coupling:
+    # I_omega = [Ixx*p, Iyy*q, Izz*r] = [0.01*5, 0.02*8, 0] = [0.05, 0.16, 0.0]
+    # omega x (I*omega) = [0, 0, 5*0.16 - 8*0.05] = [0, 0, 0.8 - 0.4] = [0, 0, 0.4]
+    # d_omega_z = -0.4 / Izz = -0.4 / 0.03 = -13.333 rad/s^2
+    expected_d_omega_z = -(0.02 - 0.01) * p_rate * q_rate / 0.03
+    assert math.isclose(d_omega_coupled[2], expected_d_omega_z, rel_tol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# 17. Numerical Convergence Analysis Across Substeps
+# ---------------------------------------------------------------------------
+def test_numerical_convergence_across_time_steps() -> None:
+    """Verify trajectory and attitude convergence under refined integration time steps."""
+    total_time = 0.5  # 500 ms simulation
+    coarse_dt = 0.05
+    n_steps_coarse = int(total_time / coarse_dt)
+
+    # Case A: coarse integration (dt = 0.05, substeps = 1)
+    dyn_coarse = DroneDynamics6DOF(dt=coarse_dt, substeps=1)
+    # Case B: refined integration (dt = 0.05, substeps = 5) -> dt_sub = 0.01
+    dyn_medium = DroneDynamics6DOF(dt=coarse_dt, substeps=5)
+    # Case C: highly refined reference (dt = 0.05, substeps = 25) -> dt_sub = 0.002
+    dyn_fine = DroneDynamics6DOF(dt=coarse_dt, substeps=25)
+
+    pos_init = np.array([5.0, 5.0, 5.0])
+    dyn_coarse.reset(position=pos_init)
+    dyn_medium.reset(position=pos_init)
+    dyn_fine.reset(position=pos_init)
+
+    # Asymmetric motor command creating coupled translation, roll, and climb
+    thrusts = np.array([2.8, 3.2, 2.5, 2.1])
+
+    for _ in range(n_steps_coarse):
+        st_coarse = dyn_coarse.step_rk4(thrusts)
+        st_medium = dyn_medium.step_rk4(thrusts)
+        st_fine = dyn_fine.step_rk4(thrusts)
+
+    # Divergence from fine reference
+    divergence_coarse = float(np.linalg.norm(st_coarse.position - st_fine.position))
+    divergence_medium = float(np.linalg.norm(st_medium.position - st_fine.position))
+
+    # Refined integration must achieve strictly smaller error than coarse
+    assert divergence_medium < divergence_coarse, (
+        f"Convergence failure: medium error ({divergence_medium}) is not less than coarse error ({divergence_coarse})"
+    )
+    # Medium divergence from high-res reference must be within strict numerical tolerance (< 5e-3 m)
+    assert divergence_medium < 5e-3
+    assert math.isclose(np.linalg.norm(st_medium.quaternion), 1.0, abs_tol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# 18. Prolonged Hover Stability & Equilibrium Drift
+# ---------------------------------------------------------------------------
+def test_prolonged_hover_equilibrium_zero_drift() -> None:
+    """At exact hover equilibrium (T = mg), position drift remains < 1e-4 m over 1,000 steps."""
+    dynamics = DroneDynamics6DOF(mass=1.2, gravity=9.81, dt=0.01, substeps=2)
+    pos_0 = np.array([10.0, 15.0, 8.0])
+    dynamics.reset(position=pos_0)
+
+    hover_thrusts = np.full(4, dynamics.hover_thrust_per_motor)
+    for _ in range(1000):
+        state = dynamics.step_rk4(hover_thrusts)
+
+    pos_drift = float(np.linalg.norm(state.position - pos_0))
+    vel_magnitude = float(np.linalg.norm(state.velocity))
+    quat_drift = float(np.linalg.norm(state.quaternion - np.array([1.0, 0.0, 0.0, 0.0])))
+
+    assert pos_drift < 1e-4, f"Hover position drift exceeded tolerance: {pos_drift} m"
+    assert vel_magnitude < 1e-4, f"Hover velocity drift exceeded tolerance: {vel_magnitude} m/s"
+    assert quat_drift < 1e-6, f"Hover attitude drift exceeded tolerance: {quat_drift}"
+
+
+# ---------------------------------------------------------------------------
+# 19. Individual Motor Contributions & Actuator Symmetry
+# ---------------------------------------------------------------------------
+def test_individual_motor_contributions_and_symmetry() -> None:
+    """Verify physical torque signs and thrust symmetry of each motor individually."""
+    dynamics = DroneDynamics6DOF(arm_length=0.2, torque_to_thrust_ratio=0.01)
+    d = dynamics.d
+    c_tau = dynamics.c_tau
+    unit_thrust = 2.0
+
+    # Motor 1: Front-Right (+d, -d) CCW
+    t1, tau1 = dynamics.compute_forces_and_torques(np.array([unit_thrust, 0.0, 0.0, 0.0]))
+    assert math.isclose(t1, unit_thrust)
+    assert math.isclose(tau1[0], -d * unit_thrust)  # -roll
+    assert math.isclose(tau1[1], -d * unit_thrust)  # -pitch
+    assert math.isclose(tau1[2], +c_tau * unit_thrust)  # +yaw
+
+    # Motor 2: Front-Left (+d, +d) CW
+    t2, tau2 = dynamics.compute_forces_and_torques(np.array([0.0, unit_thrust, 0.0, 0.0]))
+    assert math.isclose(t2, unit_thrust)
+    assert math.isclose(tau2[0], +d * unit_thrust)  # +roll
+    assert math.isclose(tau2[1], -d * unit_thrust)  # -pitch
+    assert math.isclose(tau2[2], -c_tau * unit_thrust)  # -yaw
+
+    # Motor 3: Rear-Left (-d, +d) CCW
+    t3, tau3 = dynamics.compute_forces_and_torques(np.array([0.0, 0.0, unit_thrust, 0.0]))
+    assert math.isclose(t3, unit_thrust)
+    assert math.isclose(tau3[0], +d * unit_thrust)  # +roll
+    assert math.isclose(tau3[1], +d * unit_thrust)  # +pitch
+    assert math.isclose(tau3[2], +c_tau * unit_thrust)  # +yaw
+
+    # Motor 4: Rear-Right (-d, -d) CW
+    t4, tau4 = dynamics.compute_forces_and_torques(np.array([0.0, 0.0, 0.0, unit_thrust]))
+    assert math.isclose(t4, unit_thrust)
+    assert math.isclose(tau4[0], -d * unit_thrust)  # -roll
+    assert math.isclose(tau4[1], +d * unit_thrust)  # +pitch
+    assert math.isclose(tau4[2], -c_tau * unit_thrust)  # -yaw
+
+    # Thrust symmetry: Diagonal pairs (1, 3) vs (2, 4) produce equal collective thrust
+    t_diag13, tau_diag13 = dynamics.compute_forces_and_torques(
+        np.array([unit_thrust, 0.0, unit_thrust, 0.0])
+    )
+    t_diag24, tau_diag24 = dynamics.compute_forces_and_torques(
+        np.array([0.0, unit_thrust, 0.0, unit_thrust])
+    )
+    assert math.isclose(t_diag13, t_diag24)
+    # Roll and pitch torques cancel for diagonal pairs:
+    assert math.isclose(tau_diag13[0], 0.0, abs_tol=1e-9)
+    assert math.isclose(tau_diag13[1], 0.0, abs_tol=1e-9)
+    assert math.isclose(tau_diag24[0], 0.0, abs_tol=1e-9)
+    assert math.isclose(tau_diag24[1], 0.0, abs_tol=1e-9)
+    # Opposite yaw reaction torques:
+    assert math.isclose(tau_diag13[2], -tau_diag24[2])

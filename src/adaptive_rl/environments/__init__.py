@@ -10,6 +10,18 @@ from adaptive_rl.environments.drone import (
     ObstacleSphere3D,
     validate_target_coordinates,
 )
+from adaptive_rl.environments.drone_6dof import (
+    Drone6DOFEnv,
+    DroneDynamics6DOF,
+    DroneState6DOF,
+    body_to_world_vector,
+    euler_to_quaternion,
+    quaternion_conjugate,
+    quaternion_multiply,
+    quaternion_to_euler_angles,
+    quaternion_to_rotation_matrix,
+    world_to_body_vector,
+)
 from adaptive_rl.environments.metadata import EnvironmentMetadata
 from adaptive_rl.environments.registry import (
     EnvironmentRegistry,
@@ -187,14 +199,21 @@ __all__ = [
     "RegistryError",
     "WindField3D",
     "WindState3D",
+    "body_to_world_vector",
     "create_environment",
+    "euler_to_quaternion",
     "get",
     "get_metadata",
     "list_all_metadata",
     "list_environments",
     "make_env",
+    "quaternion_conjugate",
+    "quaternion_multiply",
+    "quaternion_to_euler_angles",
+    "quaternion_to_rotation_matrix",
     "register",
     "register_default_environments",
     "registry",
     "validate_target_coordinates",
+    "world_to_body_vector",
 ]

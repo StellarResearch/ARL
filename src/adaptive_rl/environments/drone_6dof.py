@@ -164,6 +164,104 @@ def quaternion_to_euler_angles(q: np.ndarray) -> Tuple[float, float, float]:
     return roll, pitch, yaw
 
 
+def euler_to_quaternion(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """Convert Euler angles (roll, pitch, yaw) in radians to a unit quaternion [qw, qx, qy, qz].
+
+    Conventions match quaternion_to_euler_angles (ZYX intrinsic rotation sequence):
+    - Roll (phi): rotation about body +X
+    - Pitch (theta): rotation about body +Y
+    - Yaw (psi): rotation about body +Z
+
+    Returns:
+        Unit quaternion [qw, qx, qy, qz] as float64 array.
+    """
+    for name, val in [("roll", roll), ("pitch", pitch), ("yaw", yaw)]:
+        if not math.isfinite(val):
+            raise ValueError(f"{name} must be a finite float, got {val}")
+
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+
+    qw = cr * cp * cy + sr * sp * sy
+    qx = sr * cp * cy - cr * sp * sy
+    qy = cr * sp * cy + sr * cp * sy
+    qz = cr * cp * sy - sr * sp * cy
+
+    q = np.array([qw, qx, qy, qz], dtype=np.float64)
+    norm = math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+    if norm > 1e-12:
+        q /= norm
+    else:
+        q = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    return q
+
+
+def quaternion_multiply(
+    q1: np.ndarray | Sequence[float], q2: np.ndarray | Sequence[float]
+) -> np.ndarray:
+    """Compute the Hamilton quaternion product q1 (x) q2."""
+    a = np.asarray(q1, dtype=np.float64)
+    b = np.asarray(q2, dtype=np.float64)
+    if a.shape != (4,) or b.shape != (4,):
+        raise ValueError(f"Quaternions must have shape (4,), got {a.shape} and {b.shape}")
+    if not (np.all(np.isfinite(a)) and np.all(np.isfinite(b))):
+        raise ValueError("Quaternions must have finite coordinates")
+
+    w1, x1, y1, z1 = a[0], a[1], a[2], a[3]
+    w2, x2, y2, z2 = b[0], b[1], b[2], b[3]
+
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+
+    res = np.array([w, x, y, z], dtype=np.float64)
+    norm = np.linalg.norm(res)
+    if norm > 1e-12:
+        res /= norm
+    return res
+
+
+def quaternion_conjugate(q: np.ndarray | Sequence[float]) -> np.ndarray:
+    """Compute the conjugate of a quaternion [qw, -qx, -qy, -qz]."""
+    q_arr = np.asarray(q, dtype=np.float64)
+    if q_arr.shape != (4,):
+        raise ValueError(f"Quaternion must have shape (4,), got {q_arr.shape}")
+    if not np.all(np.isfinite(q_arr)):
+        raise ValueError("Quaternion must have finite coordinates")
+    return np.array([q_arr[0], -q_arr[1], -q_arr[2], -q_arr[3]], dtype=np.float64)
+
+
+def body_to_world_vector(
+    vector_b: np.ndarray | Sequence[float], q: np.ndarray | Sequence[float]
+) -> np.ndarray:
+    """Transform a 3D vector from body frame to world frame using attitude quaternion q: v_W = R(q) * v_B."""
+    v = np.asarray(vector_b, dtype=np.float64)
+    if v.shape != (3,):
+        raise ValueError(f"vector_b must have shape (3,), got {v.shape}")
+    if not np.all(np.isfinite(v)):
+        raise ValueError(f"vector_b must have finite coordinates, got {vector_b}")
+    r_mat = quaternion_to_rotation_matrix(q)
+    return r_mat @ v
+
+
+def world_to_body_vector(
+    vector_w: np.ndarray | Sequence[float], q: np.ndarray | Sequence[float]
+) -> np.ndarray:
+    """Transform a 3D vector from world frame to body frame using attitude quaternion q: v_B = R(q)^T * v_W."""
+    v = np.asarray(vector_w, dtype=np.float64)
+    if v.shape != (3,):
+        raise ValueError(f"vector_w must have shape (3,), got {v.shape}")
+    if not np.all(np.isfinite(v)):
+        raise ValueError(f"vector_w must have finite coordinates, got {vector_w}")
+    r_mat = quaternion_to_rotation_matrix(q)
+    return r_mat.T @ v
+
+
 def quaternion_derivative(q: np.ndarray, omega: np.ndarray) -> np.ndarray:
     """Compute time derivative of quaternion given body angular velocity omega [p, q, r]."""
     qw, qx, qy, qz = float(q[0]), float(q[1]), float(q[2]), float(q[3])
@@ -307,6 +405,14 @@ class DroneDynamics6DOF:
             "rotor_radius": self.rotor_radius,
             "body_radius": self.arm_length * 0.35,
         }
+
+    def body_to_world(self, vector_b: np.ndarray | Sequence[float]) -> np.ndarray:
+        """Transform a 3D vector from body frame to world frame using current quadrotor attitude."""
+        return body_to_world_vector(vector_b, self.state.quaternion)
+
+    def world_to_body(self, vector_w: np.ndarray | Sequence[float]) -> np.ndarray:
+        """Transform a 3D vector from world frame to body frame using current quadrotor attitude."""
+        return world_to_body_vector(vector_w, self.state.quaternion)
 
     def reset(
         self,

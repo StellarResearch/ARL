@@ -104,8 +104,15 @@ AdaptiveRL is an educational reinforcement-learning project in which a PPO agent
 - **Target Detection**: Automatic goal-arrival termination within a calibrated target radius.
 - **Reward Shaping & Decomposed Inspection**: Multi-component reward encouraging progress while penalizing collisions, excessive control effort, angular velocity, and tilt.
 - **Deterministic Evaluation**: Reusable evaluation pipeline with reproducible seed control.
-- **Command-Line Interface (CLI)**: Typer-based CLI for training (`train`), evaluation (`evaluate`), and deterministic demonstration flights (`demo-drone`).
-- **Automated Test Suite**: Unit and integration tests verify kinematics, 6-DOF physics invariants (hover, free fall, uncoupled torques, drag decay, quaternion stability up to 50k/100k steps), training lifecycle, and GUI visualization.
+- **Autonomous Flight Validation & Reference Flight Controller**:
+  - Independent cascaded PID reference controller (`QuadrotorPIDController` / `ReferenceFlightController`) with analytical motor mixer inversion for closed-loop physics verification.
+  - 10 standardized flight validation scenarios (`hover_equilibrium`, `straight_line_navigation`, `vertical_ascent_descent`, `horizontal_translation`, `position_holding_disturbance`, `obstacle_avoidance`, `boundary_avoidance`, `target_approach_arrival`, `attitude_disturbance_recovery`, `actuator_fault_degradation`).
+  - Empirical flight metrics: Position RMSE, Velocity RMSE, Max tilt error (°), Min obstacle clearance, and Actuator control effort.
+  - Cryptographic Flight Recorder (`FlightRecord` / `FlightRecorder`) with canonical SHA-256 fingerprinting and Zip Slip archive path-traversal security verification.
+  - PPO & SAC Benchmarking Suite (`FlightBenchmarkSuite`) supporting quick and full multi-seed statistical profiles with Student's $t$ confidence intervals.
+- **Command-Line Interface (CLI)**: Typer-based CLI for training (`train`), evaluation (`evaluate`), deterministic demonstration flights (`demo-drone`), flight scenario validation (`validate-flight`), and comparative benchmarks (`benchmark-flight`).
+- **Interactive Streamlit Flight Deck (`app.py`)**: Includes the dedicated **"🚀 Flight Scenarios & Benchmarks"** tab with synchronized 4-panel telemetry time series and interactive benchmark comparison.
+- **Automated Test Suite**: Unit and integration tests verify kinematics, 6-DOF physics invariants (hover, free fall, uncoupled torques, drag decay, coordinate transformations, numerical convergence, quaternion stability up to 50k/100k steps), flight scenarios, controllers, and cryptographic recording.
 
 ---
 

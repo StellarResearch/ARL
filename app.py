@@ -21,6 +21,7 @@ from adaptive_rl.algorithms.registry import (
     load_algorithm_from_pretrained,
 )
 from adaptive_rl.config import AlgorithmConfig, EnvironmentConfig, ExperimentConfig, TrainingConfig
+from adaptive_rl.controllers import QuadrotorPIDController
 from adaptive_rl.environments.drone import (
     DroneNavigation3DEnv,
     validate_target_coordinates,
@@ -32,10 +33,17 @@ from adaptive_rl.evaluation.evaluator import (
     evaluate_random_policy,
     run_obstacle_density_experiment,
 )
+from adaptive_rl.flight_testing import (
+    FlightBenchmarkSuite,
+    FlightScenarioRunner,
+    get_standard_flight_scenarios,
+)
 from adaptive_rl.gui import (
     build_arena_3d_figure,
     build_comparison_bar_chart,
     build_density_experiment_figure,
+    build_flight_benchmark_figure,
+    build_telemetry_time_series_figure,
     build_training_curve_figure,
     get_available_models,
     run_drone_simulation_episode,
@@ -315,6 +323,7 @@ def main() -> None:
             "📊 Evaluation & Baseline",
             "🎯 Difficulty Experiment",
             "📘 About & Architecture",
+            "🚀 Flight Scenarios & Benchmarks",
         ]
     )
 
@@ -1701,6 +1710,258 @@ def main() -> None:
             - **No Real Drone Autopilot**: Not intended for direct deployment on physical UAV flight controllers (PX4/ArduPilot).
             """
         )
+
+    # ==========================================
+    # TAB 6: FLIGHT SCENARIOS & BENCHMARKS
+    # ==========================================
+    with tabs[5]:
+        st.subheader("Autonomous Flight Validation & Empirical Benchmarks")
+        st.markdown(
+            "Execute reproducible **10-scenario flight validation tests** and standardized "
+            "**PPO / SAC comparative benchmarks** across 3-DOF and 6-DOF quadrotor dynamics models."
+        )
+
+        sub_view = st.radio(
+            "Select Validation Module:",
+            ["🎯 10 Autonomous Flight Scenarios", "📊 PPO & SAC Benchmark Suite"],
+            horizontal=True,
+        )
+
+        if sub_view == "🎯 10 Autonomous Flight Scenarios":
+            scenarios = get_standard_flight_scenarios()
+            scenario_names = [sc.name for sc in scenarios]
+
+            sc_col1, sc_col2 = st.columns([1.5, 1.0])
+            with sc_col1:
+                selected_sc_name = st.selectbox(
+                    "Flight Scenario:",
+                    options=scenario_names,
+                    index=0,
+                    help="Select one of the 10 standardized aerospace flight validation scenarios.",
+                )
+            selected_sc = next(sc for sc in scenarios if sc.name == selected_sc_name)
+
+            with sc_col2:
+                ctrl_options = ["Reference Flight Controller (Cascaded PID)"] + [
+                    f"Model: {name}" for name in model_names
+                ]
+                selected_ctrl_name = st.selectbox(
+                    "Flight Controller / Policy:",
+                    options=ctrl_options,
+                    index=0,
+                )
+
+            st.info(f"**Scenario Objective:** {selected_sc.description}")
+
+            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+            m_col1.metric(
+                "Launch Position",
+                f"[{selected_sc.initial_position[0]:.1f}, {selected_sc.initial_position[1]:.1f}, {selected_sc.initial_position[2]:.1f}] m",
+            )
+            final_wp = (
+                selected_sc.waypoints[-1] if selected_sc.waypoints else selected_sc.initial_position
+            )
+            m_col2.metric(
+                "Target Waypoint", f"[{final_wp[0]:.1f}, {final_wp[1]:.1f}, {final_wp[2]:.1f}] m"
+            )
+            m_col3.metric("Obstacles", f"{len(selected_sc.obstacles)} spheres")
+            m_col4.metric(
+                "Max Steps", f"{selected_sc.max_steps} ({selected_sc.max_steps * 0.05:.1f}s)"
+            )
+
+            if st.button("🚀 Execute Autonomous Flight Scenario", type="primary"):
+                with st.spinner(
+                    "Simulating closed-loop 6-DOF flight dynamics with Runge-Kutta 4..."
+                ):
+                    # Resolve controller
+                    controller_inst: Any = None
+                    if selected_ctrl_name == "Reference Flight Controller (Cascaded PID)":
+                        controller_inst = QuadrotorPIDController(dt=0.05)
+                    else:
+                        model_key = selected_ctrl_name.replace("Model: ", "")
+                        m_path = next((m for m in available_models if m.name == model_key), None)
+                        if m_path:
+                            try:
+                                chk_info = inspect_model_checkpoint(m_path)
+                                if chk_info.get("algorithm") == "sac":
+                                    from stable_baselines3 import SAC
+
+                                    controller_inst = SAC.load(str(m_path))
+                                else:
+                                    from stable_baselines3 import PPO
+
+                                    controller_inst = PPO.load(str(m_path))
+                            except Exception as exc:
+                                st.warning(
+                                    f"Failed to load checkpoint ({exc}). Falling back to Reference PID Controller."
+                                )
+                                controller_inst = QuadrotorPIDController(dt=0.05)
+
+                    runner = FlightScenarioRunner()
+                    res = runner.run_scenario(selected_sc, controller=controller_inst)
+                    st.session_state["scenario_result"] = res
+
+            if "scenario_result" in st.session_state:
+                res = st.session_state["scenario_result"]
+                metrics = res.metrics
+
+                # Outcome banner
+                outcome_cls = "arl-pill-green" if metrics.success else "arl-pill-red"
+                st.markdown(
+                    f"""
+                    <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 14px 18px; margin: 12px 0;">
+                        <span class="arl-pill {outcome_cls}">● OUTCOME: {metrics.outcome.upper()}</span>
+                        <span style="color: #cbd5e1; margin-left: 12px; font-size: 14px;">
+                            Completed in <b>{metrics.duration_steps}</b> steps (<b>{metrics.duration_seconds:.2f}s</b>) |
+                            Final Position Error: <b>{metrics.final_position_error:.3f} m</b> |
+                            Wall Time: <b>{metrics.execution_wall_time_ms:.1f} ms</b>
+                        </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # Metric cards
+                met1, met2, met3, met4, met5, met6 = st.columns(6)
+                met1.metric("RMS Pos Error", f"{metrics.rms_position_error:.3f} m")
+                met2.metric("RMS Vel Error", f"{metrics.rms_velocity_error:.3f} m/s")
+                met3.metric("Max Attitude Error", f"{metrics.max_attitude_error_deg:.1f}°")
+                met4.metric("Mean Angular Speed", f"{metrics.mean_angular_speed:.2f} rad/s")
+                met5.metric(
+                    "Min Obstacle Clearance",
+                    f"{metrics.min_obstacle_clearance:.2f} m"
+                    if math.isfinite(metrics.min_obstacle_clearance)
+                    else "N/A",
+                )
+                met6.metric("Control Effort", f"{metrics.control_effort:.1f}")
+
+                # Synchronized telemetry time-series
+                telemetry_fig = build_telemetry_time_series_figure(
+                    res.telemetry,
+                    title=f"Telemetry Time Series — {res.scenario_name} ({metrics.outcome.upper()})",
+                )
+                st.plotly_chart(telemetry_fig, width="stretch")
+
+                # Export buttons
+                exp_c1, exp_c2 = st.columns(2)
+                with exp_c1:
+                    json_str = json.dumps(res.to_dict(), indent=2)
+                    st.download_button(
+                        "📥 Download Scenario JSON Record",
+                        data=json_str,
+                        file_name=f"{res.scenario_name}_flight_record.json",
+                        mime="application/json",
+                    )
+                with exp_c2:
+                    csv_export_path = Path("artifacts") / f"{res.scenario_name}_telemetry.csv"
+                    res.export_telemetry_csv(csv_export_path)
+                    if csv_export_path.is_file():
+                        st.download_button(
+                            "📥 Download Telemetry CSV",
+                            data=csv_export_path.read_text(encoding="utf-8"),
+                            file_name=f"{res.scenario_name}_telemetry.csv",
+                            mime="text/csv",
+                        )
+
+        else:
+            st.markdown("### PPO & SAC Autonomous Flight Benchmarking Matrix")
+            st.markdown(
+                "Standardized comparative evaluation across **3-DOF Kinematic** and **6-DOF Rigid-Body** environments "
+                "with deterministic seed protocols and confidence intervals."
+            )
+
+            b_col1, b_col2, b_col3 = st.columns([1.2, 1.2, 1.2])
+            with b_col1:
+                benchmark_profile = st.selectbox(
+                    "Execution Profile:",
+                    options=["quick", "full"],
+                    index=0,
+                    help="'quick': Fast validation (2 episodes per combination, smoke testing). 'full': Multi-seed statistical benchmark.",
+                )
+            with b_col2:
+                deterministic_eval = st.checkbox(
+                    "Deterministic Policy Actions",
+                    value=True,
+                    help="Evaluate deterministic mean actions (True) or stochastic distribution actions (False).",
+                )
+            with b_col3:
+                train_missing = st.checkbox(
+                    "Train Smoke Baseline if Missing",
+                    value=False,
+                    help="Train a 512-step smoke policy if no pre-trained checkpoints exist.",
+                )
+
+            if st.button("📊 Run Autonomous Flight Benchmark Suite", type="primary"):
+                with st.spinner(f"Running flight benchmark suite ({benchmark_profile} profile)..."):
+                    suite = FlightBenchmarkSuite()
+                    report = suite.run_suite(
+                        profile=benchmark_profile,
+                        deterministic=deterministic_eval,
+                        train_if_missing=train_missing,
+                    )
+                    st.session_state["benchmark_report"] = report
+
+            if "benchmark_report" in st.session_state:
+                rep = st.session_state["benchmark_report"]
+                st.markdown(
+                    f"""
+                    <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 12px 18px; margin: 12px 0;">
+                        <span class="arl-pill arl-pill-cyan">● BENCHMARK REPORT: {rep.report_id}</span>
+                        <span style="color: #94a3b8; margin-left: 10px; font-size: 13px;">
+                            Profile: <b>{rep.profile.upper()}</b> | Combinations Evaluated: <b>{len(rep.combinations_evaluated)}</b> | UTC: <b>{rep.timestamp_utc[:19]}</b>
+                        </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # Benchmark bar chart
+                b_fig = build_flight_benchmark_figure(rep.combinations_evaluated)
+                st.plotly_chart(b_fig, width="stretch")
+
+                # Summary Table
+                table_rows = []
+                for c in rep.combinations_evaluated:
+                    ci_str = ""
+                    if "reward" in c.confidence_intervals:
+                        ci = c.confidence_intervals["reward"]
+                        if ci.get("ci95_lower") is not None and ci.get("ci95_upper") is not None:
+                            ci_str = f" [{ci['ci95_lower']:.1f}, {ci['ci95_upper']:.1f}]"
+
+                    table_rows.append(
+                        {
+                            "Algorithm": c.algorithm,
+                            "Dynamics Mode": c.mode,
+                            "Episodes": c.total_episodes,
+                            "Success Rate": f"{c.success_rate * 100:.1f}%",
+                            "Collision Rate": f"{c.collision_rate * 100:.1f}%",
+                            "Timeout Rate": f"{c.timeout_rate * 100:.1f}%",
+                            "Mean Reward": f"{c.mean_reward:.2f}{ci_str}",
+                            "Flight Duration": f"{c.mean_flight_duration_seconds:.2f}s",
+                            "Runtime": f"{c.evaluation_runtime_seconds:.2f}s",
+                        }
+                    )
+                st.table(table_rows)
+
+                # Export buttons
+                b_exp1, b_exp2 = st.columns(2)
+                with b_exp1:
+                    st.download_button(
+                        "📥 Download Benchmark JSON Report",
+                        data=json.dumps(rep.to_dict(), indent=2),
+                        file_name=f"{rep.report_id}.json",
+                        mime="application/json",
+                    )
+                with b_exp2:
+                    csv_path = Path("artifacts") / f"{rep.report_id}.csv"
+                    rep.export_csv(csv_path)
+                    if csv_path.is_file():
+                        st.download_button(
+                            "📥 Download Benchmark CSV Summary",
+                            data=csv_path.read_text(encoding="utf-8"),
+                            file_name=f"{rep.report_id}.csv",
+                            mime="text/csv",
+                        )
 
 
 if __name__ == "__main__":

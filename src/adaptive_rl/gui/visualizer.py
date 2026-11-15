@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from adaptive_rl.algorithms.registry import inspect_model_checkpoint
 from adaptive_rl.environments.drone import ObstacleSphere3D
@@ -2060,12 +2061,310 @@ def build_recovery_curve_figure(
     return fig
 
 
+def build_telemetry_time_series_figure(
+    telemetry_records: Sequence[Any],
+    title: str = "Synchronized Flight Telemetry Time Series",
+) -> go.Figure:
+    """Build synchronized 4-panel time series figure displaying real flight dynamics telemetry.
+
+    Panels:
+    1. Altitude & Position: Z (altitude), X, Y (m) vs Time
+    2. Speed & Linear Velocity: Total Speed, Vx, Vy, Vz (m/s) vs Time
+    3. Attitude Euler Angles: Roll, Pitch, Yaw (deg) vs Time
+    4. Mission Metrics: Distance to Target (m) & Min Obstacle Clearance (m) vs Time
+    """
+    fig = make_subplots(
+        rows=4,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        subplot_titles=(
+            "Position & Altitude (m)",
+            "Velocity & Speed (m/s)",
+            "Attitude Euler Angles (°)",
+            "Target Distance & Obstacle Clearance (m)",
+        ),
+    )
+
+    if not telemetry_records:
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#080c14",
+            plot_bgcolor="#080c14",
+            title=title,
+        )
+        return fig
+
+    times: List[float] = []
+    pos_x, pos_y, pos_z = [], [], []
+    vel_x, vel_y, vel_z, speeds = [], [], [], []
+    rolls, pitches, yaws = [], [], []
+    target_dists: List[float] = []
+    clearances: List[Optional[float]] = []
+
+    for item in telemetry_records:
+        d = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        t_sec = float(d.get("time_sec", d.get("step", 0) * 0.05))
+        times.append(t_sec)
+
+        p = d.get("position", [0.0, 0.0, 0.0])
+        pos_x.append(float(p[0]))
+        pos_y.append(float(p[1]))
+        pos_z.append(float(p[2]))
+
+        v = d.get("velocity", [0.0, 0.0, 0.0])
+        vx, vy, vz = float(v[0]), float(v[1]), float(v[2])
+        vel_x.append(vx)
+        vel_y.append(vy)
+        vel_z.append(vz)
+        speeds.append(float(d.get("speed", math.sqrt(vx * vx + vy * vy + vz * vz))))
+
+        euler = d.get("euler_angles_deg")
+        if euler is not None:
+            rolls.append(float(euler[0]))
+            pitches.append(float(euler[1]))
+            yaws.append(float(euler[2]))
+        else:
+            rolls.append(0.0)
+            pitches.append(0.0)
+            yaws.append(0.0)
+
+        target_dists.append(float(d.get("distance_to_target", 0.0)))
+        obs_d = d.get("min_obstacle_distance")
+        if obs_d is not None and math.isfinite(float(obs_d)) and float(obs_d) >= 0.0:
+            clearances.append(float(obs_d))
+        else:
+            clearances.append(None)
+
+    # Panel 1: Position
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=pos_z,
+            mode="lines",
+            name="Altitude (Z)",
+            line=dict(color="#00f2fe", width=2.5),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=pos_x,
+            mode="lines",
+            name="Pos X",
+            line=dict(color="#94a3b8", width=1.5, dash="dot"),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=pos_y,
+            mode="lines",
+            name="Pos Y",
+            line=dict(color="#cbd5e1", width=1.5, dash="dash"),
+        ),
+        row=1,
+        col=1,
+    )
+
+    # Panel 2: Velocity
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=speeds,
+            mode="lines",
+            name="Speed ||v||",
+            line=dict(color="#38bdf8", width=2.5),
+        ),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=times, y=vel_z, mode="lines", name="Vz (Climb)", line=dict(color="#10b981", width=1.5)
+        ),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=vel_x,
+            mode="lines",
+            name="Vx",
+            line=dict(color="#64748b", width=1.0, dash="dot"),
+        ),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=vel_y,
+            mode="lines",
+            name="Vy",
+            line=dict(color="#475569", width=1.0, dash="dash"),
+        ),
+        row=2,
+        col=1,
+    )
+
+    # Panel 3: Euler Angles
+    fig.add_trace(
+        go.Scatter(
+            x=times, y=rolls, mode="lines", name="Roll φ (°)", line=dict(color="#f59e0b", width=2)
+        ),
+        row=3,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=pitches,
+            mode="lines",
+            name="Pitch θ (°)",
+            line=dict(color="#ef4444", width=2),
+        ),
+        row=3,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=yaws,
+            mode="lines",
+            name="Yaw ψ (°)",
+            line=dict(color="#a855f7", width=1.5, dash="dash"),
+        ),
+        row=3,
+        col=1,
+    )
+
+    # Panel 4: Distance & Clearance
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=target_dists,
+            mode="lines",
+            name="Goal Dist (m)",
+            line=dict(color="#22c55e", width=2),
+        ),
+        row=4,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=clearances,
+            mode="lines",
+            name="Obs Clearance (m)",
+            line=dict(color="#eab308", width=1.5, dash="dot"),
+        ),
+        row=4,
+        col=1,
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#080c14",
+        plot_bgcolor="#0a101f",
+        height=720,
+        title=dict(text=title, font=dict(size=16, color="#f1f5f9")),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1.0),
+        margin=dict(l=50, r=30, t=80, b=40),
+    )
+    fig.update_xaxes(title_text="Flight Time (seconds)", row=4, col=1)
+    return fig
+
+
+def build_flight_benchmark_figure(
+    combinations_data: Sequence[Any],
+    title: str = "PPO & SAC Autonomous Flight Benchmarks (3-DOF vs 6-DOF)",
+) -> go.Figure:
+    """Build grouped bar chart comparing performance across PPO/SAC and 3-DOF/6-DOF configurations."""
+    fig = go.Figure()
+    if not combinations_data:
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#080c14",
+            plot_bgcolor="#080c14",
+            title=title,
+        )
+        return fig
+
+    labels: List[str] = []
+    success_rates: List[float] = []
+    collision_rates: List[float] = []
+    timeout_rates: List[float] = []
+
+    for item in combinations_data:
+        d = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        algo = str(d.get("algorithm", "ALGO"))
+        env_mode = str(d.get("mode", "3-DOF"))
+        label = f"{algo} ({env_mode})"
+        labels.append(label)
+
+        success_rates.append(float(d.get("success_rate", 0.0)) * 100.0)
+        collision_rates.append(float(d.get("collision_rate", 0.0)) * 100.0)
+        timeout_rates.append(float(d.get("timeout_rate", 0.0)) * 100.0)
+
+    fig.add_trace(
+        go.Bar(
+            name="Success Rate (%)",
+            x=labels,
+            y=success_rates,
+            marker_color="#10b981",
+            text=[f"{v:.1f}%" for v in success_rates],
+            textposition="auto",
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Collision Rate (%)",
+            x=labels,
+            y=collision_rates,
+            marker_color="#ef4444",
+            text=[f"{v:.1f}%" for v in collision_rates],
+            textposition="auto",
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Timeout Rate (%)",
+            x=labels,
+            y=timeout_rates,
+            marker_color="#f59e0b",
+            text=[f"{v:.1f}%" for v in timeout_rates],
+            textposition="auto",
+        )
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#080c14",
+        plot_bgcolor="#0a101f",
+        barmode="group",
+        title=dict(text=title, font=dict(size=16, color="#f1f5f9")),
+        yaxis=dict(title="Rate (%)", range=[0, 105]),
+        xaxis=dict(title="Evaluated Configuration"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+        margin=dict(l=40, r=30, t=70, b=40),
+    )
+    return fig
+
+
 __all__ = [
     "build_arena_3d_figure",
     "build_comparison_bar_chart",
     "build_density_experiment_figure",
     "build_distribution_shift_trajectory_figure",
+    "build_flight_benchmark_figure",
     "build_recovery_curve_figure",
+    "build_telemetry_time_series_figure",
     "build_training_curve_figure",
     "compute_camera_preset",
     "compute_quadrotor_3d_geometry",

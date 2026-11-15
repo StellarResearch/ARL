@@ -33,6 +33,12 @@ _ABLATION_EXPORTS = {
     "get_ablation_variant",
     "run_reward_ablation_experiment",
 }
+_FLIGHT_BENCHMARK_EXPORTS = {
+    "BenchmarkCombinationResult",
+    "BenchmarkSuiteReport",
+    "FlightBenchmarkSuite",
+    "SUPPORTED_COMBINATIONS",
+}
 
 
 def __getattr__(name: str) -> Any:
@@ -40,10 +46,16 @@ def __getattr__(name: str) -> Any:
         return getattr(import_module(".comparison", __name__), name)
     if name in _ABLATION_EXPORTS:
         return getattr(import_module(".ablation", __name__), name)
+    if name in _FLIGHT_BENCHMARK_EXPORTS:
+        return getattr(import_module(".flight_benchmark", __name__), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
+    "BenchmarkCombinationResult",
+    "BenchmarkSuiteReport",
+    "FlightBenchmarkSuite",
+    "SUPPORTED_COMBINATIONS",
     "REWARD_ABLATION_VARIANTS",
     "ConvergenceEvaluationCallback",
     "RewardAblationVariant",

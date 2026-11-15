@@ -2007,5 +2007,165 @@ def benchmark_lidar(
         console.print(f"{kind}: {location}")
 
 
+@app.command(name="validate-flight")
+def validate_flight(
+    scenario: str = typer.Option(
+        "all",
+        "--scenario",
+        "-s",
+        help="Scenario name to execute, or 'all' for complete 10-scenario suite",
+    ),
+    output_dir: Path = typer.Option(
+        Path("artifacts/flight_records"),
+        "--output-dir",
+        "-o",
+        help="Output directory for flight records",
+    ),
+    export_csv: bool = typer.Option(True, "--csv/--no-csv", help="Export summary metrics to CSV"),
+) -> None:
+    """Execute reproducible 6-DOF autonomous flight validation scenarios using Reference PID Controller."""
+    import math
+    import time
+
+    from adaptive_rl.controllers.pid import QuadrotorPIDController
+    from adaptive_rl.flight_testing import (
+        FlightRecorder,
+        FlightScenarioRunner,
+        get_standard_flight_scenarios,
+    )
+
+    scenarios = get_standard_flight_scenarios()
+    clean_target = scenario.strip().lower()
+
+    if clean_target != "all":
+        selected = [sc for sc in scenarios if sc.name.lower() == clean_target]
+        if not selected:
+            valid_names = ", ".join(sc.name for sc in scenarios)
+            console.print(
+                f"[bold red]Unknown scenario '{scenario}'.[/bold red] Valid options: {valid_names}, all"
+            )
+            raise typer.Exit(code=1)
+        target_scenarios = selected
+    else:
+        target_scenarios = scenarios
+
+    console.print(
+        f"[bold cyan]Running {len(target_scenarios)} autonomous flight scenario(s)...[/bold cyan]"
+    )
+
+    runner = FlightScenarioRunner()
+    ctrl = QuadrotorPIDController(dt=0.05)
+    results = runner.run_all_scenarios(controller=ctrl, scenarios=target_scenarios)
+
+    # Display Rich Results Table
+    table = Table(title="Autonomous Flight Validation Results")
+    table.add_column("Scenario", style="cyan")
+    table.add_column("Outcome", justify="center")
+    table.add_column("Steps", justify="right")
+    table.add_column("Duration", justify="right")
+    table.add_column("Final Err", justify="right")
+    table.add_column("RMS Pos Err", justify="right")
+    table.add_column("Min Clearance", justify="right")
+    table.add_column("Effort", justify="right")
+
+    for r in results:
+        m = r.metrics
+        status_style = "bold green" if m.success else "bold red"
+        table.add_row(
+            m.scenario_name,
+            f"[{status_style}]{m.outcome.upper()}[/{status_style}]",
+            str(m.duration_steps),
+            f"{m.duration_seconds:.2f}s",
+            f"{m.final_position_error:.3f}m",
+            f"{m.rms_position_error:.3f}m",
+            f"{m.min_obstacle_clearance:.2f}m"
+            if math.isfinite(m.min_obstacle_clearance)
+            else "N/A",
+            f"{m.control_effort:.1f}",
+        )
+
+    console.print(table)
+
+    # Save Cryptographic Flight Record
+    recorder = FlightRecorder(output_dir=output_dir)
+    record = recorder.create_record(
+        experiment_id=f"flight_val_{int(time.time())}",
+        physics_params=runner.env.dynamics.physical_dimensions,
+        scenario_results=results,
+        algorithm_name="reference_pid_controller",
+    )
+    json_path = recorder.save_record_json(record)
+    console.print(f"[bold green]✓ Flight record saved:[/bold green] {json_path}")
+    console.print(f"  [dim]SHA-256 Fingerprint: {record.config_fingerprint}[/dim]")
+
+    if export_csv:
+        csv_path = recorder.save_summary_csv(record)
+        console.print(f"[bold green]✓ CSV summary saved:[/bold green] {csv_path}")
+
+
+@app.command(name="benchmark-flight")
+def benchmark_flight(
+    profile: str = typer.Option(
+        "quick", "--profile", "-p", help="Benchmark profile: 'quick' or 'full'"
+    ),
+    output_dir: Path = typer.Option(
+        Path("artifacts/benchmarks"), "--output-dir", "-o", help="Output directory"
+    ),
+    train_missing: bool = typer.Option(
+        False, "--train-missing", help="Train 512-step smoke policy if checkpoints are missing"
+    ),
+    deterministic: bool = typer.Option(
+        True, "--deterministic/--stochastic", help="Policy evaluation action mode"
+    ),
+) -> None:
+    """Execute standardized PPO & SAC comparative flight benchmarks across 3-DOF and 6-DOF."""
+    from adaptive_rl.benchmarking.flight_benchmark import FlightBenchmarkSuite
+
+    clean_profile = profile.strip().lower()
+    if clean_profile not in ("quick", "full"):
+        console.print(
+            f"[bold red]Invalid profile '{profile}'.[/bold red] Choose 'quick' or 'full'."
+        )
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[bold cyan]Running Flight Benchmark Suite (Profile: {clean_profile.upper()})...[/bold cyan]"
+    )
+    suite = FlightBenchmarkSuite(output_dir=output_dir)
+    report = suite.run_suite(
+        profile=clean_profile,
+        deterministic=deterministic,
+        train_if_missing=train_missing,
+    )
+
+    table = Table(title=f"Flight Benchmark Results ({clean_profile.upper()} Profile)")
+    table.add_column("Algorithm", style="cyan")
+    table.add_column("Dynamics Mode", style="magenta")
+    table.add_column("Episodes", justify="right")
+    table.add_column("Success Rate", justify="right")
+    table.add_column("Collision Rate", justify="right")
+    table.add_column("Mean Reward", justify="right")
+    table.add_column("Mean Duration", justify="right")
+    table.add_column("Runtime", justify="right")
+
+    for c in report.combinations_evaluated:
+        table.add_row(
+            c.algorithm,
+            c.mode,
+            str(c.total_episodes),
+            f"{c.success_rate * 100:.1f}%",
+            f"{c.collision_rate * 100:.1f}%",
+            f"{c.mean_reward:.2f}",
+            f"{c.mean_flight_duration_seconds:.2f}s",
+            f"{c.evaluation_runtime_seconds:.2f}s",
+        )
+
+    console.print(table)
+    rep_json = report.export_json(output_dir / f"{report.report_id}.json")
+    rep_csv = report.export_csv(output_dir / f"{report.report_id}.csv")
+    console.print(f"[bold green]✓ Benchmark JSON report:[/bold green] {rep_json}")
+    console.print(f"[bold green]✓ Benchmark CSV summary:[/bold green] {rep_csv}")
+
+
 if __name__ == "__main__":
     app()

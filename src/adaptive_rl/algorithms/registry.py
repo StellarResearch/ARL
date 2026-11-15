@@ -281,6 +281,30 @@ def inspect_model_checkpoint(path: str | Path) -> Dict[str, Any]:
         with zipfile.ZipFile(model_path, "r") as z:
             namelist = z.namelist()
 
+            # Security audit: validate archive entries against Zip Slip path traversal
+            for entry_name in namelist:
+                if (
+                    ".." in entry_name
+                    or entry_name.startswith("/")
+                    or entry_name.startswith("\\")
+                    or entry_name.startswith("../")
+                ):
+                    return {
+                        "algorithm": None,
+                        "obs_shape": None,
+                        "action_shape": None,
+                        "compatible_env": None,
+                        "compatibility_status": "incompatible",
+                        "environment_id": None,
+                        "config_fingerprint": None,
+                        "metadata_source": None,
+                        "valid": False,
+                        "error": (
+                            f"Security rejection: archive '{model_path.name}' contains "
+                            f"prohibited path-traversal entry '{entry_name}'"
+                        ),
+                    }
+
             # Check if archive contains embedded arl_metadata.json
             if "arl_metadata.json" in namelist:
                 try:
