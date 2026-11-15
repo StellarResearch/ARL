@@ -113,3 +113,77 @@ def test_complementary_filter_position_altitude_tracking() -> None:
         est = filt.update(meas, dt=0.05, altitude_ref=5.0, true_state=true_state)
 
     assert math.isclose(est.position[2], 5.0, abs_tol=0.2)
+
+
+def test_moving_aircraft_nonzero_inertial_acceleration_no_aliasing() -> None:
+    """Pre-integration state snapshotting ensures moving aircraft measures nonzero inertial acceleration."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioDefinition,
+        FlightScenarioRunner,
+    )
+
+    runner = FlightScenarioRunner()
+    sc = FlightScenarioDefinition(
+        name="accel_test",
+        description="Verify nonzero acceleration without state object aliasing",
+        initial_position=np.array([5.0, 5.0, 5.0]),
+        initial_velocity=np.zeros(3),
+        waypoints=[np.array([10.0, 5.0, 5.0])],
+        max_steps=15,
+        enable_sensor_estimation=True,
+        sensor_seed=42,
+    )
+
+    result = runner.run_scenario(sc)
+    assert len(result.telemetry) == 15
+
+    # During the first few steps while accelerating towards x=10, velocity changes
+    # and estimated states must be recorded
+    v_changes = [
+        float(np.linalg.norm(result.telemetry[i].velocity - result.telemetry[i - 1].velocity))
+        for i in range(1, len(result.telemetry))
+    ]
+    assert max(v_changes) > 1e-4
+
+    # Verify that telemetry has valid estimation error fields
+    for t in result.telemetry:
+        assert t.estimated_position is not None
+        assert t.estimated_velocity is not None
+        assert t.position_estimation_error is not None
+        assert t.attitude_estimation_error_deg is not None
+
+
+def test_imu_rotational_body_frame_gyroscope() -> None:
+    """Gyroscope correctly measures body-frame angular rate under arbitrary attitude orientation."""
+    q_pitch45 = euler_to_quaternion(roll=0.0, pitch=math.radians(45.0), yaw=0.0)
+    omega_body = np.array([0.5, -0.3, 1.2])
+
+    imu = IMUSensor(gravity=9.81, accel_noise_std=0.0, gyro_noise_std=0.0, bias_drift_std=0.0)
+    state = DroneState6DOF(
+        position=np.array([0.0, 0.0, 5.0]),
+        velocity=np.zeros(3),
+        quaternion=q_pitch45,
+        angular_velocity=omega_body,
+    )
+
+    meas = imu.measure(state, inertial_acceleration=np.zeros(3), dt=0.01)
+    np.testing.assert_allclose(meas.gyroscope, omega_body, atol=1e-5)
+
+
+def test_sensor_in_the_loop_flight_execution() -> None:
+    """Closed loop flight driven entirely by estimated state successfully tracks waypoints."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioRunner,
+        get_scenario,
+    )
+
+    runner = FlightScenarioRunner()
+    sc = get_scenario("sensor_estimated_navigation")
+    assert sc.sensor_in_the_loop is True
+    assert sc.enable_sensor_estimation is True
+
+    result = runner.run_scenario(sc)
+    assert result.metrics.outcome == "success"
+    assert result.metrics.final_position_error <= sc.target_radius
+    final_speed = float(np.linalg.norm(result.telemetry[-1].velocity))
+    assert final_speed <= sc.settling_velocity_threshold

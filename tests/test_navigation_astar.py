@@ -303,3 +303,48 @@ def test_planner_multiple_resolutions() -> None:
         for i in range(len(res.waypoints) - 1):
             valid, _ = planner.is_segment_valid(res.waypoints[i], res.waypoints[i + 1], [obs])
             assert valid is True
+
+
+def test_planner_arbitrary_non_grid_aligned_coordinates() -> None:
+    """Planner handles arbitrary non-integer, non-grid-aligned coordinates across resolutions."""
+    for res_val in [0.5, 1.0, 2.0]:
+        planner = AStarPlanner3D(
+            bounds=(20.0, 20.0, 10.0), resolution=res_val, vehicle_radius=0.5, safety_margin=0.2
+        )
+        start = np.array([2.37, 7.82, 4.19])
+        goal = np.array([17.63, 8.44, 5.71])
+        obs = ObstacleSphere3D(center=np.array([10.0, 8.0, 5.0]), radius=2.2)
+
+        res = planner.plan(start, goal, [obs])
+        assert res.status == "SUCCESS"
+        assert len(res.waypoints) >= 2
+        np.testing.assert_allclose(res.waypoints[0], start, atol=1e-5)
+        np.testing.assert_allclose(res.waypoints[-1], goal, atol=1e-5)
+
+        # Invariant: Every consecutive segment is strictly collision-free
+        for i in range(len(res.waypoints) - 1):
+            valid, clear = planner.is_segment_valid(res.waypoints[i], res.waypoints[i + 1], [obs])
+            assert valid is True
+            assert clear >= 0.0
+
+
+def test_planner_non_grid_start_nearest_node_blocked_finds_neighbor() -> None:
+    """When the nearest rounded grid node is blocked, planner connects through a collision-free neighbor."""
+    planner = AStarPlanner3D(
+        bounds=(20.0, 20.0, 10.0), resolution=2.0, vehicle_radius=0.4, safety_margin=0.1
+    )
+    # Grid resolution is 2.0. Base node for (4.8, 4.8, 4.0) is (4.0, 4.0, 4.0).
+    # Place obstacle at (4.0, 4.0, 4.0) with radius 0.5 (inflated radius 1.0).
+    # Node (4.0, 4.0, 4.0) is blocked.
+    # Start (4.8, 4.8, 4.0) is at distance sqrt(0.8^2 + 0.8^2) = 1.131 > 1.0 (valid).
+    obs = ObstacleSphere3D(center=np.array([4.0, 4.0, 4.0]), radius=0.5)
+    start = np.array([4.8, 4.8, 4.0])
+    goal = np.array([12.0, 12.0, 4.0])
+
+    res = planner.plan(start, goal, [obs])
+    assert res.status == "SUCCESS"
+    np.testing.assert_allclose(res.waypoints[0], start, atol=1e-5)
+    np.testing.assert_allclose(res.waypoints[-1], goal, atol=1e-5)
+    for i in range(len(res.waypoints) - 1):
+        valid, _ = planner.is_segment_valid(res.waypoints[i], res.waypoints[i + 1], [obs])
+        assert valid is True

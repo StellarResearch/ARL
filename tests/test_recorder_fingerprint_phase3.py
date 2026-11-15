@@ -187,3 +187,97 @@ def test_small_damping_and_inertia_float_precision() -> None:
     d = {"angular_damping": 1.25e-6, "mass": 1.0}
     serialized = canonical_json_dumps(d)
     assert "1.25e-06" in serialized or "0.00000125" in serialized or "1.25e-6" in serialized
+
+
+def test_sub_microgram_mass_distinct_fingerprints() -> None:
+    """Distinct floating-point mass differences at sub-microgram scale (1e-9 kg) produce distinct digests."""
+    d1 = {"mass": 1.0}
+    d2 = {"mass": 1.000000001}
+    fp1 = compute_config_fingerprint(d1)
+    fp2 = compute_config_fingerprint(d2)
+    assert fp1 != fp2
+
+    # Multiple serialization passes remain strictly deterministic
+    assert compute_config_fingerprint(d1) == fp1
+    assert compute_config_fingerprint(d2) == fp2
+
+
+def test_sub_millimeter_obstacle_position_distinct_fingerprints() -> None:
+    """Sub-millimeter geometry shifts produce distinct cryptographic fingerprints."""
+    from adaptive_rl.environments.drone import ObstacleSphere3D
+    from adaptive_rl.flight_testing.scenarios import FlightScenarioDefinition
+
+    sc1 = FlightScenarioDefinition(
+        name="obs_sc",
+        description="Obstacle test",
+        initial_position=np.array([0.0, 0.0, 0.0]),
+        waypoints=[np.array([10.0, 10.0, 5.0])],
+        obstacles=[ObstacleSphere3D(center=np.array([5.0, 5.0, 5.0]), radius=2.0)],
+    )
+
+    sc2 = FlightScenarioDefinition(
+        name="obs_sc",
+        description="Obstacle test",
+        initial_position=np.array([0.0, 0.0, 0.0]),
+        waypoints=[np.array([10.0, 10.0, 5.0])],
+        obstacles=[
+            ObstacleSphere3D(center=np.array([5.00005, 5.0, 5.0]), radius=2.0)
+        ],  # 50 microns shift
+    )
+
+    fp1 = compute_config_fingerprint(sc1.to_dict())
+    fp2 = compute_config_fingerprint(sc2.to_dict())
+    assert fp1 != fp2
+
+
+def test_nan_inf_deterministic_handling() -> None:
+    """Non-finite floats (NaN, Inf, -Inf) are deterministically serialized and hashed."""
+    d_nan = {"val": float("nan")}
+    d_inf = {"val": float("inf")}
+    d_neginf = {"val": float("-inf")}
+
+    s_nan1 = canonical_json_dumps(d_nan)
+    s_nan2 = canonical_json_dumps(d_nan)
+    assert s_nan1 == s_nan2
+    assert '"val":"NaN"' in s_nan1
+
+    s_inf = canonical_json_dumps(d_inf)
+    assert '"val":"Infinity"' in s_inf
+
+    s_neginf = canonical_json_dumps(d_neginf)
+    assert '"val":"-Infinity"' in s_neginf
+
+
+def test_scenario_provenance_invalidation() -> None:
+    """Changing waypoint, obstacle, or controller parameter invalidates scenario fingerprint."""
+    from adaptive_rl.environments.drone import ObstacleSphere3D
+    from adaptive_rl.flight_testing.scenarios import FlightScenarioDefinition
+
+    base_sc = FlightScenarioDefinition(
+        name="base_sc",
+        description="Base scenario",
+        initial_position=np.array([1.0, 2.0, 3.0]),
+        waypoints=[np.array([10.0, 10.0, 5.0]), np.array([20.0, 20.0, 8.0])],
+        obstacles=[ObstacleSphere3D(center=np.array([5.0, 5.0, 4.0]), radius=1.5)],
+    )
+    fp_base = compute_config_fingerprint(base_sc.to_dict())
+
+    # 1. Waypoint shift
+    alt_wp = FlightScenarioDefinition(
+        name="base_sc",
+        description="Base scenario",
+        initial_position=np.array([1.0, 2.0, 3.0]),
+        waypoints=[np.array([10.0, 10.0, 5.0]), np.array([20.0, 20.0, 8.0001])],
+        obstacles=[ObstacleSphere3D(center=np.array([5.0, 5.0, 4.0]), radius=1.5)],
+    )
+    assert compute_config_fingerprint(alt_wp.to_dict()) != fp_base
+
+    # 2. Obstacle shift
+    alt_obs = FlightScenarioDefinition(
+        name="base_sc",
+        description="Base scenario",
+        initial_position=np.array([1.0, 2.0, 3.0]),
+        waypoints=[np.array([10.0, 10.0, 5.0]), np.array([20.0, 20.0, 8.0])],
+        obstacles=[ObstacleSphere3D(center=np.array([5.0, 5.0, 4.0001]), radius=1.5)],
+    )
+    assert compute_config_fingerprint(alt_obs.to_dict()) != fp_base

@@ -240,3 +240,29 @@ def test_gym_env_domain_randomization_on_reset() -> None:
     _, info2 = env.reset(seed=202)
     mass2 = env.dynamics.mass
     assert mass1 != mass2
+
+
+def test_motor_coupled_velocity_integration_fidelity() -> None:
+    """Coupled stage-wise RK4 integration tracks exact analytical velocity integral across time steps and tau."""
+    for tau in [0.02, 0.04, 0.08]:
+        for dt in [0.005, 0.01, 0.02]:
+            dyn = DroneDynamics6DOF(
+                mass=1.0,
+                dt=dt,
+                substeps=1,
+                enable_motor_dynamics=True,
+                motor_time_constant=tau,
+                linear_damping=0.0,
+            )
+            dyn.reset(position=np.array([10.0, 10.0, 10.0]), velocity=np.zeros(3))
+            hover_f = dyn.hover_thrust_per_motor
+            cmd_f = 4.0
+            cmd = np.array([cmd_f, cmd_f, cmd_f, cmd_f])
+            dyn.step_rk4(cmd)
+
+            v_sim = dyn.state.velocity[2]
+            delta_f = 4.0 * (cmd_f - hover_f)
+            # Analytical v(dt) = (delta_F / m) * (dt + tau * (exp(-dt/tau) - 1))
+            v_analytical = (delta_f / 1.0) * (dt + tau * (math.exp(-dt / tau) - 1.0))
+            rel_err = abs(v_sim - v_analytical) / v_analytical
+            assert rel_err < 1e-3

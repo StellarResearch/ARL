@@ -568,28 +568,33 @@ class DroneDynamics6DOF:
         omega = self.state.angular_velocity.copy()
 
         for _ in range(self.substeps):
-            # Integrate actuator first-order response if enabled (exact analytical step response)
+            f_0 = self.actual_motor_thrusts.copy()
+
+            # Continuous coupled actuator integration across RK4 evaluation stages
             if self.enable_motor_dynamics and self.motor_time_constant > 1e-9:
-                alpha = math.exp(-h / self.motor_time_constant)
-                self.actual_motor_thrusts = self.actual_motor_thrusts * alpha + f_cmd * (
-                    1.0 - alpha
+                tau = self.motor_time_constant
+                alpha_half = math.exp(-0.5 * h / tau)
+                alpha_full = math.exp(-h / tau)
+
+                f_k1 = f_0
+                f_k2 = np.clip(
+                    f_0 * alpha_half + f_cmd * (1.0 - alpha_half), 0.0, self.max_thrust_per_motor
                 )
-                self.actual_motor_thrusts = np.clip(
-                    self.actual_motor_thrusts, 0.0, self.max_thrust_per_motor
+                f_k3 = f_k2
+                f_k4 = np.clip(
+                    f_0 * alpha_full + f_cmd * (1.0 - alpha_full), 0.0, self.max_thrust_per_motor
                 )
+                self.actual_motor_thrusts = f_k4.copy()
             else:
-                self.actual_motor_thrusts = np.clip(f_cmd, 0.0, self.max_thrust_per_motor)
+                f_clipped = np.clip(f_cmd, 0.0, self.max_thrust_per_motor)
+                f_k1 = f_k2 = f_k3 = f_k4 = f_clipped
+                self.actual_motor_thrusts = f_clipped.copy()
 
-            total_thrust, torques = self.compute_forces_and_torques(
-                self.actual_motor_thrusts, altitude=pos[2]
-            )
+            # k1 (at t = 0)
+            t1, tau1 = self.compute_forces_and_torques(f_k1, altitude=pos[2])
+            k1_p, k1_v, k1_q, k1_w = self._state_derivatives(pos, vel, quat, omega, t1, tau1)
 
-            # k1
-            k1_p, k1_v, k1_q, k1_w = self._state_derivatives(
-                pos, vel, quat, omega, total_thrust, torques
-            )
-
-            # k2
+            # k2 (at t = h/2)
             p2 = pos + 0.5 * h * k1_p
             v2 = vel + 0.5 * h * k1_v
             q2 = quat + 0.5 * h * k1_q
@@ -597,9 +602,10 @@ class DroneDynamics6DOF:
             if q2_norm > 1e-12:
                 q2 /= q2_norm
             w2 = omega + 0.5 * h * k1_w
-            k2_p, k2_v, k2_q, k2_w = self._state_derivatives(p2, v2, q2, w2, total_thrust, torques)
+            t2, tau2 = self.compute_forces_and_torques(f_k2, altitude=p2[2])
+            k2_p, k2_v, k2_q, k2_w = self._state_derivatives(p2, v2, q2, w2, t2, tau2)
 
-            # k3
+            # k3 (at t = h/2)
             p3 = pos + 0.5 * h * k2_p
             v3 = vel + 0.5 * h * k2_v
             q3 = quat + 0.5 * h * k2_q
@@ -607,9 +613,10 @@ class DroneDynamics6DOF:
             if q3_norm > 1e-12:
                 q3 /= q3_norm
             w3 = omega + 0.5 * h * k2_w
-            k3_p, k3_v, k3_q, k3_w = self._state_derivatives(p3, v3, q3, w3, total_thrust, torques)
+            t3, tau3 = self.compute_forces_and_torques(f_k3, altitude=p3[2])
+            k3_p, k3_v, k3_q, k3_w = self._state_derivatives(p3, v3, q3, w3, t3, tau3)
 
-            # k4
+            # k4 (at t = h)
             p4 = pos + h * k3_p
             v4 = vel + h * k3_v
             q4 = quat + h * k3_q
@@ -617,7 +624,8 @@ class DroneDynamics6DOF:
             if q4_norm > 1e-12:
                 q4 /= q4_norm
             w4 = omega + h * k3_w
-            k4_p, k4_v, k4_q, k4_w = self._state_derivatives(p4, v4, q4, w4, total_thrust, torques)
+            t4, tau4 = self.compute_forces_and_torques(f_k4, altitude=p4[2])
+            k4_p, k4_v, k4_q, k4_w = self._state_derivatives(p4, v4, q4, w4, t4, tau4)
 
             # RK4 update
             pos += (h / 6.0) * (k1_p + 2.0 * k2_p + 2.0 * k3_p + k4_p)
@@ -950,9 +958,9 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         act_arr = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
         return (act_arr + 1.0) * 0.5 * self.dynamics.max_thrust_per_motor
 
-    def _get_obs(self) -> np.ndarray:
+    def _get_obs(self, custom_state: Optional[DroneState6DOF] = None) -> np.ndarray:
         bx, by, bz = self.bounds
-        state = self.dynamics.state
+        state = custom_state if custom_state is not None else self.dynamics.state
 
         norm_pos = [state.position[0] / bx, state.position[1] / by, state.position[2] / bz]
         norm_vel = [

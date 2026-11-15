@@ -168,3 +168,54 @@ def test_collision_precedence_over_max_steps() -> None:
     assert result.metrics.outcome in ("collision", "boundary_breach")
     assert result.metrics.outcome != "max_steps"
     assert result.metrics.success is False
+
+
+def test_skipping_intermediate_waypoints_fails_mission() -> None:
+    """A vehicle located at the final coordinate without completing preceding waypoints is not SUCCESS."""
+
+    # Scenario: Start at (5, 5, 3), must visit W0=(20, 20, 10), then W1=(5, 5, 3).
+    # Stationary controller stays at (5, 5, 3). It never completed W0!
+    class HoverInPlaceController:
+        def compute_action(
+            self, state: Any, target_position: np.ndarray, target_velocity: np.ndarray, dt: float
+        ) -> Tuple[np.ndarray, Dict[str, Any]]:
+            # Zero normalized action = hover thrust
+            return np.zeros(4, dtype=np.float32), {}
+
+    sc = FlightScenarioDefinition(
+        name="waypoint_skipping_test",
+        description="Verify all waypoints in sequence must be visited",
+        initial_position=np.array([5.0, 5.0, 3.0]),
+        waypoints=[
+            np.array([20.0, 20.0, 10.0]),  # Distant waypoint that must be visited first
+            np.array([5.0, 5.0, 3.0]),  # Final destination matching start coordinate
+        ],
+        max_steps=30,
+        target_radius=1.2,
+    )
+
+    runner = FlightScenarioRunner()
+    result = runner.run_scenario(sc, controller=HoverInPlaceController())
+
+    # Distance to final waypoint is 0, but W0 was never completed: must NOT be success!
+    assert result.metrics.outcome != "success"
+    assert result.metrics.outcome == "max_steps"
+    assert result.metrics.success is False
+
+
+def test_explicit_timeout_classification() -> None:
+    """When a scenario has max_duration_seconds and time expires before completion, outcome is timeout."""
+    sc = FlightScenarioDefinition(
+        name="timeout_test",
+        description="Verify explicit timeout classification",
+        initial_position=np.array([5.0, 5.0, 5.0]),
+        waypoints=[np.array([25.0, 25.0, 10.0])],
+        max_steps=200,
+        max_duration_seconds=0.5,  # Times out after 10 steps (0.5s at 0.05s/step)
+    )
+
+    runner = FlightScenarioRunner()
+    result = runner.run_scenario(sc)
+
+    assert result.metrics.outcome == "timeout"
+    assert result.metrics.success is False

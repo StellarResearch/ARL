@@ -48,29 +48,38 @@ logger = logging.getLogger(__name__)
 
 
 def canonical_json_dumps(data: Any) -> str:
-    """Serialize dictionary or primitive to canonical JSON with sorted keys and stable float formatting.
+    """Serialize dictionary or primitive to canonical JSON with sorted keys and exact IEEE 754 float formatting.
 
-    Preserves 6 decimal places for standard values while preserving 12 significant digits for small
-    physical parameters (< 1e-5, such as damping or inertia terms) to prevent loss of precision.
+    Preserves full finite floating-point precision without lossy rounding, ensuring distinct
+    scientific configurations (such as sub-microgram mass or sub-millimeter geometry differences)
+    produce distinct cryptographic digests.
     """
 
     def _sanitize(val: Any) -> Any:
-        if isinstance(val, (int, bool, str)) or val is None:
+        if isinstance(val, bool) or val is None:
             return val
-        if isinstance(val, float):
-            if not math.isfinite(val):
-                return str(val)
-            if abs(val) < 1e-5 and val != 0.0:
-                return round(val, 12)
-            return round(val, 6)
+        if isinstance(val, (int, np.integer)):
+            return int(val)
+        if isinstance(val, (float, np.floating)):
+            f_val = float(val)
+            if not math.isfinite(f_val):
+                if math.isnan(f_val):
+                    return "NaN"
+                return "Infinity" if f_val > 0 else "-Infinity"
+            # Normalize -0.0 to 0.0 to guarantee deterministic hashing
+            return 0.0 if f_val == 0.0 else f_val
+        if isinstance(val, str):
+            return val
+        if isinstance(val, np.ndarray):
+            return [_sanitize(x) for x in val.tolist()]
         if isinstance(val, (list, tuple)):
             return [_sanitize(x) for x in val]
+        if hasattr(val, "to_dict"):
+            return _sanitize(val.to_dict())
         if isinstance(val, dict):
             return {
                 str(k): _sanitize(v) for k, v in sorted(val.items(), key=lambda item: str(item[0]))
             }
-        if hasattr(val, "to_dict"):
-            return _sanitize(val.to_dict())
         return str(val)
 
     sanitized = _sanitize(data)
@@ -110,6 +119,11 @@ class PhysicsSimulationFingerprint:
     body_frame_lidar: bool
     num_lidar_rays: int
     lidar_range: float
+    enable_motor_dynamics: bool = False
+    motor_time_constant: float = 0.0
+    wind_vector: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    enable_ground_effect: bool = False
+    quadratic_drag_coeff: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -127,6 +141,7 @@ class ExperimentConfigurationFingerprint:
     scenario_names: List[str]
     controller_type: str = "QuadrotorPIDController"
     controller_gains: Dict[str, float] = field(default_factory=dict)
+    scenarios: List[Dict[str, Any]] = field(default_factory=list)
     extra_parameters: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -137,6 +152,7 @@ class ExperimentConfigurationFingerprint:
             "checkpoint_hash": self.checkpoint_hash,
             "random_seed": self.random_seed,
             "scenario_names": sorted(self.scenario_names),
+            "scenarios": self.scenarios,
             "controller_type": self.controller_type,
             "controller_gains": self.controller_gains,
             "extra_parameters": self.extra_parameters,
@@ -240,6 +256,7 @@ class FlightRecorder:
         signature: Optional[str] = None,
         configuration: Optional[ExperimentConfigurationFingerprint | Dict[str, Any]] = None,
         trajectories: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        scenarios: Optional[Sequence[Any]] = None,
     ) -> FlightRecord:
         """Create a cryptographically fingerprinted FlightRecord from execution data."""
         from datetime import datetime, timezone
@@ -265,6 +282,11 @@ class FlightRecorder:
             body_frame_lidar=bool(physics_params.get("body_frame_lidar", False)),
             num_lidar_rays=int(physics_params.get("num_lidar_rays", 16)),
             lidar_range=float(physics_params.get("lidar_range", 20.0)),
+            enable_motor_dynamics=bool(physics_params.get("enable_motor_dynamics", False)),
+            motor_time_constant=float(physics_params.get("motor_time_constant", 0.0)),
+            wind_vector=[float(x) for x in physics_params.get("wind_vector", [0.0, 0.0, 0.0])],
+            enable_ground_effect=bool(physics_params.get("enable_ground_effect", False)),
+            quadratic_drag_coeff=float(physics_params.get("quadratic_drag_coeff", 0.0)),
         )
 
         # Extract metrics and trajectories
@@ -293,6 +315,15 @@ class FlightRecorder:
             else:
                 chk_hash = "not_found"
 
+        # Serialize scenario provenance definitions
+        raw_scenarios = scenarios if scenarios is not None else physics_params.get("scenarios", [])
+        scenario_provenance: List[Dict[str, Any]] = []
+        for sc in raw_scenarios:
+            if hasattr(sc, "to_dict"):
+                scenario_provenance.append(sc.to_dict())
+            elif isinstance(sc, dict):
+                scenario_provenance.append(sc)
+
         # Build comprehensive ExperimentConfigurationFingerprint
         if configuration is not None:
             if isinstance(configuration, ExperimentConfigurationFingerprint):
@@ -315,6 +346,7 @@ class FlightRecorder:
                     physics_params.get("controller_type", "QuadrotorPIDController")
                 ),
                 controller_gains=dict(physics_params.get("controller_gains", {})),
+                scenarios=scenario_provenance,
                 extra_parameters=dict(physics_params.get("extra_parameters", {})),
             )
 

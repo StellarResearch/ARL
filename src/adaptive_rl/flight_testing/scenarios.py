@@ -301,9 +301,84 @@ class FlightScenarioDefinition:
     min_recovery_altitude: float = 0.8
     enable_sensor_estimation: bool = False
     sensor_seed: Optional[int] = None
+    sensor_in_the_loop: bool = False
     max_duration_seconds: Optional[float] = None
     disturbance_fn: Optional[Callable[[int, DroneState6DOF], np.ndarray]] = None
     actuator_fault_fn: Optional[Callable[[int, np.ndarray], np.ndarray]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a deterministic, fully serializable dictionary representation for cryptographic hashing."""
+        obs_dicts = [
+            {"center": [float(x) for x in obs.center], "radius": float(obs.radius)}
+            for obs in sorted(
+                self.obstacles,
+                key=lambda o: (
+                    float(o.center[0]),
+                    float(o.center[1]),
+                    float(o.center[2]),
+                    float(o.radius),
+                ),
+            )
+        ]
+        dyn_obs_dicts = [
+            d.to_dict()
+            if hasattr(d, "to_dict")
+            else {
+                "center_initial": [float(x) for x in d.center_initial],
+                "radius": float(d.radius),
+                "velocity": [float(x) for x in d.velocity],
+                "bounds": [float(x) for x in d.bounds],
+                "motion_type": str(d.motion_type),
+                "oscillation_period": float(d.oscillation_period),
+                "oscillation_amplitude": [float(x) for x in d.oscillation_amplitude],
+            }
+            for d in self.dynamic_obstacles
+        ]
+
+        fault_info: Dict[str, Any] = {}
+        if self.actuator_fault_fn is not None:
+            fn_name = getattr(self.actuator_fault_fn, "__name__", "custom_fault")
+            fault_info = {"name": fn_name}
+            if hasattr(self.actuator_fault_fn, "metadata"):
+                fault_info["metadata"] = getattr(self.actuator_fault_fn, "metadata")
+            elif self.actuator_fault_fn.__doc__:
+                fault_info["doc"] = self.actuator_fault_fn.__doc__.strip()
+
+        dist_info: Dict[str, Any] = {}
+        if self.disturbance_fn is not None:
+            fn_name = getattr(self.disturbance_fn, "__name__", "custom_disturbance")
+            dist_info = {"name": fn_name}
+            if hasattr(self.disturbance_fn, "metadata"):
+                dist_info["metadata"] = getattr(self.disturbance_fn, "metadata")
+            elif self.disturbance_fn.__doc__:
+                dist_info["doc"] = self.disturbance_fn.__doc__.strip()
+
+        return {
+            "name": self.name,
+            "description": self.description,
+            "initial_position": [float(x) for x in self.initial_position],
+            "initial_velocity": [float(x) for x in self.initial_velocity],
+            "initial_quaternion": [float(x) for x in self.initial_quaternion],
+            "initial_angular_velocity": [float(x) for x in self.initial_angular_velocity],
+            "waypoints": [[float(x) for x in w] for w in self.waypoints],
+            "obstacles": obs_dicts,
+            "dynamic_obstacles": dyn_obs_dicts,
+            "bounds": [float(x) for x in self.bounds],
+            "max_steps": self.max_steps,
+            "target_radius": float(self.target_radius),
+            "collision_radius": float(self.collision_radius),
+            "step_duration_sec": float(self.step_duration_sec),
+            "use_path_planner": self.use_path_planner,
+            "settling_velocity_threshold": float(self.settling_velocity_threshold),
+            "max_recovery_tilt_deg": float(self.max_recovery_tilt_deg),
+            "min_recovery_altitude": float(self.min_recovery_altitude),
+            "enable_sensor_estimation": self.enable_sensor_estimation,
+            "sensor_seed": self.sensor_seed,
+            "sensor_in_the_loop": self.sensor_in_the_loop,
+            "max_duration_seconds": self.max_duration_seconds,
+            "actuator_fault": fault_info,
+            "disturbance": dist_info,
+        }
 
 
 def get_standard_flight_scenarios() -> List[FlightScenarioDefinition]:
@@ -624,6 +699,22 @@ def get_advanced_navigation_scenarios() -> List[FlightScenarioDefinition]:
         )
     )
 
+    # 19. State Estimation In-the-Loop Flight
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="sensor_estimated_navigation",
+            description="Precision hover loiter driven entirely by sensor-fusion estimated state under IMU noise and drift.",
+            initial_position=np.array([10.0, 10.0, 5.0]),
+            waypoints=[np.array([10.0, 10.0, 5.0])],
+            obstacles=[],
+            max_steps=200,
+            target_radius=1.0,
+            enable_sensor_estimation=True,
+            sensor_in_the_loop=True,
+            sensor_seed=101,
+        )
+    )
+
     return scenarios
 
 
@@ -767,12 +858,22 @@ class FlightScenarioRunner:
         # Sensor estimation avionics in-the-loop if enabled
         imu_sensor = None
         state_estimator = None
-        if scenario.enable_sensor_estimation:
+        sensor_rng = None
+        est_drone_state: Optional[DroneState6DOF] = None
+        if scenario.enable_sensor_estimation or scenario.sensor_in_the_loop:
             from adaptive_rl.sensors.estimation import ComplementaryFilter
             from adaptive_rl.sensors.imu import IMUSensor
 
-            imu_sensor = IMUSensor(seed=scenario.sensor_seed or 42)
-            state_estimator = ComplementaryFilter()
+            sensor_rng = np.random.default_rng(scenario.sensor_seed or 42)
+            imu_sensor = IMUSensor(
+                gravity=self.env.dynamics.gravity, seed=scenario.sensor_seed or 42
+            )
+            state_estimator = ComplementaryFilter(gravity=self.env.dynamics.gravity)
+            state_estimator.reset(
+                position=scenario.initial_position,
+                velocity=scenario.initial_velocity,
+                quaternion=scenario.initial_quaternion,
+            )
 
         telemetry: List[FlightStepTelemetry] = []
         pos_errors: List[float] = []
@@ -788,16 +889,24 @@ class FlightScenarioRunner:
         step = 0
         dt = self.env.dynamics.dt
         fault_ever_active = False
+        all_waypoints_completed = False
 
         while step < scenario.max_steps:
             step += 1
             time_sec = step * dt
             current_state = self.env.dynamics.state
 
+            # Determine feedback state for closed-loop control (sensor-in-the-loop if active)
+            feedback_state = (
+                est_drone_state
+                if (scenario.sensor_in_the_loop and est_drone_state is not None)
+                else current_state
+            )
+
             # Predictive dynamic obstacle avoidance via MissionManager
             if mission_manager is not None:
                 current_target, _ = mission_manager.update(
-                    drone_state=current_state,
+                    drone_state=feedback_state,
                     time_sec=time_sec,
                     static_obstacles=scenario.obstacles,
                     dynamic_obstacles=scenario.dynamic_obstacles,
@@ -825,16 +934,16 @@ class FlightScenarioRunner:
             omega_mag = float(np.linalg.norm(current_state.angular_velocity))
             angular_speeds.append(omega_mag)
 
-            # Compute controller action
+            # Compute controller action using feedback_state (sensor-in-the-loop if active)
             if hasattr(ctrl, "compute_action"):
                 action, ctrl_info = ctrl.compute_action(
-                    current_state,
+                    feedback_state,
                     target_position=current_target,
                     target_velocity=np.zeros(3),
                     dt=dt,
                 )
             elif hasattr(ctrl, "predict"):
-                obs = self.env._get_obs()
+                obs = self.env._get_obs(custom_state=feedback_state)
                 action, _ = ctrl.predict(obs, deterministic=True)
             else:
                 action = np.zeros(4, dtype=np.float32)
@@ -854,14 +963,17 @@ class FlightScenarioRunner:
             if fault_active:
                 fault_ever_active = True
 
-            # Step physical dynamics with Runge-Kutta 4
-            old_pos = current_state.position.copy()
+            # Snapshot pre-integration physical state to prevent object aliasing
+            pre_state = self.env.dynamics.state.copy()
+            pre_velocity = pre_state.velocity.copy()
+            old_pos = pre_state.position.copy()
 
-            # External aerodynamic disturbance
+            # External aerodynamic disturbance applied to velocity
             if scenario.disturbance_fn is not None:
-                dist_force = scenario.disturbance_fn(step, current_state)
-                current_state.velocity += (dist_force / self.env.dynamics.mass) * dt
+                dist_force = scenario.disturbance_fn(step, pre_state)
+                self.env.dynamics.state.velocity += (dist_force / self.env.dynamics.mass) * dt
 
+            # Step physical dynamics with Runge-Kutta 4
             new_state = self.env.dynamics.step_rk4(thrusts_actual)
             self.env._position = new_state.position.copy()
             self.env._current_step = step
@@ -871,14 +983,35 @@ class FlightScenarioRunner:
             est_vel = None
             pos_est_err = None
             att_est_err = None
-            if imu_sensor is not None and state_estimator is not None:
-                inertial_acc = (new_state.velocity - current_state.velocity) / dt
-                meas = imu_sensor.measure(current_state, inertial_acceleration=inertial_acc, dt=dt)
-                est_state = state_estimator.update(meas, dt=dt, true_state=new_state)
+            if imu_sensor is not None and state_estimator is not None and sensor_rng is not None:
+                # Calculate true net inertial acceleration between distinct pre and post states
+                inertial_acc = (new_state.velocity - pre_velocity) / dt
+                meas = imu_sensor.measure(
+                    new_state,
+                    inertial_acceleration=inertial_acc,
+                    dt=dt,
+                    timestamp=time_sec,
+                )
+                # Avionics sensor fusion: IMU fused with noisy position and altitude observations
+                pos_obs_noise = sensor_rng.normal(0.0, 0.02, size=3)
+                noisy_pos_ref = new_state.position + pos_obs_noise
+                est_state = state_estimator.update(
+                    meas,
+                    dt=dt,
+                    position_ref=noisy_pos_ref,
+                    altitude_ref=float(noisy_pos_ref[2]),
+                    true_state=new_state,
+                )
                 est_pos = est_state.position.copy()
                 est_vel = est_state.velocity.copy()
                 pos_est_err = est_state.position_error
                 att_est_err = est_state.attitude_error_deg
+                est_drone_state = DroneState6DOF(
+                    position=est_state.position.copy(),
+                    velocity=est_state.velocity.copy(),
+                    quaternion=est_state.quaternion.copy(),
+                    angular_velocity=est_state.angular_velocity.copy(),
+                )
 
             # Obstacle clearance check (combining static and dynamic obstacles)
             min_obs_d = float("inf")
@@ -894,11 +1027,15 @@ class FlightScenarioRunner:
 
             # Collision check
             coll, coll_type = self.env._check_collision(new_state.position, prev_pos=old_pos)
-            # Also check dynamic obstacles collisions
+            # Continuous swept dynamic obstacle collision check
             if not coll:
                 for dyn_obs in scenario.dynamic_obstacles:
-                    if dyn_obs.distance_to(new_state.position, time_sec) <= (
-                        dyn_obs.radius + scenario.collision_radius
+                    if dyn_obs.check_continuous_collision(
+                        prev_drone_pos=old_pos,
+                        curr_drone_pos=new_state.position,
+                        prev_time=time_sec - dt,
+                        curr_time=time_sec,
+                        vehicle_radius=scenario.collision_radius,
                     ):
                         coll = True
                         coll_type = "obstacle"
@@ -929,13 +1066,17 @@ class FlightScenarioRunner:
             is_pos_settled = dist_to_final <= scenario.target_radius
             is_vel_settled = curr_speed <= scenario.settling_velocity_threshold
 
-            is_mission_completed = (
+            all_waypoints_completed = (
                 (mission_manager.state == MissionState.ARRIVED)
                 if mission_manager is not None
-                else (waypoint_idx == len(waypoints) - 1 and is_pos_settled)
+                else (waypoint_idx == len(waypoints) - 1 and is_at_curr_waypoint)
             )
 
-            is_final_success = is_mission_completed and is_vel_settled and not is_collision
+            is_mission_completed = (
+                all_waypoints_completed and is_pos_settled and is_vel_settled and not is_collision
+            )
+
+            is_final_success = is_mission_completed
 
             # Record telemetry
             telemetry.append(
@@ -966,6 +1107,12 @@ class FlightScenarioRunner:
             if coll:
                 break
 
+            if (
+                scenario.max_duration_seconds is not None
+                and time_sec >= scenario.max_duration_seconds
+            ):
+                break
+
             if is_final_success and len(waypoints) > 1:
                 outcome = "success"
                 break
@@ -984,6 +1131,9 @@ class FlightScenarioRunner:
 
         is_pos_settled = final_pos_err <= scenario.target_radius
         is_vel_settled = final_speed <= scenario.settling_velocity_threshold
+        is_mission_completed = (
+            all_waypoints_completed and is_pos_settled and is_vel_settled and not is_collision
+        )
 
         # Authoritative, mutually exclusive outcome classification
         if fault_ever_active and (
@@ -996,17 +1146,21 @@ class FlightScenarioRunner:
             outcome = "collision" if coll_type == "obstacle" else "boundary_breach"
         elif fault_ever_active:
             # Active actuator fault was injected:
-            # Requires mission completion, stable flight, altitude maintenance, and velocity settling
+            # Requires authoritative mission completion, stable flight, altitude maintenance, and velocity settling
             if (
-                is_pos_settled
-                and is_vel_settled
+                is_mission_completed
                 and max_tilt < scenario.max_recovery_tilt_deg
                 and min_alt > scenario.min_recovery_altitude
             ):
                 outcome = "recovered_degraded"
+            elif (
+                scenario.max_duration_seconds is not None
+                and (step * dt) >= scenario.max_duration_seconds
+            ):
+                outcome = "timeout"
             else:
                 outcome = "max_steps"
-        elif is_pos_settled and is_vel_settled and not is_collision:
+        elif is_mission_completed:
             outcome = "success"
         elif (
             scenario.max_duration_seconds is not None
