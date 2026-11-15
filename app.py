@@ -20,6 +20,7 @@ from adaptive_rl.algorithms.registry import (
     inspect_model_checkpoint,
     load_algorithm_from_pretrained,
 )
+from adaptive_rl.benchmarking import FlightBenchmarkSuite
 from adaptive_rl.config import AlgorithmConfig, EnvironmentConfig, ExperimentConfig, TrainingConfig
 from adaptive_rl.controllers import QuadrotorPIDController
 from adaptive_rl.environments.drone import (
@@ -33,10 +34,7 @@ from adaptive_rl.evaluation.evaluator import (
     evaluate_random_policy,
     run_obstacle_density_experiment,
 )
-from adaptive_rl.flight_testing import (
-    FlightBenchmarkSuite,
-    FlightScenarioRunner,
-)
+from adaptive_rl.flight_testing import FlightScenarioRunner
 from adaptive_rl.gui import (
     build_3d_navigation_trajectory_figure,
     build_actuator_telemetry_figure,
