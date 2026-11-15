@@ -55,6 +55,7 @@ from adaptive_rl.environments.drone_6dof import (
     quaternion_to_euler_angles,
 )
 from adaptive_rl.navigation.dynamic_obstacles import DynamicObstacleSphere3D
+from adaptive_rl.navigation.mission import MissionManager, MissionState
 from adaptive_rl.navigation.planner import AStarPlanner3D
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,10 @@ class FlightStepTelemetry:
     is_success: bool
     commanded_thrusts: Optional[np.ndarray] = None
     actuator_fault_active: bool = False
+    estimated_position: Optional[np.ndarray] = None
+    estimated_velocity: Optional[np.ndarray] = None
+    position_estimation_error: Optional[float] = None
+    attitude_estimation_error_deg: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         cmd_thrusts = (
@@ -87,7 +92,7 @@ class FlightStepTelemetry:
             if self.commanded_thrusts is not None
             else [round(float(x), 4) for x in self.motor_thrusts]
         )
-        return {
+        d: Dict[str, Any] = {
             "step": self.step,
             "time_sec": round(self.time_sec, 4),
             "position": [round(float(x), 4) for x in self.position],
@@ -110,6 +115,15 @@ class FlightStepTelemetry:
             "is_collision": self.is_collision,
             "is_success": self.is_success,
         }
+        if self.estimated_position is not None:
+            d["estimated_position"] = [round(float(x), 4) for x in self.estimated_position]
+        if self.estimated_velocity is not None:
+            d["estimated_velocity"] = [round(float(x), 4) for x in self.estimated_velocity]
+        if self.position_estimation_error is not None:
+            d["position_estimation_error"] = round(float(self.position_estimation_error), 4)
+        if self.attitude_estimation_error_deg is not None:
+            d["attitude_estimation_error_deg"] = round(float(self.attitude_estimation_error_deg), 3)
+        return d
 
 
 @dataclass
@@ -282,6 +296,12 @@ class FlightScenarioDefinition:
     collision_radius: float = 0.8
     step_duration_sec: float = 0.05
     use_path_planner: bool = False
+    settling_velocity_threshold: float = 0.5
+    max_recovery_tilt_deg: float = 35.0
+    min_recovery_altitude: float = 0.8
+    enable_sensor_estimation: bool = False
+    sensor_seed: Optional[int] = None
+    max_duration_seconds: Optional[float] = None
     disturbance_fn: Optional[Callable[[int, DroneState6DOF], np.ndarray]] = None
     actuator_fault_fn: Optional[Callable[[int, np.ndarray], np.ndarray]] = None
 
@@ -672,9 +692,10 @@ class FlightScenarioRunner:
         self.env._position = scenario.initial_position.copy()
         self.env._current_step = 0
 
-        # Resolve waypoints (optionally via 3D A* path planning)
+        # Resolve waypoints (optionally via 3D A* path planning or MissionManager)
         waypoints: List[np.ndarray] = []
-        if scenario.use_path_planner and scenario.obstacles:
+        mission_manager: Optional[MissionManager] = None
+        if scenario.use_path_planner and (scenario.obstacles or scenario.dynamic_obstacles):
             planner = AStarPlanner3D(
                 bounds=scenario.bounds,
                 resolution=1.0,
@@ -682,10 +703,20 @@ class FlightScenarioRunner:
                 safety_margin=0.3,
             )
             raw_target = scenario.waypoints[-1] if scenario.waypoints else scenario.initial_position
-            plan_res = planner.plan(scenario.initial_position, raw_target, scenario.obstacles)
-            if plan_res.status == "SUCCESS" and len(plan_res.waypoints) > 1:
-                waypoints = plan_res.waypoints[1:]  # sequenced targets ahead
-            else:
+            mission_manager = MissionManager(
+                planner=planner,
+                waypoint_acceptance_radius=scenario.target_radius,
+                replan_clearance_threshold=scenario.collision_radius + 0.5,
+            )
+            targets = scenario.waypoints if scenario.waypoints else [scenario.initial_position]
+            ok = mission_manager.start_mission(
+                start_position=scenario.initial_position,
+                goals=targets,
+                static_obstacles=scenario.obstacles,
+                dynamic_obstacles=scenario.dynamic_obstacles,
+                time_sec=0.0,
+            )
+            if not ok or mission_manager.state == MissionState.FAILED_BLOCKED:
                 # Planning failure (e.g. goal or start blocked)
                 elapsed_ms = (time.perf_counter() - start_wall_time) * 1000.0
                 initial_goal_dist = float(np.linalg.norm(raw_target - scenario.initial_position))
@@ -708,7 +739,7 @@ class FlightScenarioRunner:
                     max_angular_speed=0.0,
                     initial_goal_distance=initial_goal_dist,
                     final_goal_distance=initial_goal_dist,
-                    min_obstacle_clearance=plan_res.min_clearance,
+                    min_obstacle_clearance=-1.0,
                     collision_count=0,
                     control_effort=0.0,
                     execution_wall_time_ms=elapsed_ms,
@@ -719,8 +750,9 @@ class FlightScenarioRunner:
                     metrics=metrics,
                     telemetry=[],
                 )
+            waypoints = [w.copy() for w in mission_manager.active_path]
         else:
-            waypoints = list(scenario.waypoints)
+            waypoints = [w.copy() for w in scenario.waypoints]
 
         if not waypoints:
             waypoints = [scenario.initial_position.copy()]
@@ -732,6 +764,16 @@ class FlightScenarioRunner:
 
         initial_goal_dist = float(np.linalg.norm(waypoints[-1] - scenario.initial_position))
 
+        # Sensor estimation avionics in-the-loop if enabled
+        imu_sensor = None
+        state_estimator = None
+        if scenario.enable_sensor_estimation:
+            from adaptive_rl.sensors.estimation import ComplementaryFilter
+            from adaptive_rl.sensors.imu import IMUSensor
+
+            imu_sensor = IMUSensor(seed=scenario.sensor_seed or 42)
+            state_estimator = ComplementaryFilter()
+
         telemetry: List[FlightStepTelemetry] = []
         pos_errors: List[float] = []
         vel_errors: List[float] = []
@@ -741,14 +783,28 @@ class FlightScenarioRunner:
         control_efforts: List[float] = []
 
         is_collision = False
+        coll_type = "none"
         outcome = "max_steps"
         step = 0
         dt = self.env.dynamics.dt
+        fault_ever_active = False
 
         while step < scenario.max_steps:
             step += 1
             time_sec = step * dt
             current_state = self.env.dynamics.state
+
+            # Predictive dynamic obstacle avoidance via MissionManager
+            if mission_manager is not None:
+                current_target, _ = mission_manager.update(
+                    drone_state=current_state,
+                    time_sec=time_sec,
+                    static_obstacles=scenario.obstacles,
+                    dynamic_obstacles=scenario.dynamic_obstacles,
+                )
+                self.env._goal = current_target.copy()
+                if hasattr(ctrl, "set_target"):
+                    ctrl.set_target(current_target)
 
             # Compute tracking errors relative to current waypoint
             pos_err = current_target - current_state.position
@@ -795,6 +851,8 @@ class FlightScenarioRunner:
             if scenario.actuator_fault_fn is not None:
                 thrusts_actual = scenario.actuator_fault_fn(step, thrusts_cmd)
                 fault_active = not np.allclose(thrusts_actual, thrusts_cmd)
+            if fault_active:
+                fault_ever_active = True
 
             # Step physical dynamics with Runge-Kutta 4
             old_pos = current_state.position.copy()
@@ -807,6 +865,20 @@ class FlightScenarioRunner:
             new_state = self.env.dynamics.step_rk4(thrusts_actual)
             self.env._position = new_state.position.copy()
             self.env._current_step = step
+
+            # Sensor in-the-loop estimation if enabled
+            est_pos = None
+            est_vel = None
+            pos_est_err = None
+            att_est_err = None
+            if imu_sensor is not None and state_estimator is not None:
+                inertial_acc = (new_state.velocity - current_state.velocity) / dt
+                meas = imu_sensor.measure(current_state, inertial_acceleration=inertial_acc, dt=dt)
+                est_state = state_estimator.update(meas, dt=dt, true_state=new_state)
+                est_pos = est_state.position.copy()
+                est_vel = est_state.velocity.copy()
+                pos_est_err = est_state.position_error
+                att_est_err = est_state.attitude_error_deg
 
             # Obstacle clearance check (combining static and dynamic obstacles)
             min_obs_d = float("inf")
@@ -836,24 +908,34 @@ class FlightScenarioRunner:
                 is_collision = True
                 outcome = "collision" if coll_type == "obstacle" else "boundary_breach"
 
-            # Waypoint sequencing
+            # Waypoint sequencing for static waypoint list
             dist_to_curr_waypoint = float(np.linalg.norm(current_target - new_state.position))
             is_at_curr_waypoint = dist_to_curr_waypoint <= scenario.target_radius
 
-            if is_at_curr_waypoint and waypoint_idx < len(waypoints) - 1:
+            if (
+                mission_manager is None
+                and is_at_curr_waypoint
+                and waypoint_idx < len(waypoints) - 1
+            ):
                 waypoint_idx += 1
                 current_target = waypoints[waypoint_idx].copy()
                 self.env._goal = current_target.copy()
                 if hasattr(ctrl, "set_target"):
                     ctrl.set_target(current_target)
 
-            # Final success check
-            dist_to_final_waypoint = float(np.linalg.norm(waypoints[-1] - new_state.position))
-            is_final_success = (
-                waypoint_idx == len(waypoints) - 1
-                and dist_to_final_waypoint <= scenario.target_radius
-                and not is_collision
+            # Final arrival and settling check
+            dist_to_final = float(np.linalg.norm(waypoints[-1] - new_state.position))
+            curr_speed = float(np.linalg.norm(new_state.velocity))
+            is_pos_settled = dist_to_final <= scenario.target_radius
+            is_vel_settled = curr_speed <= scenario.settling_velocity_threshold
+
+            is_mission_completed = (
+                (mission_manager.state == MissionState.ARRIVED)
+                if mission_manager is not None
+                else (waypoint_idx == len(waypoints) - 1 and is_pos_settled)
             )
+
+            is_final_success = is_mission_completed and is_vel_settled and not is_collision
 
             # Record telemetry
             telemetry.append(
@@ -874,6 +956,10 @@ class FlightScenarioRunner:
                     is_success=is_final_success,
                     commanded_thrusts=thrusts_cmd.copy(),
                     actuator_fault_active=fault_active,
+                    estimated_position=est_pos,
+                    estimated_velocity=est_vel,
+                    position_estimation_error=pos_est_err,
+                    attitude_estimation_error_deg=att_est_err,
                 )
             )
 
@@ -888,19 +974,45 @@ class FlightScenarioRunner:
                 break
 
         final_pos_err = float(np.linalg.norm(waypoints[-1] - self.env._position))
-        final_goal_dist = final_pos_err
+        final_speed = float(np.linalg.norm(self.env.dynamics.state.velocity))
+        max_tilt = max(att_errors_deg) if att_errors_deg else 0.0
+        min_alt = (
+            float(np.min([t.position[2] for t in telemetry]))
+            if telemetry
+            else float(self.env._position[2])
+        )
 
-        # Disambiguated outcome classification
-        if scenario.actuator_fault_fn is not None:
-            max_tilt = max(att_errors_deg) if att_errors_deg else 0.0
-            if is_collision or max_tilt >= 35.0 or self.env._position[2] <= 0.8:
-                outcome = "crash_fault"
-            else:
-                outcome = "recovered_degraded"
+        is_pos_settled = final_pos_err <= scenario.target_radius
+        is_vel_settled = final_speed <= scenario.settling_velocity_threshold
+
+        # Authoritative, mutually exclusive outcome classification
+        if fault_ever_active and (
+            is_collision
+            or max_tilt >= scenario.max_recovery_tilt_deg
+            or min_alt <= scenario.min_recovery_altitude
+        ):
+            outcome = "crash_fault"
         elif is_collision:
             outcome = "collision" if coll_type == "obstacle" else "boundary_breach"
-        elif final_pos_err <= scenario.target_radius:
+        elif fault_ever_active:
+            # Active actuator fault was injected:
+            # Requires mission completion, stable flight, altitude maintenance, and velocity settling
+            if (
+                is_pos_settled
+                and is_vel_settled
+                and max_tilt < scenario.max_recovery_tilt_deg
+                and min_alt > scenario.min_recovery_altitude
+            ):
+                outcome = "recovered_degraded"
+            else:
+                outcome = "max_steps"
+        elif is_pos_settled and is_vel_settled and not is_collision:
             outcome = "success"
+        elif (
+            scenario.max_duration_seconds is not None
+            and (step * dt) >= scenario.max_duration_seconds
+        ):
+            outcome = "timeout"
         else:
             outcome = "max_steps"
 
@@ -928,7 +1040,7 @@ class FlightScenarioRunner:
             mean_angular_speed=float(np.mean(angular_speeds)) if angular_speeds else 0.0,
             max_angular_speed=float(np.max(angular_speeds)) if angular_speeds else 0.0,
             initial_goal_distance=initial_goal_dist,
-            final_goal_distance=final_goal_dist,
+            final_goal_distance=final_pos_err,
             min_obstacle_clearance=float(min(min_clearances)) if min_clearances else float("inf"),
             collision_count=1 if is_collision else 0,
             control_effort=float(np.sum(control_efforts)) if control_efforts else 0.0,

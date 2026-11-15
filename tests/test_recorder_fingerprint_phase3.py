@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from adaptive_rl.flight_testing.recorder import (
     ExperimentConfigurationFingerprint,
     FlightRecorder,
@@ -124,6 +126,60 @@ def test_dual_integrity_digests_and_record_tamper_detection(tmp_path: Path) -> N
     record.scenario_metrics[0].outcome = "faked_success"
     assert record.verify_config_fingerprint() is True  # physics didn't change
     assert record.verify_record_digest() is False  # result digest detects tampering!
+
+
+def test_trajectories_preserved_and_covered_by_digest(tmp_path: Path) -> None:
+    """FlightRecord preserves full trajectories, and tampering with trajectory step invalidates record_digest."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioDefinition,
+        FlightScenarioRunner,
+    )
+
+    runner = FlightScenarioRunner()
+    sc = FlightScenarioDefinition(
+        name="short_hover",
+        description="Short hover for trajectory test",
+        initial_position=np.array([5.0, 5.0, 5.0]),
+        waypoints=[np.array([5.0, 5.0, 5.0])],
+        max_steps=10,
+    )
+    result = runner.run_scenario(sc)
+    assert len(result.telemetry) > 0
+
+    recorder = FlightRecorder(output_dir=tmp_path)
+    record = recorder.create_record(
+        experiment_id="trajectory_record_test",
+        physics_params={"mass": 1.0, "gravity": 9.81},
+        scenario_results=[result],
+    )
+
+    assert "short_hover" in record.trajectories
+    assert len(record.trajectories["short_hover"]) == len(result.telemetry)
+    assert record.verify_config_fingerprint() is True
+    assert record.verify_record_digest() is True
+
+    # Tamper with telemetry in trajectory: record_digest MUST be invalidated!
+    record.trajectories["short_hover"][0]["position"] = [999.0, 999.0, 999.0]
+    assert record.verify_record_digest() is False
+
+
+def test_signature_distinction_from_digest(tmp_path: Path) -> None:
+    """Digital signature is an authenticated cryptographic signature, distinct from unkeyed digests."""
+    recorder = FlightRecorder(output_dir=tmp_path)
+    record = recorder.create_record(
+        experiment_id="sig_test",
+        physics_params={"mass": 1.0},
+        scenario_results=[],
+        signature="ed25519_sig_abc123",
+    )
+    assert record.signature == "ed25519_sig_abc123"
+    assert record.config_fingerprint != record.signature
+    assert record.record_digest != record.signature
+    assert record.verify_record_digest() is True
+
+    # Tampering with signature invalidates record_digest
+    record.signature = "tampered_signature"
+    assert record.verify_record_digest() is False
 
 
 def test_small_damping_and_inertia_float_precision() -> None:

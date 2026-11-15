@@ -197,3 +197,109 @@ def test_mission_manager_lifecycle_and_replanning() -> None:
     rth_ok = manager.trigger_return_to_home(drone_state.position, obstacles)
     assert rth_ok is True
     np.testing.assert_allclose(manager.final_goal, start_pos)
+
+
+def test_planner_diagonal_corner_cutting_prevention() -> None:
+    """Verify that A* neighbor expansion never cuts diagonally through obstacles."""
+    planner = AStarPlanner3D(
+        bounds=(10.0, 10.0, 10.0), resolution=1.0, vehicle_radius=0.4, safety_margin=0.1
+    )
+    # Start at (2, 2, 5), Goal at (4, 4, 5)
+    start = np.array([2.0, 2.0, 5.0])
+    goal = np.array([4.0, 4.0, 5.0])
+
+    # Place an obstacle centered at (3.0, 3.0, 5.0) with radius 0.6
+    # The direct diagonal line passes straight through (3.0, 3.0, 5.0), penetrating the obstacle.
+    # The grid points (2, 2, 5) and (4, 4, 5) have distance sqrt(2) ~ 1.414 from (3,3,5), so points are free,
+    # but the diagonal connecting segment is strictly in collision!
+    obs = ObstacleSphere3D(center=np.array([3.0, 3.0, 5.0]), radius=0.6)
+    obstacles = [obs]
+
+    res = planner.plan(start, goal, obstacles)
+    assert res.status == "SUCCESS"
+
+    # Invariant: every returned segment must pass is_segment_valid
+    for i in range(len(res.waypoints) - 1):
+        valid, clear = planner.is_segment_valid(res.waypoints[i], res.waypoints[i + 1], obstacles)
+        assert valid is True
+        assert clear >= 0.0
+
+
+def test_planner_simplification_never_appends_unvalidated_segment() -> None:
+    """Verify simplify_path returns None rather than appending an invalid segment."""
+    planner = AStarPlanner3D(
+        bounds=(20.0, 20.0, 10.0), resolution=1.0, vehicle_radius=0.5, safety_margin=0.2
+    )
+    # Construct a path where the intermediate step to the next waypoint is blocked
+    p1 = np.array([2.0, 5.0, 5.0])
+    p2 = np.array([6.0, 5.0, 5.0])
+    p3 = np.array([10.0, 5.0, 5.0])
+
+    # Place a large impassable obstacle completely covering p2 and the segments to/from p2
+    obs = ObstacleSphere3D(center=np.array([6.0, 5.0, 5.0]), radius=3.0)
+    obstacles = [obs]
+
+    # Attempting to simplify an unsafe list of waypoints must return None
+    res_simplified = planner.simplify_path([p1, p2, p3], obstacles)
+    assert res_simplified is None
+
+
+def test_planner_tangential_contact_and_boundary_grazing() -> None:
+    """Waypoints grazing the boundary or obstacle perimeter are properly validated."""
+    planner = AStarPlanner3D(
+        bounds=(10.0, 10.0, 10.0), resolution=1.0, vehicle_radius=0.5, safety_margin=0.2
+    )
+    # Point grazing floor boundary (z = 0.5 is exactly vehicle_radius, z < 0.5 is invalid)
+    pt_safe = np.array([5.0, 5.0, 0.7])
+    valid_safe, _ = planner.is_point_valid(pt_safe, [])
+    assert valid_safe is True
+
+    pt_boundary_breach = np.array([5.0, 5.0, 0.4])
+    valid_breach, _ = planner.is_point_valid(pt_boundary_breach, [])
+    assert valid_breach is False
+
+
+def test_planner_overlapping_obstacles_and_determinism() -> None:
+    """Complex multi-obstacle field produces deterministic identical paths upon repeated planning."""
+    planner = AStarPlanner3D(
+        bounds=(20.0, 20.0, 10.0), resolution=1.0, vehicle_radius=0.5, safety_margin=0.2
+    )
+    start = np.array([2.0, 2.0, 5.0])
+    goal = np.array([18.0, 18.0, 5.0])
+
+    obs1 = ObstacleSphere3D(center=np.array([8.0, 8.0, 5.0]), radius=2.0)
+    obs2 = ObstacleSphere3D(center=np.array([10.0, 9.0, 5.0]), radius=2.0)  # Overlaps obs1
+    obs3 = ObstacleSphere3D(center=np.array([14.0, 14.0, 5.0]), radius=1.8)
+    obstacles = [obs1, obs2, obs3]
+
+    res1 = planner.plan(start, goal, obstacles)
+    res2 = planner.plan(start, goal, obstacles)
+
+    assert res1.status == "SUCCESS"
+    assert res2.status == "SUCCESS"
+    assert len(res1.waypoints) == len(res2.waypoints)
+    for w1, w2 in zip(res1.waypoints, res2.waypoints):
+        np.testing.assert_allclose(w1, w2, atol=1e-10)
+
+    # Invariant: Every consecutive segment is strictly collision-free
+    for i in range(len(res1.waypoints) - 1):
+        valid, clear = planner.is_segment_valid(res1.waypoints[i], res1.waypoints[i + 1], obstacles)
+        assert valid is True
+        assert clear >= 0.0
+
+
+def test_planner_multiple_resolutions() -> None:
+    """Planner functions correctly at coarse (1.0m) and fine (0.5m) grid resolutions."""
+    for res_val in [1.0, 0.5]:
+        planner = AStarPlanner3D(
+            bounds=(15.0, 15.0, 10.0), resolution=res_val, vehicle_radius=0.5, safety_margin=0.2
+        )
+        start = np.array([2.0, 7.5, 5.0])
+        goal = np.array([13.0, 7.5, 5.0])
+        obs = ObstacleSphere3D(center=np.array([7.5, 7.5, 5.0]), radius=2.0)
+        res = planner.plan(start, goal, [obs])
+        assert res.status == "SUCCESS"
+        assert len(res.waypoints) >= 3
+        for i in range(len(res.waypoints) - 1):
+            valid, _ = planner.is_segment_valid(res.waypoints[i], res.waypoints[i + 1], [obs])
+            assert valid is True

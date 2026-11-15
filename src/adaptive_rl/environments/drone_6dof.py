@@ -317,6 +317,7 @@ class DroneDynamics6DOF:
         motor_time_constant: float = 0.03,
         wind_vector: Optional[np.ndarray | Sequence[float]] = None,
         enable_ground_effect: bool = False,
+        quadratic_drag_coeff: float = 0.0,
     ) -> None:
         for name, val in [
             ("mass", mass),
@@ -383,6 +384,7 @@ class DroneDynamics6DOF:
 
         # Simplified Cheeseman-Bennett ground effect model
         self.enable_ground_effect = bool(enable_ground_effect)
+        self.quadratic_drag_coeff = max(0.0, float(quadratic_drag_coeff))
 
         self.state = DroneState6DOF(
             position=np.zeros(3, dtype=np.float64),
@@ -538,6 +540,10 @@ class DroneDynamics6DOF:
         gravity_world = np.array([0.0, 0.0, -self.mass * self.gravity], dtype=np.float64)
         v_rel = vel - self.wind_vector
         drag_force = -self.linear_damping * v_rel
+        if self.quadratic_drag_coeff > 0.0:
+            v_rel_speed = float(np.linalg.norm(v_rel))
+            if v_rel_speed > 1e-12:
+                drag_force -= self.quadratic_drag_coeff * v_rel_speed * v_rel
         d_vel = (gravity_world + thrust_world + drag_force) / self.mass
 
         # 3. Quaternion derivative: dq/dt = 0.5 * q (x) [0, omega]
@@ -562,11 +568,14 @@ class DroneDynamics6DOF:
         omega = self.state.angular_velocity.copy()
 
         for _ in range(self.substeps):
-            # Integrate actuator first-order response if enabled
-            if self.enable_motor_dynamics:
-                d_thrust = (h / self.motor_time_constant) * (f_cmd - self.actual_motor_thrusts)
+            # Integrate actuator first-order response if enabled (exact analytical step response)
+            if self.enable_motor_dynamics and self.motor_time_constant > 1e-9:
+                alpha = math.exp(-h / self.motor_time_constant)
+                self.actual_motor_thrusts = self.actual_motor_thrusts * alpha + f_cmd * (
+                    1.0 - alpha
+                )
                 self.actual_motor_thrusts = np.clip(
-                    self.actual_motor_thrusts + d_thrust, 0.0, self.max_thrust_per_motor
+                    self.actual_motor_thrusts, 0.0, self.max_thrust_per_motor
                 )
             else:
                 self.actual_motor_thrusts = np.clip(f_cmd, 0.0, self.max_thrust_per_motor)
@@ -678,6 +687,13 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         body_frame_lidar: bool = False,
         render_mode: Optional[str] = None,
         split: Optional[str] = None,
+        enable_motor_dynamics: bool = False,
+        motor_time_constant: float = 0.03,
+        wind_vector: Optional[np.ndarray | Sequence[float]] = None,
+        enable_ground_effect: bool = False,
+        quadratic_drag_coeff: float = 0.0,
+        randomize_domain: bool = False,
+        domain_randomizer: Optional[Any] = None,
     ) -> None:
         super().__init__()
 
@@ -838,6 +854,29 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         self.max_velocity = 10.0  # normalization scale for velocity
         self.max_angular_velocity = 10.0  # normalization scale for angular velocity
 
+        self.enable_motor_dynamics = bool(enable_motor_dynamics)
+        self.motor_time_constant = float(motor_time_constant)
+        self.wind_vector = (
+            np.asarray(wind_vector, dtype=np.float64)
+            if wind_vector is not None
+            else np.zeros(3, dtype=np.float64)
+        )
+        self.enable_ground_effect = bool(enable_ground_effect)
+        self.quadratic_drag_coeff = max(0.0, float(quadratic_drag_coeff))
+        self.randomize_domain = bool(randomize_domain)
+        self.domain_randomizer = domain_randomizer
+        self._last_randomized_parameters: Optional[Dict[str, Any]] = None
+
+        self.nominal_mass: float = float(mass)
+        self.nominal_inertia: Optional[Tuple[float, float, float]] = inertia
+        self.nominal_max_thrust: float = float(max_thrust_per_motor)
+        self.nominal_c_tau: float = float(torque_to_thrust_ratio)
+        self.nominal_linear_damping: float = float(linear_damping)
+        self.nominal_angular_damping: float = float(angular_damping)
+        self.nominal_motor_time_constant: float = float(motor_time_constant)
+        self.nominal_wind_vector: np.ndarray = self.wind_vector.copy()
+        self.nominal_quadratic_drag: float = self.quadratic_drag_coeff
+
         self.dynamics = DroneDynamics6DOF(
             mass=mass,
             arm_length=arm_length,
@@ -849,6 +888,11 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
             angular_damping=angular_damping,
             dt=dt,
             substeps=substeps,
+            enable_motor_dynamics=self.enable_motor_dynamics,
+            motor_time_constant=self.motor_time_constant,
+            wind_vector=self.wind_vector,
+            enable_ground_effect=self.enable_ground_effect,
+            quadratic_drag_coeff=self.quadratic_drag_coeff,
         )
 
         # Action space: 4 motor commands in [-1, 1], mapped to [0, max_thrust]
@@ -1044,6 +1088,8 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         if current_split is not None:
             info["split"] = current_split
             info["split_seed"] = self._last_split_seed
+        if self._last_randomized_parameters is not None:
+            info["randomized_parameters"] = self._last_randomized_parameters
         return info
 
     @property
@@ -1152,6 +1198,32 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
             self._goal = self.default_goal.copy()
 
         self.dynamics.reset(position=self._position)
+
+        # Domain randomization if enabled
+        if self.randomize_domain:
+            self.dynamics.mass = self.nominal_mass
+            if self.nominal_inertia is not None:
+                self.dynamics.inertia_diag = np.array(self.nominal_inertia, dtype=np.float64)
+                self.dynamics.inv_inertia = 1.0 / self.dynamics.inertia_diag
+            self.dynamics.max_thrust_per_motor = self.nominal_max_thrust
+            self.dynamics.c_tau = self.nominal_c_tau
+            self.dynamics.linear_damping = self.nominal_linear_damping
+            self.dynamics.angular_damping = self.nominal_angular_damping
+            self.dynamics.wind_vector = self.nominal_wind_vector.copy()
+            self.dynamics.motor_time_constant = self.nominal_motor_time_constant
+            self.dynamics.hover_thrust_per_motor = (
+                self.dynamics.mass * self.dynamics.gravity
+            ) / 4.0
+
+            if self.domain_randomizer is None:
+                from adaptive_rl.environments.randomization import DomainRandomizer
+
+                self.domain_randomizer = DomainRandomizer(seed=effective_seed)
+            params = self.domain_randomizer.sample_parameters(
+                nominal_dynamics=self.dynamics, seed=effective_seed
+            )
+            self.domain_randomizer.apply_to_dynamics(self.dynamics, params)
+            self._last_randomized_parameters = params
 
         self._obstacles = generate_drone_obstacles(
             bounds=self.bounds,

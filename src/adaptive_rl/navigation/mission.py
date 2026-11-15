@@ -104,9 +104,11 @@ class MissionManager:
         self.min_clearance_observed = float("inf")
         self.state = MissionState.PLANNING
 
-        # Collect current obstacle set
+        # Collect current obstacle set including horizon-predicted dynamic obstacles
         dyn_obs = dynamic_obstacles or []
-        current_obs = list(static_obstacles) + [d.as_static_obstacle_at(time_sec) for d in dyn_obs]
+        current_obs = list(static_obstacles)
+        for d in dyn_obs:
+            current_obs.extend(d.predict_occupied_spheres(time_sec, horizon_sec=3.0, dt=0.5))
 
         # Plan through each high-level mission waypoint
         full_path: List[np.ndarray] = [self.home_position.copy()]
@@ -160,25 +162,34 @@ class MissionManager:
 
         dist_to_target = float(np.linalg.norm(current_target - pos))
 
-        # Check if current path segment ahead is blocked by dynamic obstacle
+        # Check if current path segment ahead is blocked by dynamic obstacle in near future
         if self.active_path_idx < len(self.active_path):
-            segment_clear, _ = self.planner.is_segment_valid(pos, current_target, current_obs)
+            predicted_dyn_obs: List[ObstacleSphere3D] = []
+            for d in dyn_obs:
+                predicted_dyn_obs.extend(
+                    d.predict_occupied_spheres(time_sec, horizon_sec=2.5, dt=0.5)
+                )
+            eval_obs = list(static_obstacles) + predicted_dyn_obs
+
+            segment_clear, _ = self.planner.is_segment_valid(pos, current_target, eval_obs)
             if not segment_clear:
                 logger.info(
-                    "Dynamic obstacle encroaching active path at t=%.2fs! Replanning...", time_sec
+                    "Dynamic obstacle predicted in flight corridor at t=%.2fs! Replanning...",
+                    time_sec,
                 )
                 self.state = MissionState.REPLANNING
                 self.replan_count += 1
                 # Replan from current position to the destination
                 dest = self.mission_waypoints[-1] if self.mission_waypoints else current_target
-                replan_res = self.planner.plan(pos, dest, current_obs)
+                replan_res = self.planner.plan(pos, dest, eval_obs)
                 if replan_res.status == "SUCCESS" and replan_res.waypoints:
                     self.active_path = replan_res.waypoints
                     self.active_path_idx = 1 if len(replan_res.waypoints) > 1 else 0
                     current_target = self.active_path[self.active_path_idx]
                     self.state = MissionState.EXECUTING
                 else:
-                    self.state = MissionState.FAILED_BLOCKED
+                    # Safe stop in place (hover hold) while dynamic obstacle clears the corridor
+                    current_target = pos.copy()
                     return current_target, self.get_telemetry(drone_state)
 
         # Advance waypoint if reached

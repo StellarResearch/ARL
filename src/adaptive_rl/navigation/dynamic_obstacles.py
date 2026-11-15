@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -70,6 +70,32 @@ class DynamicObstacleSphere3D:
     def as_static_obstacle_at(self, time_sec: float) -> ObstacleSphere3D:
         """Export an instantaneous ObstacleSphere3D at a specific timestamp."""
         return ObstacleSphere3D(center=self.center_at(time_sec), radius=self.radius)
+
+    def predict_trajectory(
+        self,
+        t_start: float,
+        horizon_sec: float = 3.0,
+        dt: float = 0.5,
+    ) -> List[Tuple[float, np.ndarray]]:
+        """Predict the obstacle center trajectory over a future time horizon [t_start, t_start + horizon]."""
+        traj: List[Tuple[float, np.ndarray]] = []
+        steps = max(1, int(round(horizon_sec / dt)))
+        for i in range(steps + 1):
+            t = t_start + i * dt
+            traj.append((t, self.center_at(t)))
+        return traj
+
+    def predict_occupied_spheres(
+        self,
+        t_start: float,
+        horizon_sec: float = 3.0,
+        dt: float = 0.5,
+    ) -> List[ObstacleSphere3D]:
+        """Generate static spherical obstacle approximations covering the predicted trajectory horizon."""
+        return [
+            ObstacleSphere3D(center=pt, radius=self.radius)
+            for _, pt in self.predict_trajectory(t_start, horizon_sec, dt)
+        ]
 
     def to_dict(self) -> Dict[str, Any]:
         return {

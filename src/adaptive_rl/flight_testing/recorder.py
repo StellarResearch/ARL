@@ -9,10 +9,15 @@ SECURITY AND CRYPTOGRAPHIC PROVENANCE NOTE:
 The SHA-256 digests generated here (config_fingerprint and record_digest) provide
 mathematical integrity comparison and tamper detection. They detect accidental corruption
 or unauthorized modification of simulation parameters between execution and analysis.
-They do NOT provide non-repudiation or authenticated identity against an active attacker
-who possesses write permissions to both the record data and digest calculation logic.
-For strict adversarial non-repudiation, an optional cryptographic HMAC/digital signature
-field is provided to attach an asymmetric key signature.
+A SHA-256 digest is an unkeyed cryptographic checksum that verifies data integrity,
+NOT identity or origin authenticity. It does NOT provide non-repudiation or authenticated
+identity against an active attacker who possesses write permissions to both the record data
+and digest calculation logic.
+
+In contrast, a digital signature (or HMAC) requires an authenticated cryptographic key
+(such as an asymmetric private key or pre-shared HMAC secret). The optional `signature`
+field in FlightRecord is reserved strictly for authenticated cryptographic signatures
+(e.g., ECDSA, Ed25519, or HMAC-SHA256) and must never be conflated with plain SHA-256 digests.
 """
 
 from __future__ import annotations
@@ -172,6 +177,8 @@ class FlightRecord:
     checkpoint_hash: Optional[str]
     random_seed: Optional[int]
     scenario_metrics: List[FlightScenarioMetrics]
+    trajectories: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    configuration: Optional[ExperimentConfigurationFingerprint] = None
     aggregate_summary: Dict[str, Any] = field(default_factory=dict)
     signature: Optional[str] = None  # Optional asymmetric HMAC / digital signature
 
@@ -186,16 +193,22 @@ class FlightRecord:
             "checkpoint_hash": self.checkpoint_hash,
             "random_seed": self.random_seed,
             "scenario_metrics": [m.to_dict() for m in self.scenario_metrics],
+            "trajectories": self.trajectories,
             "aggregate_summary": self.aggregate_summary,
             "signature": self.signature,
         }
+        if self.configuration is not None:
+            data["configuration"] = self.configuration.to_dict()
         if include_digest:
             data["record_digest"] = self.record_digest
         return data
 
     def verify_config_fingerprint(self) -> bool:
-        """Verify that the stored config_fingerprint matches the actual physics configuration."""
-        expected = compute_config_fingerprint(self.physics.to_dict())
+        """Verify that the stored config_fingerprint matches the configuration."""
+        if self.configuration is not None:
+            expected = compute_config_fingerprint(self.configuration.to_dict())
+        else:
+            expected = compute_config_fingerprint(self.physics.to_dict())
         return self.config_fingerprint == expected
 
     def verify_fingerprint(self) -> bool:
@@ -225,6 +238,8 @@ class FlightRecorder:
         checkpoint_path: Optional[Path | str] = None,
         random_seed: Optional[int] = None,
         signature: Optional[str] = None,
+        configuration: Optional[ExperimentConfigurationFingerprint | Dict[str, Any]] = None,
+        trajectories: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     ) -> FlightRecord:
         """Create a cryptographically fingerprinted FlightRecord from execution data."""
         from datetime import datetime, timezone
@@ -252,7 +267,21 @@ class FlightRecorder:
             lidar_range=float(physics_params.get("lidar_range", 20.0)),
         )
 
-        config_hash = compute_config_fingerprint(physics.to_dict())
+        # Extract metrics and trajectories
+        metrics_list: List[FlightScenarioMetrics] = []
+        collected_trajectories: Dict[str, List[Dict[str, Any]]] = {}
+        for r in scenario_results:
+            if isinstance(r, FlightScenarioResult):
+                metrics_list.append(r.metrics)
+                collected_trajectories[r.scenario_name] = [step.to_dict() for step in r.telemetry]
+            elif isinstance(r, FlightScenarioMetrics):
+                metrics_list.append(r)
+                collected_trajectories[r.scenario_name] = []
+            else:
+                raise ValueError(f"Unsupported result type: {type(r)}")
+
+        if trajectories is not None:
+            collected_trajectories.update(trajectories)
 
         # Checkpoint hash
         chk_hash: Optional[str] = None
@@ -263,6 +292,33 @@ class FlightRecorder:
                     chk_hash = hashlib.sha256(f.read()).hexdigest()
             else:
                 chk_hash = "not_found"
+
+        # Build comprehensive ExperimentConfigurationFingerprint
+        if configuration is not None:
+            if isinstance(configuration, ExperimentConfigurationFingerprint):
+                exp_config = configuration
+            elif isinstance(configuration, dict):
+                exp_config = ExperimentConfigurationFingerprint(**configuration)
+            else:
+                raise ValueError(f"Invalid configuration type: {type(configuration)}")
+        else:
+            exp_config = ExperimentConfigurationFingerprint(
+                physics=physics,
+                environment_bounds=list(
+                    physics_params.get("environment_bounds", [30.0, 30.0, 15.0])
+                ),
+                algorithm_name=algorithm_name,
+                checkpoint_hash=chk_hash,
+                random_seed=random_seed,
+                scenario_names=sorted([m.scenario_name for m in metrics_list]),
+                controller_type=str(
+                    physics_params.get("controller_type", "QuadrotorPIDController")
+                ),
+                controller_gains=dict(physics_params.get("controller_gains", {})),
+                extra_parameters=dict(physics_params.get("extra_parameters", {})),
+            )
+
+        config_hash = compute_config_fingerprint(exp_config.to_dict())
 
         # Software and host provenance
         git_meta = collect_git_metadata()
@@ -283,16 +339,6 @@ class FlightRecorder:
             gpu_count=hw.gpu_count,
             gpu_name=hw.gpu_name,
         )
-
-        # Extract metrics
-        metrics_list: List[FlightScenarioMetrics] = []
-        for r in scenario_results:
-            if isinstance(r, FlightScenarioResult):
-                metrics_list.append(r.metrics)
-            elif isinstance(r, FlightScenarioMetrics):
-                metrics_list.append(r)
-            else:
-                raise ValueError(f"Unsupported result type: {type(r)}")
 
         # Aggregate summary
         total_scenarios = len(metrics_list)
@@ -333,6 +379,8 @@ class FlightRecorder:
             "checkpoint_hash": chk_hash,
             "random_seed": random_seed,
             "scenario_metrics": [m.to_dict() for m in metrics_list],
+            "trajectories": collected_trajectories,
+            "configuration": exp_config.to_dict(),
             "aggregate_summary": agg_summary,
             "signature": signature,
         }
@@ -349,6 +397,8 @@ class FlightRecorder:
             checkpoint_hash=chk_hash,
             random_seed=random_seed,
             scenario_metrics=metrics_list,
+            trajectories=collected_trajectories,
+            configuration=exp_config,
             aggregate_summary=agg_summary,
             signature=signature,
         )
@@ -449,6 +499,32 @@ class FlightRecorder:
         for m in data["scenario_metrics"]:
             metrics_list.append(FlightScenarioMetrics(**m))
 
+        trajectories = data.get("trajectories", {})
+
+        cfg_data = data.get("configuration")
+        if cfg_data:
+            # Synchronize cfg_physics with physics from top-level to detect if either was tampered with
+            configuration = ExperimentConfigurationFingerprint(
+                physics=physics,
+                environment_bounds=list(cfg_data.get("environment_bounds", [30.0, 30.0, 15.0])),
+                algorithm_name=str(cfg_data.get("algorithm_name", "pid_reference")),
+                checkpoint_hash=cfg_data.get("checkpoint_hash"),
+                random_seed=cfg_data.get("random_seed"),
+                scenario_names=list(cfg_data.get("scenario_names", [])),
+                controller_type=str(cfg_data.get("controller_type", "QuadrotorPIDController")),
+                controller_gains=dict(cfg_data.get("controller_gains", {})),
+                extra_parameters=dict(cfg_data.get("extra_parameters", {})),
+            )
+        else:
+            configuration = ExperimentConfigurationFingerprint(
+                physics=physics,
+                environment_bounds=list(data.get("environment_bounds", [30.0, 30.0, 15.0])),
+                algorithm_name=str(data.get("algorithm_name", "pid_reference")),
+                checkpoint_hash=data.get("checkpoint_hash"),
+                random_seed=data.get("random_seed"),
+                scenario_names=sorted([m.scenario_name for m in metrics_list]),
+            )
+
         record = FlightRecord(
             experiment_id=data["experiment_id"],
             timestamp_utc=data["timestamp_utc"],
@@ -460,6 +536,8 @@ class FlightRecorder:
             checkpoint_hash=data.get("checkpoint_hash"),
             random_seed=data.get("random_seed"),
             scenario_metrics=metrics_list,
+            trajectories=trajectories,
+            configuration=configuration,
             aggregate_summary=data.get("aggregate_summary", {}),
             signature=data.get("signature"),
         )
@@ -467,7 +545,7 @@ class FlightRecorder:
         if not record.verify_config_fingerprint():
             raise ValueError(
                 f"Config fingerprint mismatch in '{path.name}'. Stored fingerprint '{record.config_fingerprint}' "
-                f"does not match recomputed physics fingerprint '{compute_config_fingerprint(record.physics.to_dict())}'."
+                f"does not match recomputed configuration fingerprint."
             )
 
         return record

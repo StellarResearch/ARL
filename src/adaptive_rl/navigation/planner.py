@@ -198,9 +198,17 @@ class AStarPlanner3D:
         self,
         waypoints: List[np.ndarray],
         obstacles: Sequence[ObstacleSphere3D],
-    ) -> List[np.ndarray]:
-        """Greedy line-of-sight shortcutting (string pulling) with strict collision revalidation."""
+    ) -> Optional[List[np.ndarray]]:
+        """Greedy line-of-sight shortcutting (string pulling) with strict collision revalidation.
+
+        Returns None if no safe continuation exists between waypoints, ensuring an unvalidated
+        segment is never appended.
+        """
         if len(waypoints) <= 2:
+            if len(waypoints) == 2:
+                valid, _ = self.is_segment_valid(waypoints[0], waypoints[1], obstacles)
+                if not valid:
+                    return None
             return [w.copy() for w in waypoints]
 
         simplified = [waypoints[0].copy()]
@@ -208,8 +216,7 @@ class AStarPlanner3D:
         n = len(waypoints)
 
         while curr_idx < n - 1:
-            # Look ahead as far as possible
-            furthest_valid_idx = curr_idx + 1
+            furthest_valid_idx: Optional[int] = None
             for next_idx in range(n - 1, curr_idx, -1):
                 valid, _ = self.is_segment_valid(
                     waypoints[curr_idx], waypoints[next_idx], obstacles
@@ -217,8 +224,19 @@ class AStarPlanner3D:
                 if valid:
                     furthest_valid_idx = next_idx
                     break
+
+            if furthest_valid_idx is None:
+                # No collision-free continuation exists from curr_idx; do not append unvalidated segment
+                return None
+
             simplified.append(waypoints[furthest_valid_idx].copy())
             curr_idx = furthest_valid_idx
+
+        # Invariant check: every consecutive segment must pass continuous collision validation
+        for i in range(len(simplified) - 1):
+            valid, _ = self.is_segment_valid(simplified[i], simplified[i + 1], obstacles)
+            if not valid:
+                return None
 
         return simplified
 
@@ -323,8 +341,13 @@ class AStarPlanner3D:
                     continue
 
                 neighbor_world = to_world(neighbor)
-                valid, _ = self.is_point_valid(neighbor_world, obstacles)
-                if not valid:
+                valid_pt, _ = self.is_point_valid(neighbor_world, obstacles)
+                if not valid_pt:
+                    continue
+
+                # Continuous segment check to prevent diagonal corner-cutting
+                valid_seg, _ = self.is_segment_valid(curr_world, neighbor_world, obstacles)
+                if not valid_seg:
                     continue
 
                 step_cost = math.sqrt(offset[0] ** 2 + offset[1] ** 2 + offset[2] ** 2) * res
@@ -360,6 +383,23 @@ class AStarPlanner3D:
 
         # 6. Apply line-of-sight shortcutting
         simplified = self.simplify_path(raw_path, obstacles)
+        if simplified is None:
+            # Fall back to raw grid path only if every raw segment is provably collision-free
+            raw_valid = True
+            for i in range(len(raw_path) - 1):
+                v_seg, _ = self.is_segment_valid(raw_path[i], raw_path[i + 1], obstacles)
+                if not v_seg:
+                    raw_valid = False
+                    break
+            if raw_valid:
+                simplified = raw_path
+            else:
+                elapsed = (time.perf_counter() - t0) * 1000.0
+                return PlanningResult(
+                    status="NO_PATH",
+                    planning_time_ms=elapsed,
+                    nodes_expanded=expansions,
+                )
 
         # Compute simplified metrics
         simp_len = sum(
