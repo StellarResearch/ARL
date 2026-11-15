@@ -172,3 +172,56 @@ def test_route_evaluator_metrics_and_scoring() -> None:
     assert metrics.min_clearance > 0.0
     assert metrics.risk_score >= 0.0
     assert metrics.total_objective_cost > 0.0
+
+
+def test_continuous_clearance_between_samples_adversarial() -> None:
+    """Adversarial test: minimum clearance occurs strictly between discrete sample timestamps.
+
+    Verifies that the exact piecewise-linear analytical formulation detects clearance breaches
+    that discrete point sampling completely misses.
+    """
+    evaluator = RouteEvaluator(
+        nominal_speed=2.0,
+        risk_distance_threshold=2.0,
+    )
+
+    # Waypoints spanning dt = 0.3s (which defaults to 3 discrete sample steps at s=0, 0.5, 1.0)
+    # Let us craft a segment over [0.0, 1.0] where sampling at s=0, 1/3, 2/3, 1 misses the closest point at s=0.5:
+    # Drone: (0, 0, 0) to (1, 1, 0) -> p(t) = (t, t, 0)
+    # Obstacle: (1, 0, 0.4) to (0, 1, 0.4) -> c(t) = (1-t, t, 0.4)
+    # Relative vector: r(t) = (2t - 1, 0, -0.4)
+    # Analytical minimum distance occurs at t* = 0.5, where d_min = 0.4m.
+    # At s = 0.3333 or s = 0.6667, discrete distance is sqrt((2/3 - 1)^2 + 0.4^2) = sqrt(1/9 + 0.16) = 0.5207m.
+    # With vehicle_radius=0.25 and obstacle radius=0.20:
+    # Total collision radius = 0.45m.
+    # True analytical clearance: 0.40 - 0.45 = -0.05m (COLLISION / CLEARANCE BREACH!).
+    # Discrete sampling at thirds: 0.5207 - 0.45 = +0.0707m (Falsely reported safe!).
+    tw = [
+        TimedWaypoint(position=np.array([0.0, 0.0, 0.0]), time_sec=0.0),
+        TimedWaypoint(position=np.array([1.0, 1.0, 0.0]), time_sec=1.0),
+    ]
+
+    dyn_obs = DynamicObstacleSphere3D(
+        center_initial=np.array([1.0, 0.0, 0.4]),
+        radius=0.20,
+        velocity=np.array([-1.0, 1.0, 0.0]),
+        bounds=(30.0, 30.0, 30.0),
+        motion_type="bounce",
+    )
+
+    metrics = evaluator.evaluate(
+        timed_waypoints=tw,
+        static_obstacles=[],
+        dynamic_obstacles=[dyn_obs],
+        vehicle_radius=0.25,
+    )
+
+    # Exact analytical continuous calculation must detect the negative clearance
+    assert metrics.min_clearance < 0.0, (
+        f"Expected clearance breach (< 0.0), got {metrics.min_clearance}"
+    )
+    assert np.isclose(metrics.min_clearance, 0.4 - 0.45, atol=1e-4), (
+        f"Expected exact analytical clearance -0.05, got {metrics.min_clearance}"
+    )
+    assert metrics.is_collision_free is False
+

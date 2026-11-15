@@ -176,7 +176,11 @@ class MissionManager:
         self.replan_reason = "none"
         self.state = MissionState.PLANNING
 
-        dyn_obs = dynamic_obstacles or []
+        # Isolate nominal unperturbed obstacle predictions during initial route planning
+        dyn_obs = [
+            d.as_predicted_obstacle() if hasattr(d, "as_predicted_obstacle") else d
+            for d in (dynamic_obstacles or [])
+        ]
 
         # 1. Use predictive time-aware planner if provided
         if self.time_aware_planner is not None:
@@ -634,6 +638,95 @@ class MissionManager:
 
         self._update_target_velocity(pos=pos, time_sec=time_sec)
         return current_target, self.get_telemetry(drone_state)
+
+    def get_time_parameterized_reference(
+        self, time_sec: float
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute continuous space-time reference position and velocity from active timed waypoints.
+
+        Respects scheduled waiting intervals (v_ref = 0), kinematic speed clamping,
+        and terminal approach deceleration to zero at the final goal.
+        """
+        if not math.isfinite(time_sec) or time_sec < 0.0:
+            pos = self.home_position.copy() if self.home_position is not None else np.zeros(3)
+            return pos, np.zeros(3, dtype=np.float64)
+
+        if not self.active_timed_waypoints:
+            if self.active_path:
+                idx = min(self.active_path_idx, len(self.active_path) - 1)
+                return self.active_path[idx].copy(), np.zeros(3, dtype=np.float64)
+            pos = self.home_position.copy() if self.home_position is not None else np.zeros(3)
+            return pos, np.zeros(3, dtype=np.float64)
+
+        tw = self.active_timed_waypoints
+        n = len(tw)
+        final_pos = (
+            self.mission_waypoints[-1]
+            if self.mission_waypoints
+            else (self.final_goal if self.final_goal is not None else tw[-1].position)
+        )
+
+        if time_sec <= tw[0].time_sec or n == 1:
+            return tw[0].position.copy(), np.zeros(3, dtype=np.float64)
+
+        if time_sec >= tw[-1].time_sec:
+            return final_pos.copy(), np.zeros(3, dtype=np.float64)
+
+        k = 0
+        for i in range(n - 1):
+            if tw[i].time_sec <= time_sec <= tw[i + 1].time_sec:
+                k = i
+                break
+        else:
+            k = n - 2
+
+        t_k, t_kp1 = tw[k].time_sec, tw[k + 1].time_sec
+        p_k, p_kp1 = tw[k].position, tw[k + 1].position
+        dt = t_kp1 - t_k
+
+        if (
+            dt <= 1e-6
+            or getattr(tw[k], "is_waiting", False)
+            or getattr(tw[k + 1], "is_waiting", False)
+            or np.allclose(p_k, p_kp1)
+        ):
+            return p_k.copy(), np.zeros(3, dtype=np.float64)
+
+        tau = max(0.0, min(1.0, (time_sec - t_k) / dt))
+        p_ref = p_k + tau * (p_kp1 - p_k)
+        v_ref = (p_kp1 - p_k) / dt
+
+        nom_speed = (
+            self.time_aware_planner.nominal_speed if self.time_aware_planner is not None else 2.0
+        )
+        v_mag = float(np.linalg.norm(v_ref))
+        if v_mag > nom_speed and v_mag > 1e-6:
+            v_ref = v_ref * (nom_speed / v_mag)
+
+        # Terminal approach deceleration
+        dist_to_final = float(np.linalg.norm(final_pos - p_ref))
+        approach_dist = max(6.0, 4.0 * self.waypoint_acceptance_radius)
+        if dist_to_final < approach_dist and dist_to_final > 1e-4:
+            a_brake = 1.0
+            v_profile = min(nom_speed, math.sqrt(2.0 * a_brake * max(0.0, dist_to_final - 0.3)))
+            if v_mag > 1e-6:
+                v_ref = (v_ref / v_mag) * min(v_mag, v_profile)
+            else:
+                v_ref = np.zeros(3, dtype=np.float64)
+
+        if self.state in (
+            MissionState.ARRIVED,
+            MissionState.WAITING,
+            MissionState.IDLE,
+            MissionState.FAILED_BLOCKED,
+            MissionState.ABORTED,
+        ):
+            v_ref = np.zeros(3, dtype=np.float64)
+
+        if self.state_source == "estimated":
+            v_ref = np.zeros(3, dtype=np.float64)
+
+        return p_ref.copy(), v_ref.copy()
 
     def _update_target_velocity(self, pos: np.ndarray, time_sec: float) -> None:
         """Compute smooth, physically feasible feedforward target velocity respecting kinematic limits."""

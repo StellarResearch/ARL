@@ -398,13 +398,22 @@ Execution throughput benchmarked on a standard Linux environment (`benchmarks/be
 
 | Component | Metric | Value | Requirement |
 | :--- | :--- | :--- | :--- |
-| **4D Time-Aware A\*** (Clear Domain) | Mean Planning Latency | 4.23 s (15,000 expansions) | Bound within budget |
-| **4D Time-Aware A\*** (Cluttered Domain) | Mean Planning Latency | 5.00 s (2,558 expansions) | Goal reachable |
-| **Continuous Risk Evaluator** | Throughput | 64.8 evaluations / sec | Real-time |
-| **Continuous Risk Evaluator** | Mean Latency | 15.44 ms / evaluation | < 50 ms |
-| **MissionManager Update Cycle** | Mean Step Latency | 1.85 ms / update | < 50 ms (20 Hz loop) |
-| **MissionManager Update Cycle** | 95th Percentile Latency | 4.81 ms / update | < 50 ms |
-| **MissionManager Update Cycle** | Control Loop Throughput | 540.7 updates / sec | > 20 Hz |
+| **4D Time-Aware A\*** (Clear Domain) | Mean Planning Latency | 3.07 s (15,000 expansions) | Bound within budget |
+| **4D Time-Aware A\*** (Cluttered Domain) | Mean Planning Latency | 5.02 s (3,378 expansions) | Goal reachable |
+| **Continuous Risk Evaluator** | Throughput | 75.7 evaluations / sec | Real-time |
+| **Continuous Risk Evaluator** | Mean Latency | 13.22 ms / evaluation | < 50 ms |
+| **MissionManager Update Cycle** | Mean Step Latency | 1.43 ms / update | < 50 ms (20 Hz loop) |
+| **MissionManager Update Cycle** | 95th Percentile Latency | 3.61 ms / update | < 50 ms |
+| **MissionManager Update Cycle** | Control Loop Throughput | 699.3 updates / sec | > 20 Hz |
+
+### 9.8 Continuous Space-Time Trajectory Execution & Analytical Clearance
+
+- **Space-Time Trajectory Query (`get_time_parameterized_reference`)**:
+  Both `MissionManager` and `FlightScenarioRunner` provide continuous analytical interpolation $(\mathbf{p}_{\text{ref}}(t), \mathbf{v}_{\text{ref}}(t))$ across the scheduled 4D timed waypoints. Waiting intervals strictly command $\mathbf{v}_{\text{ref}} = \mathbf{0}$, velocity is clamped to $v_{\text{nominal}}$, and stationary mission states (e.g. `ARRIVED`, `WAITING`, `FAILED_BLOCKED`) command zero velocity.
+- **Analytical Piecewise-Linear Dynamic Clearance**:
+  `RouteEvaluator.evaluate()` calculates the exact analytical minimum separation between linear drone transit chords and moving obstacle segments split at boundary bounce times, guaranteeing that clearance violations between discrete sample points are detected without grid aliasing.
+- **Terminal Approach Velocity Deceleration**:
+  When approaching the destination within braking distance $d \le 6.0\text{ m}$, commanded velocity setpoints follow a calibrated square-root profile $v_{\text{profile}} = \min(v_{\text{nom}}, \sqrt{2 a_{\text{brake}} \max(0, d - r_{\text{target}})})$, reaching zero velocity exactly at $r_{\text{target}}$ to eliminate undamped terminal limit-cycle oscillations.
 
 ---
 

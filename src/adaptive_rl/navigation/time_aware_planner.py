@@ -247,8 +247,9 @@ class RouteEvaluator:
                     if chord_stat_clr < 0.0:
                         is_safe = False
 
-                # 3b. Continuous swept collision check against moving obstacles
+                # 3b. Exact analytical continuous minimum clearance to dynamic obstacles
                 for do in dynamic_obstacles:
+                    # Continuous swept collision check (fail-closed hard safety constraint)
                     if do.check_continuous_collision(
                         prev_drone_pos=p_a,
                         curr_drone_pos=p_b,
@@ -258,6 +259,51 @@ class RouteEvaluator:
                         veh_acc_max=0.0,
                     ):
                         is_safe = False
+
+                    # Split interval at bounce events to compute exact piecewise-linear closest approach
+                    # (Strictly valid for piecewise-linear trajectories; oscillating trajectories are evaluated via continuous temporal sampling below)
+                    if dt_seg > 1e-9 and getattr(do, "motion_type", "constant") != "oscillate":
+                        bounces = (
+                            do.get_bounce_times(t_a, t_b)
+                            if hasattr(do, "get_bounce_times")
+                            else []
+                        )
+                        splits = [t_a] + bounces + [t_b]
+                        for m in range(len(splits) - 1):
+                            sub_ta = splits[m]
+                            sub_tb = splits[m + 1]
+                            frac_a = (sub_ta - t_a) / dt_seg
+                            frac_b = (sub_tb - t_a) / dt_seg
+                            sub_pa = p_a + frac_a * seg_vec
+                            sub_pb = p_a + frac_b * seg_vec
+                            sub_ca = do.center_at(sub_ta)
+                            sub_cb = do.center_at(sub_tb)
+
+                            # Relative vector r(s) = (sub_pa - sub_ca) + s * ((sub_pb - sub_cb) - (sub_pa - sub_ca))
+                            ra = sub_pa - sub_ca
+                            rb = sub_pb - sub_cb
+                            d_rel = rb - ra
+                            d_rel_sq = float(np.dot(d_rel, d_rel))
+                            if d_rel_sq < 1e-12:
+                                min_sub_d = float(np.linalg.norm(ra))
+                            else:
+                                s_opt = max(0.0, min(1.0, -float(np.dot(ra, d_rel)) / d_rel_sq))
+                                min_sub_d = float(np.linalg.norm(ra + s_opt * d_rel))
+
+                            exact_dyn_clr = min_sub_d - (do.radius + vehicle_radius)
+                            if exact_dyn_clr < min_clear:
+                                min_clear = exact_dyn_clr
+                            if exact_dyn_clr < 0.0:
+                                is_safe = False
+                    else:
+                        ca = do.center_at(t_a)
+                        exact_dyn_clr = float(np.linalg.norm(p_a - ca)) - (
+                            do.radius + vehicle_radius
+                        )
+                        if exact_dyn_clr < min_clear:
+                            min_clear = exact_dyn_clr
+                        if exact_dyn_clr < 0.0:
+                            is_safe = False
 
                 # 3c. Continuous temporal sampling for dynamic clearance, waiting intervals, and risk integration
                 sample_count = max(3, min(25, int(math.ceil(dt_seg / 0.1))))
@@ -460,6 +506,7 @@ class TimeAwareAStarPlanner3D:
         t_end: float,
         dynamic_obstacles: Sequence[DynamicObstacleSphere3D],
         veh_acc_max: float = 0.0,
+        safety_margin: Optional[float] = None,
     ) -> bool:
         """Evaluate continuous swept-sphere collision against all moving obstacles over [t_start, t_end].
 
@@ -469,7 +516,8 @@ class TimeAwareAStarPlanner3D:
         if not dynamic_obstacles or t_end <= t_start:
             return False
 
-        effective_radius = self.vehicle_radius + self.safety_margin
+        margin = self.safety_margin if safety_margin is None else max(0.0, float(safety_margin))
+        effective_radius = self.vehicle_radius + margin
         dt = t_end - t_start
         t_mid = 0.5 * (t_start + t_end)
 

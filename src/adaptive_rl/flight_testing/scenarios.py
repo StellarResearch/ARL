@@ -1430,11 +1430,31 @@ def get_scenario(name: str) -> FlightScenarioDefinition:
     raise KeyError(f"Flight scenario '{name}' not found.")
 
 
+def get_time_parameterized_reference(
+    mission_manager: Optional[MissionManager],
+    time_sec: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Retrieve continuous space-time reference position and velocity from mission manager."""
+    if mission_manager is not None:
+        return mission_manager.get_time_parameterized_reference(time_sec)
+    return np.zeros(3, dtype=np.float64), np.zeros(3, dtype=np.float64)
+
+
 class FlightScenarioRunner:
     """Executes flight scenarios against real 6-DOF simulation models and records telemetry."""
 
     def __init__(self, env: Optional[Drone6DOFEnv] = None) -> None:
         self.env = env or Drone6DOFEnv()
+
+    def get_time_parameterized_reference(
+        self,
+        time_sec: float,
+        mission_manager: Optional[MissionManager] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Retrieve continuous space-time reference position and velocity."""
+        if mission_manager is not None:
+            return mission_manager.get_time_parameterized_reference(time_sec)
+        return np.zeros(3, dtype=np.float64), np.zeros(3, dtype=np.float64)
 
     def run_scenario(
         self,
@@ -1512,11 +1532,16 @@ class FlightScenarioRunner:
                 state_source="estimated" if scenario.sensor_in_the_loop else "ground_truth",
             )
             targets = scenario.waypoints if scenario.waypoints else [scenario.initial_position]
+            # Isolate nominal unperturbed obstacle predictions during initial route planning
+            initial_dyn_obs = [
+                d.as_predicted_obstacle() if hasattr(d, "as_predicted_obstacle") else d
+                for d in scenario.dynamic_obstacles
+            ]
             ok = mission_manager.start_mission(
                 start_position=scenario.initial_position,
                 goals=targets,
                 static_obstacles=scenario.obstacles,
-                dynamic_obstacles=scenario.dynamic_obstacles,
+                dynamic_obstacles=initial_dyn_obs,
                 time_sec=0.0,
             )
             if not ok or mission_manager.state == MissionState.FAILED_BLOCKED:
@@ -1682,11 +1707,36 @@ class FlightScenarioRunner:
                 )
                 else np.zeros(3, dtype=np.float64)
             )
+            cmd_target_pos = current_target.copy()
+            cmd_target_vel = target_vel.copy()
+            if getattr(scenario, "use_time_aware_planner", False) and not getattr(
+                scenario, "sensor_in_the_loop", False
+            ):
+                final_coord = (
+                    scenario.waypoints[-1] if scenario.waypoints else scenario.initial_position
+                )
+                dist_to_final_ctrl = float(np.linalg.norm(final_coord - feedback_state.position))
+                if dist_to_final_ctrl <= scenario.target_radius:
+                    cmd_target_pos = final_coord.copy()
+                    cmd_target_vel = np.zeros(3, dtype=np.float64)
+                elif dist_to_final_ctrl <= 6.0:
+                    d_dir = (final_coord - feedback_state.position) / dist_to_final_ctrl
+                    a_brake = 1.0
+                    v_profile = min(
+                        2.0,
+                        math.sqrt(
+                            2.0 * a_brake * max(0.0, dist_to_final_ctrl - scenario.target_radius)
+                        ),
+                    )
+                    max_lead = min(dist_to_final_ctrl, v_profile / 2.2)
+                    cmd_target_pos = feedback_state.position + d_dir * max_lead
+                    cmd_target_vel = d_dir * v_profile
+
             if hasattr(ctrl, "compute_action"):
                 action, ctrl_info = ctrl.compute_action(
                     feedback_state,
-                    target_position=current_target,
-                    target_velocity=target_vel,
+                    target_position=cmd_target_pos,
+                    target_velocity=cmd_target_vel,
                     dt=dt,
                 )
             elif hasattr(ctrl, "predict"):
@@ -1836,6 +1886,29 @@ class FlightScenarioRunner:
             is_pos_settled = dist_to_final <= scenario.target_radius
             is_vel_settled = curr_speed <= scenario.settling_velocity_threshold
 
+            if mission_manager is not None and is_pos_settled:
+                while (
+                    mission_manager.current_mission_waypoint_idx
+                    < len(mission_manager.mission_waypoints)
+                ):
+                    dist_to_mwp = float(
+                        np.linalg.norm(
+                            mission_manager.mission_waypoints[
+                                mission_manager.current_mission_waypoint_idx
+                            ]
+                            - new_state.position
+                        )
+                    )
+                    if dist_to_mwp <= scenario.target_radius:
+                        mission_manager.current_mission_waypoint_idx += 1
+                    else:
+                        break
+                if (
+                    mission_manager.current_mission_waypoint_idx
+                    >= len(mission_manager.mission_waypoints)
+                ):
+                    mission_manager.state = MissionState.ARRIVED
+
             all_waypoints_completed = (
                 (
                     mission_manager.state == MissionState.ARRIVED
@@ -1940,6 +2013,40 @@ class FlightScenarioRunner:
 
         is_pos_settled = final_pos_err <= scenario.target_radius
         is_vel_settled = final_speed <= scenario.settling_velocity_threshold
+
+        if mission_manager is not None and is_pos_settled:
+            while (
+                mission_manager.current_mission_waypoint_idx
+                < len(mission_manager.mission_waypoints)
+            ):
+                dist_to_mwp = float(
+                    np.linalg.norm(
+                        mission_manager.mission_waypoints[
+                            mission_manager.current_mission_waypoint_idx
+                        ]
+                        - self.env._position
+                    )
+                )
+                if dist_to_mwp <= scenario.target_radius:
+                    mission_manager.current_mission_waypoint_idx += 1
+                else:
+                    break
+            if (
+                mission_manager.current_mission_waypoint_idx
+                >= len(mission_manager.mission_waypoints)
+            ):
+                mission_manager.state = MissionState.ARRIVED
+
+        all_waypoints_completed = (
+            (
+                mission_manager.state == MissionState.ARRIVED
+                and mission_manager.current_mission_waypoint_idx
+                >= len(mission_manager.mission_waypoints)
+            )
+            if mission_manager is not None
+            else (waypoint_idx == len(waypoints) - 1 and is_at_curr_waypoint)
+        )
+
         is_mission_completed = (
             all_waypoints_completed and is_pos_settled and is_vel_settled and not is_collision
         )
