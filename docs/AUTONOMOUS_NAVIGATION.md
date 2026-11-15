@@ -69,7 +69,7 @@ The navigation system lives in `adaptive_rl.navigation` and cleanly separates ge
        +-----------------------+
 ```
 
-### 2.1 Provably Collision-Free 3D A* Path Planning (`AStarPlanner3D`)
+### 2.1 3D A* Path Planning (`AStarPlanner3D`)
 - **Spatial Grid Representation:** Discretizes the 3D bounding box $[-10, 10] \times [-10, 10] \times [0, 15]\text{ m}$ into uniform voxels (default grid resolution $\Delta = 0.5\text{ m}$).
 - **Connectivity & Corner-Cutting Prevention:** 26-connected neighbor graph (orthogonal, planar diagonal, and spatial cubic diagonal transitions) with true Euclidean edge costs:
   $$c(u, v) = \|p_u - p_v\|_2$$
@@ -79,11 +79,22 @@ The navigation system lives in `adaptive_rl.navigation` and cleanly separates ge
 - **Obstacle Inflation:** Every spherical obstacle with radius $r_{\text{obs}}$ is inflated by:
   $$r_{\text{effective}} = r_{\text{obs}} + r_{\text{vehicle}} + \delta_{\text{margin}}$$
   where nominal $r_{\text{vehicle}} = 0.25\text{ m}$ and configurable safety margin $\delta_{\text{margin}} = 0.20\text{ m}$. Any voxel or segment within $r_{\text{effective}}$ of an obstacle center is impassable.
-- **Provably Collision-Free Line-of-Sight (LoS) Simplification:** The raw grid path undergoes deterministic ray-cast shortcutting (`simplify_path`). Every prospective segment connecting non-adjacent waypoints is verified with continuous collision checks. If an unvalidated shortcut occurs, the simplification fallback guarantees that no unvalidated or intersecting segment is ever appended to the path. If no safe continuation exists, the planner provably reports `NO_PATH` rather than returning an unsafe path.
+- **Line-of-Sight (LoS) Simplification:** The raw grid path undergoes deterministic ray-cast shortcutting (`simplify_path`). Every prospective segment connecting non-adjacent waypoints is verified with continuous collision checks. If an unvalidated shortcut occurs, the simplification fallback guarantees that no unvalidated or intersecting segment is ever appended to the path. If no safe continuation exists, the planner safely reports `NO_PATH` rather than returning an unsafe path.
+  *Note on Guarantees:* Path collision safety is guaranteed conditional on grid resolution $\Delta$, the safety inflation margin $\delta_{\text{margin}}$, valid bounded vehicle tracking error, and static obstacle environments.
 
-### 2.2 Dynamic Obstacles & Receding-Horizon Avoidance (`DynamicObstacleSphere3D`)
-- **Kinematic Horizon Prediction:** Dynamic obstacles propagate according to linear or sinusoidal velocity models. `predict_trajectory(t_start, horizon_sec, dt)` and `predict_occupied_spheres(...)` forecast the swept volume of moving obstacles over a lookahead horizon $[t, t + H]$ (e.g., $H = 2.0\text{ s}$).
-- **Occupied Volume Inflation:** Spheres occupied across $[t, t + H]$ are merged with the static obstacle field during predictive replanning.
+### 2.2 Dynamic Obstacles & Continuous Swept Collision Detection (`DynamicObstacleSphere3D`)
+- **Kinematic Horizon Prediction:** Dynamic obstacles propagate according to linear, oscillating, or bouncing velocity models. `predict_occupied_spheres(...)` forecasts the swept volume of moving obstacles over a lookahead horizon $[t, t + H]$ (e.g., $H = 2.0\text{ s}$) using analytical upper bounds on displacement ($v_{\max} H$) and spacing $\le 1.2 R$ to guarantee zero corridor gaps.
+- **Continuous Swept Collision with Boundary Reflection Decomposition:**
+  Dynamic obstacles reflecting off arena boundaries follow piecewise linear trajectories with sharp directional changes. Standard linear chord interpolation between $[t_0, t_1]$ cuts across the arena interior, missing boundary reflections and leading to false negatives.
+  - `get_bounce_times(t0, t1)` analytically computes all exact reflection timestamps $\tau_{\text{bounce}} \in (t_0, t_1)$ where the obstacle reflects from arena boundaries.
+  - The interval is partitioned into exact linear pieces $[t_a, t_b]$ at reflection events, checking swept relative clearance on each piece with interpolated vehicle endpoints.
+- **Rigorous Trajectory Curvature Envelopes:**
+  - **Vehicle Curvature Deviation:** When 6-DOF intermediate RK4 substeps are provided, the local curvature deviation bound is $\varepsilon_{\text{veh}} = \frac{1}{8} a_{\max} (\Delta \tau)^2$ across each substep. When only step endpoints are provided, the bound defensively evaluates against the full step duration: $\varepsilon_{\text{veh}} = \frac{1}{8} a_{\max} (\Delta t)^2$.
+  - **Oscillating Obstacle Curvature:** For harmonic oscillating obstacles with period $T$ and amplitude $A$, maximum acceleration is $\omega^2 \|A\|_2$ (where $\omega = 2\pi / T$), yielding curvature deviation $\varepsilon_{\text{obs}} = \frac{1}{8} \tau_{\text{step}}^2 \omega^2 \|A\|_2$.
+- **Defensible Acceleration Envelope (`max_translational_acceleration`):**
+  Analytical maximum translational acceleration is derived directly from the physical parameters of `DroneDynamics6DOF`:
+  $$a_{\max}(v) = \frac{4 f_{\max}}{m} + g + \frac{D_v v + D_q v^2}{m}$$
+  where $v$ is bounded by the operational envelope: $\max(v_{\text{nominal}}, v_{\text{state}}, v_{\text{substeps}})$, or derived from terminal velocity $v_{\text{term}}$ under full motor thrust and gravity when no bound is specified. Arbitrary empirical fallbacks are strictly prohibited; calculations fail closed if physical parameters are invalid.
 
 ### 2.3 Mission Manager (`MissionManager`)
 - Coordinates multi-waypoint missions, predictive dynamic obstacle avoidance, and fail-safe recovery.
@@ -246,6 +257,16 @@ In any strapdown inertial navigation system without external aiding:
 - Motor time constant: $\tau_{\text{motor}} \in [0.02, 0.05]\text{ s}$
 
 Parameters can be sampled reproducibly from explicit random seeds and serialized/reloaded via canonical JSON configuration files.
+
+### 6.1 Cryptographic Experiment Configuration Fingerprinting & Deep Provenance
+To guarantee exact reproducibility and provenance across arbitrary user callbacks, controllers, and fault injectors, `adaptive_rl.flight_testing` implements multi-layer cryptographic digest tracking:
+- **Physics Simulation Fingerprint (`PhysicsSimulationFingerprint`):** Full parameter coverage of mass, gravity, arm geometry, rotor dynamics, damping, inertia, and simulation timesteps.
+- **Deep Callable Provenance (`extract_callable_provenance`):**
+  - **Descriptor Inspection:** Unwraps and fingerprints `staticmethod` (`.__func__`), `classmethod` (`.__func__`), and `property` (`.fget`, `.fset`, `.fdel`) descriptors across the entire class MRO hierarchy.
+  - **Recursive Module Dependency Resolution:** Recursively resolves submodules and nested attribute chains (`pkg.submod.helper`) referenced in bytecode `co_names`. Changes to underlying helper functions in imported submodules alter the provenance digest deterministically.
+  - **Safe Recursion and Cycle Handling:** Detects circular call graphs and self-recursive functions, breaking cycles via deterministic lexical cycle references (`recursion_ref`) without stack overflow.
+  - **Fails-Closed Incomplete Tracking:** Dynamic or non-serializable objects (e.g. opaque native handles, threading locks) are safely flagged as `provenance_complete = False` with structured error taxonomy, preventing non-deterministic memory address leakage into cryptographic digests.
+- **Dual Integrity Verification:** `FlightRecord` computes two separate digests: `config_fingerprint` (covering experiment preconditions) and `record_digest` (covering post-execution metrics, trajectories, and outcomes). Tampering with either pre-flight configuration or post-flight telemetry is strictly detected.
 
 ---
 

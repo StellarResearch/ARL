@@ -404,6 +404,9 @@ def test_callable_provenance_contract_closure_and_code() -> None:
 
 
 GLOBAL_SCALING_FACTOR = 1.0
+_test_dummy_pkg = None
+_test_opaque_val = None
+_test_factorial_global = None
 
 
 def test_callable_provenance_defaults_and_kwdefaults() -> None:
@@ -984,3 +987,200 @@ def test_explicit_configuration_duplicate_scenario_names_1to1_matching(tmp_path:
     )
     assert record_mismatch.provenance_complete is False
     assert record_mismatch.configuration.provenance_complete is False
+
+
+def test_provenance_captures_descriptors_staticmethod_classmethod_property() -> None:
+    """Class methods, static methods, and properties are unwrapped and their changes alter fingerprints."""
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    class ControllerA:
+        @staticmethod
+        def static_gain() -> float:
+            return 1.5
+
+        @classmethod
+        def class_limit(cls) -> float:
+            return 10.0
+
+        @property
+        def prop_val(self) -> float:
+            return 42.0
+
+        def __call__(self, x: float) -> float:
+            return x + self.static_gain() + self.class_limit() + self.prop_val
+
+    class ControllerB:
+        @staticmethod
+        def static_gain() -> float:
+            return 2.5  # Changed static method
+
+        @classmethod
+        def class_limit(cls) -> float:
+            return 10.0
+
+        @property
+        def prop_val(self) -> float:
+            return 42.0
+
+        def __call__(self, x: float) -> float:
+            return x + self.static_gain() + self.class_limit() + self.prop_val
+
+    class ControllerC:
+        @staticmethod
+        def static_gain() -> float:
+            return 1.5
+
+        @classmethod
+        def class_limit(cls) -> float:
+            return 20.0  # Changed class method
+
+        @property
+        def prop_val(self) -> float:
+            return 42.0
+
+        def __call__(self, x: float) -> float:
+            return x + self.static_gain() + self.class_limit() + self.prop_val
+
+    class ControllerD:
+        @staticmethod
+        def static_gain() -> float:
+            return 1.5
+
+        @classmethod
+        def class_limit(cls) -> float:
+            return 10.0
+
+        @property
+        def prop_val(self) -> float:
+            return 99.0  # Changed property
+
+        def __call__(self, x: float) -> float:
+            return x + self.static_gain() + self.class_limit() + self.prop_val
+
+    prov_a = extract_callable_provenance(ControllerA())
+    prov_b = extract_callable_provenance(ControllerB())
+    prov_c = extract_callable_provenance(ControllerC())
+    prov_d = extract_callable_provenance(ControllerD())
+
+    fp_a = compute_config_fingerprint(prov_a)
+    fp_b = compute_config_fingerprint(prov_b)
+    fp_c = compute_config_fingerprint(prov_c)
+    fp_d = compute_config_fingerprint(prov_d)
+
+    # All fingerprints must differ and provenance must be complete
+    assert fp_a != fp_b
+    assert fp_a != fp_c
+    assert fp_a != fp_d
+    assert fp_b != fp_c
+    assert fp_c != fp_d
+
+    assert prov_a.get("provenance_complete") is True
+    assert "class_methods" in prov_a
+    assert "static_gain" in prov_a["class_methods"]
+    assert "class_limit" in prov_a["class_methods"]
+    assert "prop_val" in prov_a["class_methods"]
+    assert prov_a["class_methods"]["static_gain"]["descriptor"] == "staticmethod"
+    assert prov_a["class_methods"]["class_limit"]["descriptor"] == "classmethod"
+    assert prov_a["class_methods"]["prop_val"]["descriptor"] == "property"
+
+
+def test_provenance_nested_module_dependency_resolution() -> None:
+    """Nested module attributes accessed via co_names are recursively resolved and fingerprinted."""
+    import types
+
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    dummy_pkg = types.ModuleType("dummy_pkg")
+    dummy_sub = types.ModuleType("dummy_sub")
+    dummy_pkg.sub = dummy_sub
+
+    def helper_v1(x: float) -> float:
+        return x + 1.0
+
+    def helper_v2(x: float) -> float:
+        return x + 2.0
+
+    dummy_sub.helper = helper_v1
+
+    globals()["_test_dummy_pkg"] = dummy_pkg
+    try:
+
+        def compute(val: float) -> float:
+            return _test_dummy_pkg.sub.helper(val)
+
+        prov1 = extract_callable_provenance(compute)
+        assert prov1.get("provenance_complete") is True
+        assert "referenced_globals" in prov1
+        assert "_test_dummy_pkg" in prov1["referenced_globals"]
+        assert "_test_dummy_pkg.attributes" in prov1["referenced_globals"]
+        assert "sub" in prov1["referenced_globals"]["_test_dummy_pkg.attributes"]
+        sub_info = prov1["referenced_globals"]["_test_dummy_pkg.attributes"]["sub"]
+        assert "helper" in sub_info.get("attributes", {})
+
+        dummy_sub.helper = helper_v2
+        prov2 = extract_callable_provenance(compute)
+        fp1 = compute_config_fingerprint(prov1)
+        fp2 = compute_config_fingerprint(prov2)
+        assert fp1 != fp2
+    finally:
+        globals().pop("_test_dummy_pkg", None)
+
+
+def test_provenance_unsupported_dynamic_dependency_records_incomplete() -> None:
+    """Unsupported dynamic objects mark provenance as incomplete with explanatory reason."""
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    globals()["_test_opaque_val"] = object()
+    try:
+
+        def dynamic_func(x: float) -> float:
+            return x + float(id(_test_opaque_val))
+
+        prov = extract_callable_provenance(dynamic_func)
+        assert prov.get("provenance_complete") is False
+        assert "referenced_globals" in prov
+        assert "_test_opaque_val" in prov["referenced_globals"]
+        assert prov["referenced_globals"]["_test_opaque_val"]["unsupported_dependency"] == "object"
+        assert "reason" in prov["referenced_globals"]["_test_opaque_val"]
+    finally:
+        globals().pop("_test_opaque_val", None)
+
+
+def test_provenance_self_recursive_function_cycle_handling() -> None:
+    """Self-recursive functions terminate cycle tracking cleanly without infinite recursion."""
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    # 1. Closure-based self-recursion
+    def factorial_closure(n: int) -> int:
+        if n <= 1:
+            return 1
+        return n * factorial_closure(n - 1)
+
+    prov_c = extract_callable_provenance(factorial_closure)
+    assert prov_c.get("provenance_complete") is True
+    fp_c = compute_config_fingerprint(prov_c)
+    assert len(fp_c) == 64
+    assert "closure" in prov_c
+    assert "factorial_closure" in prov_c["closure"]
+    assert "recursion_ref" in prov_c["closure"]["factorial_closure"]
+
+    # 2. Global-based self-recursion
+    globals()["_test_factorial_global"] = lambda n: 1
+    try:
+
+        def factorial_global(n: int) -> int:
+            global _test_factorial_global
+            if n <= 1:
+                return 1
+            return n * _test_factorial_global(n - 1)
+
+        globals()["_test_factorial_global"] = factorial_global
+        prov_g = extract_callable_provenance(factorial_global)
+        assert prov_g.get("provenance_complete") is True
+        fp_g = compute_config_fingerprint(prov_g)
+        assert len(fp_g) == 64
+        assert "referenced_globals" in prov_g
+        assert "_test_factorial_global" in prov_g["referenced_globals"]
+        assert "recursion_ref" in prov_g["referenced_globals"]["_test_factorial_global"]
+    finally:
+        globals().pop("_test_factorial_global", None)

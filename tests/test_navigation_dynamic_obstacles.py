@@ -1101,3 +1101,225 @@ def test_drone_curved_path_static_obstacle_and_boundary_collision() -> None:
     with pytest.raises(ValueError, match="does not match prev_pos"):
         bad_start = [np.array([0.0, 0.0, 0.0]), p_end]
         env._check_collision(p_end, prev_pos=p_start, intermediate_positions=bad_start)
+
+
+def test_dynamic_collision_parameter_validation() -> None:
+    """check_continuous_collision and center_at enforce strict safety validation and fail closed."""
+    import pytest
+
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([10.0, 10.0, 5.0]),
+        radius=1.0,
+        velocity=np.array([2.0, 0.0, 0.0]),
+        bounds=(30.0, 30.0, 15.0),
+    )
+    p0 = np.array([5.0, 5.0, 5.0])
+    p1 = np.array([6.0, 5.0, 5.0])
+
+    # 1. Reversed time interval (curr_time < prev_time)
+    with pytest.raises(ValueError, match="must be >= prev_time"):
+        obs.check_continuous_collision(
+            prev_drone_pos=p0, curr_drone_pos=p1, prev_time=2.0, curr_time=1.0, vehicle_radius=0.5
+        )
+
+    # 2. Non-finite timestamps
+    for bad_t in [float("nan"), float("inf"), -float("inf"), True, False]:
+        with pytest.raises(ValueError, match="prev_time must be a finite float"):
+            obs.check_continuous_collision(
+                prev_drone_pos=p0,
+                curr_drone_pos=p1,
+                prev_time=bad_t,
+                curr_time=1.0,
+                vehicle_radius=0.5,
+            )
+        with pytest.raises(ValueError, match="curr_time must be a finite float"):
+            obs.check_continuous_collision(
+                prev_drone_pos=p0,
+                curr_drone_pos=p1,
+                prev_time=0.0,
+                curr_time=bad_t,
+                vehicle_radius=0.5,
+            )
+
+    # 3. Invalid vehicle radius
+    for bad_r in [-0.5, -10.0, float("nan"), float("inf"), True, False]:
+        with pytest.raises(ValueError, match="vehicle_radius must be a non-negative finite float"):
+            obs.check_continuous_collision(
+                prev_drone_pos=p0,
+                curr_drone_pos=p1,
+                prev_time=0.0,
+                curr_time=1.0,
+                vehicle_radius=bad_r,
+            )
+
+    # 4. Invalid veh_acc_max
+    for bad_a in [-1.0, float("nan"), float("inf"), True, False]:
+        with pytest.raises(ValueError, match="veh_acc_max must be a non-negative finite float"):
+            obs.check_continuous_collision(
+                prev_drone_pos=p0,
+                curr_drone_pos=p1,
+                prev_time=0.0,
+                curr_time=1.0,
+                vehicle_radius=0.5,
+                veh_acc_max=bad_a,
+            )
+
+    # 5. Zero-duration collision check (prev_time == curr_time)
+    coll_zero = obs.check_continuous_collision(
+        prev_drone_pos=np.array([10.5, 10.0, 5.0]),  # Within radius (1.0 + 0.5 = 1.5)
+        curr_drone_pos=np.array([10.5, 10.0, 5.0]),
+        prev_time=0.0,
+        curr_time=0.0,
+        vehicle_radius=0.5,
+    )
+    assert coll_zero is True
+
+    coll_zero_safe = obs.check_continuous_collision(
+        prev_drone_pos=np.array([20.0, 10.0, 5.0]),  # Far outside
+        curr_drone_pos=np.array([20.0, 10.0, 5.0]),
+        prev_time=0.0,
+        curr_time=0.0,
+        vehicle_radius=0.5,
+    )
+    assert coll_zero_safe is False
+
+    # 6. center_at input validation
+    for bad_t in [float("nan"), float("inf"), True, False]:
+        with pytest.raises(ValueError, match="time_sec must be a finite float"):
+            obs.center_at(bad_t)
+
+
+def test_endpoint_only_full_interval_curvature_safety_vs_oracle() -> None:
+    """Endpoint-only continuous collision checking applies full-interval curvature envelope verified by oracle."""
+    # Stationary obstacle at [5.0, 6.0, 5.0] with radius 1.0, vehicle radius 0.2, threshold = 1.2
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([5.0, 6.0, 5.0]),
+        radius=1.0,
+        velocity=np.zeros(3),
+        bounds=(20.0, 20.0, 20.0),
+    )
+
+    # Vehicle flies from [0.0, 4.0, 5.0] to [10.0, 4.0, 5.0] over T = 1.0 s.
+    # Linear chord is at y=4.0 everywhere. Clearance to obstacle is 6.0 - 4.0 = 2.0 > 1.2.
+    # Straight chord appears completely collision-free!
+    p0 = np.array([0.0, 4.0, 5.0])
+    p1 = np.array([10.0, 4.0, 5.0])
+    T = 1.0
+
+    # True trajectory has parabolic excursion: delta_y(t) = 4 * delta_max * t * (T - t) / T^2.
+    # With a_max = 8.0 m/s^2, maximum deflection is delta_max = (1/8) * a_max * T^2 = 1.0 m.
+    # At t=0.5, y(0.5) = 4.0 + 1.0 = 5.0. Distance to [5.0, 6.0, 5.0] is 6.0 - 5.0 = 1.0 <= 1.2!
+    a_veh = 8.0
+
+    # 1. High-resolution numerical oracle (1000 samples along true trajectory)
+    t_samples = np.linspace(0.0, T, 1000)
+    oracle_collision = False
+    for t in t_samples:
+        pos_t = p0 + (t / T) * (p1 - p0)
+        pos_t[1] += 4.0 * 1.0 * t * (T - t) / (T**2)
+        if np.linalg.norm(pos_t - obs.center_at(t)) <= 1.2:
+            oracle_collision = True
+            break
+    assert oracle_collision is True, "Oracle confirms true physical trajectory penetrates obstacle!"
+
+    # 2. Continuous collision check WITHOUT intermediate positions
+    # Must use full-interval curvature inflation eps_veh = (1/8) * a_max * T^2 = 1.0 m
+    # Effective threshold = 1.2 + 1.0 = 2.2 m >= 2.0 m chord distance!
+    detected = obs.check_continuous_collision(
+        prev_drone_pos=p0,
+        curr_drone_pos=p1,
+        prev_time=0.0,
+        curr_time=T,
+        vehicle_radius=0.2,
+        intermediate_drone_positions=None,
+        veh_acc_max=a_veh,
+    )
+    assert detected is True, (
+        "Endpoint-only check with defensible curvature envelope must catch collision!"
+    )
+
+
+def test_bounce_trajectory_exact_reflection_detection() -> None:
+    """Dynamic obstacle reflection at arena boundary is split at exact bounce time, catching wall collisions."""
+    # Arena bounds: y in [0.0, 10.0], radius 1.0. Lower wall for obstacle center is at y = 1.0.
+    # Initial position at [5.0, 3.0, 5.0], moving at vy = -4.0 m/s.
+    # Reaches y = 1.0 at t = (3.0 - 1.0) / 4.0 = 0.5 s, then bounces back towards positive y.
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([5.0, 3.0, 5.0]),
+        radius=1.0,
+        velocity=np.array([0.0, -4.0, 0.0]),
+        bounds=(10.0, 10.0, 10.0),
+        motion_type="bounce",
+    )
+
+    # 1. Exact bounce times
+    bounces = obs.get_bounce_times(0.0, 1.0)
+    assert len(bounces) == 1
+    assert abs(bounces[0] - 0.5) < 1e-6
+
+    # 2. Collision near reflection wall
+    # Stationary drone hovering at [5.0, 1.5, 5.0], radius 0.2.
+    # At t=0.5, obstacle center is at [5.0, 1.0, 5.0]. Distance is 0.5 <= 1.0 + 0.2 = 1.2.
+    # Endpoints of obstacle over [0.0, 1.0]:
+    # At t=0.0, c = [5.0, 3.0, 5.0], dist = 1.5 > 1.2.
+    # At t=1.0, c = [5.0, 3.0, 5.0], dist = 1.5 > 1.2.
+    # Without bounce splitting, chord between c(0) and c(1) is at y=3.0, completely missing the drone at y=1.5!
+    coll_bounce = obs.check_continuous_collision(
+        prev_drone_pos=np.array([5.0, 1.5, 5.0]),
+        curr_drone_pos=np.array([5.0, 1.5, 5.0]),
+        prev_time=0.0,
+        curr_time=1.0,
+        vehicle_radius=0.2,
+        veh_acc_max=0.0,
+    )
+    assert coll_bounce is True, "Bounce splitting must detect collision at boundary reflection!"
+
+    # 3. Near-miss trajectory just outside obstacle threshold
+    coll_near_miss = obs.check_continuous_collision(
+        prev_drone_pos=np.array(
+            [6.3, 1.0, 5.0]
+        ),  # Distance at bounce is sqrt((6.3-5)^2) = 1.3 > 1.2
+        curr_drone_pos=np.array([6.3, 1.0, 5.0]),
+        prev_time=0.0,
+        curr_time=1.0,
+        vehicle_radius=0.2,
+        veh_acc_max=0.0,
+    )
+    assert coll_near_miss is False
+
+    # 4. Multiple bounces across large interval
+    bounces_multi = obs.get_bounce_times(0.0, 5.0)
+    assert len(bounces_multi) >= 2
+
+
+def test_drone_dynamics_max_translational_acceleration_safety_envelope() -> None:
+    """DroneDynamics6DOF validates physical parameters and enforces operating speed envelope."""
+    import math
+
+    import pytest
+
+    from adaptive_rl.environments.drone_6dof import DroneDynamics6DOF
+
+    dyn = DroneDynamics6DOF(
+        mass=1.0,
+        gravity=9.81,
+        max_thrust_per_motor=5.0,
+        linear_damping=0.1,
+    )
+
+    # 1. Invalid max_speed_bound
+    for bad_v in [-1.0, float("nan"), float("inf"), True, False]:
+        with pytest.raises(ValueError, match="max_speed_bound must be a non-negative finite float"):
+            dyn.max_translational_acceleration(max_speed_bound=bad_v)  # type: ignore[arg-type]
+
+    # 2. None derives analytical terminal velocity
+    a_term = dyn.max_translational_acceleration(max_speed_bound=None)
+    assert a_term > 0.0
+    assert math.isfinite(a_term)
+
+    # 3. High actual velocity expands acceleration bound conservatively
+    dyn.state.velocity = np.array([50.0, 0.0, 0.0])  # Actual vehicle speed 50 m/s
+    a_high_speed = dyn.max_translational_acceleration(max_speed_bound=10.0)
+    # Must use at least 50 m/s, so a_high_speed > nominal calculation at 10 m/s
+    a_nominal_10 = 20.0 + 9.81 + 0.1 * 10.0
+    assert a_high_speed > a_nominal_10

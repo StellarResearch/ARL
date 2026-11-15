@@ -393,6 +393,7 @@ class DroneDynamics6DOF:
             angular_velocity=np.zeros(3, dtype=np.float64),
         )
         self.last_substep_positions: List[np.ndarray] = [self.state.position.copy()]
+        self.last_substep_velocities: List[np.ndarray] = [self.state.velocity.copy()]
 
     @property
     def arm_span(self) -> float:
@@ -482,19 +483,43 @@ class DroneDynamics6DOF:
 
         self.actual_motor_thrusts = np.full(4, self.hover_thrust_per_motor, dtype=np.float64)
         self.last_substep_positions = [self.state.position.copy()]
+        self.last_substep_velocities = [self.state.velocity.copy()]
 
-    def max_translational_acceleration(self, max_speed_bound: float = 25.0) -> float:
-        """Derive an analytical upper bound on translational acceleration ||p_ddot|| in m/s^2.
+    def max_translational_acceleration(self, max_speed_bound: Optional[float] = None) -> float:
+        """Derive an analytical, physically defensible upper bound on translational acceleration ||p_ddot|| in m/s^2.
 
         From the translational equations of motion:
             p_ddot = (1/m)*R(q)*[0, 0, T] + [0, 0, -g] + F_drag / m
         By triangle inequality:
             ||p_ddot|| <= (T_max / m) + g + (||F_drag||_max / m)
 
-        T_max incorporates Cheeseman-Bennett ground effect amplification (up to 1.30)
-        when enabled. F_drag considers linear damping and quadratic drag over relative
-        airspeed up to max_speed_bound + ||wind_vector||.
+        Validates all physical parameters, rejecting NaN, Inf, and invalid bounds.
+        Accounts for the actual vehicle operating speed envelope: if max_speed_bound is supplied,
+        it verifies whether the vehicle's state or recent substeps exceed the nominal bound,
+        always taking the conservative envelope max(max_speed_bound, actual_speed).
+        If max_speed_bound is omitted (None), derives the analytical terminal velocity under
+        continuous maximum diving thrust and gravity.
         """
+        # Validate internal physical parameters
+        if not math.isfinite(self.mass) or self.mass <= 0.0:
+            raise ValueError(f"Dynamics mass must be positive finite, got {self.mass}")
+        if not math.isfinite(self.gravity) or self.gravity < 0.0:
+            raise ValueError(f"Dynamics gravity must be non-negative finite, got {self.gravity}")
+        if not math.isfinite(self.max_thrust_per_motor) or self.max_thrust_per_motor <= 0.0:
+            raise ValueError(
+                f"Dynamics max_thrust_per_motor must be positive finite, got {self.max_thrust_per_motor}"
+            )
+        if not math.isfinite(self.linear_damping) or self.linear_damping < 0.0:
+            raise ValueError(
+                f"Dynamics linear_damping must be non-negative finite, got {self.linear_damping}"
+            )
+        if not math.isfinite(self.quadratic_drag_coeff) or self.quadratic_drag_coeff < 0.0:
+            raise ValueError(
+                f"Dynamics quadratic_drag_coeff must be non-negative finite, got {self.quadratic_drag_coeff}"
+            )
+        if not np.all(np.isfinite(self.wind_vector)):
+            raise ValueError(f"Dynamics wind_vector contains non-finite values: {self.wind_vector}")
+
         # Maximum collective thrust across all 4 motors
         t_max_nominal = 4.0 * self.max_thrust_per_motor
         if self.enable_ground_effect:
@@ -502,9 +527,42 @@ class DroneDynamics6DOF:
         else:
             t_max = t_max_nominal
 
-        # Airspeed bound
+        # Actual speeds observed in current physical state and recent substeps
+        v_state = float(np.linalg.norm(self.state.velocity))
+        v_substep = max(
+            (float(np.linalg.norm(v)) for v in getattr(self, "last_substep_velocities", [])),
+            default=0.0,
+        )
+        v_actual_max = max(v_state, v_substep)
+
+        if max_speed_bound is not None:
+            if (
+                isinstance(max_speed_bound, bool)
+                or not isinstance(max_speed_bound, (int, float))
+                or not math.isfinite(max_speed_bound)
+                or max_speed_bound < 0.0
+            ):
+                raise ValueError(
+                    f"max_speed_bound must be a non-negative finite float, got {max_speed_bound!r}"
+                )
+            v_envelope = max(float(max_speed_bound), v_actual_max)
+        else:
+            # Analytical terminal velocity under continuous full thrust + gravity in flight direction
+            f_drive = t_max + self.mass * self.gravity
+            if self.quadratic_drag_coeff > 0.0:
+                disc = (self.linear_damping**2) + 4.0 * self.quadratic_drag_coeff * f_drive
+                v_term = (-self.linear_damping + math.sqrt(disc)) / (
+                    2.0 * self.quadratic_drag_coeff
+                )
+            elif self.linear_damping > 0.0:
+                v_term = f_drive / self.linear_damping
+            else:
+                v_term = 0.0
+            v_envelope = max(v_term, v_actual_max)
+
+        # Airspeed bound incorporating atmospheric wind vector
         wind_speed = float(np.linalg.norm(self.wind_vector))
-        v_rel_max = max(0.0, float(max_speed_bound)) + wind_speed
+        v_rel_max = v_envelope + wind_speed
 
         # Drag force upper bound
         drag_force_max = self.linear_damping * v_rel_max
@@ -601,6 +659,7 @@ class DroneDynamics6DOF:
         omega = self.state.angular_velocity.copy()
 
         substep_positions = [pos.copy()]
+        substep_velocities = [vel.copy()]
 
         for _ in range(self.substeps):
             f_0 = self.actual_motor_thrusts.copy()
@@ -672,8 +731,10 @@ class DroneDynamics6DOF:
             omega += (h / 6.0) * (k1_w + 2.0 * k2_w + 2.0 * k3_w + k4_w)
 
             substep_positions.append(pos.copy())
+            substep_velocities.append(vel.copy())
 
         self.last_substep_positions = substep_positions
+        self.last_substep_velocities = substep_velocities
         self.state.position = pos
         self.state.velocity = vel
         self.state.quaternion = quat
@@ -1051,11 +1112,32 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         pos: np.ndarray,
         prev_pos: Optional[np.ndarray] = None,
         intermediate_positions: Optional[Sequence[np.ndarray]] = None,
-        curvature_error_bound: float = 0.0,
+        curvature_error_bound: Optional[float] = None,
     ) -> Tuple[bool, str]:
         r = float(self.collision_radius)
         bx, by, bz = self.bounds
-        eps_curv = max(0.0, float(curvature_error_bound))
+
+        if curvature_error_bound is not None:
+            if (
+                isinstance(curvature_error_bound, bool)
+                or not isinstance(curvature_error_bound, (int, float))
+                or not math.isfinite(curvature_error_bound)
+                or curvature_error_bound < 0.0
+            ):
+                raise ValueError(
+                    f"curvature_error_bound must be a non-negative finite float, got {curvature_error_bound!r}"
+                )
+            eps_curv = float(curvature_error_bound)
+        elif prev_pos is not None:
+            # Derive physically defensible curvature bound from dynamics
+            a_max = self.dynamics.max_translational_acceleration(self.max_velocity)
+            if intermediate_positions is not None:
+                dt_step = self.dynamics.substep_dt
+            else:
+                dt_step = self.dynamics.dt
+            eps_curv = 0.125 * a_max * (dt_step**2)
+        else:
+            eps_curv = 0.0
 
         if prev_pos is None:
             if pos[0] - r <= 0.0 or pos[0] + r >= bx:
@@ -1356,16 +1438,12 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         dist_delta = self._prev_distance_to_goal - curr_distance
         self._prev_distance_to_goal = curr_distance
 
-        a_max = self.dynamics.max_translational_acceleration(self.max_velocity)
-        substep_h = self.dynamics.substep_dt
-        eps_curv = 0.125 * a_max * (substep_h**2)
         inter_pos = self.dynamics.last_substep_positions
 
         is_collision, collision_type = self._check_collision(
             self._position,
             prev_pos=old_pos,
             intermediate_positions=inter_pos,
-            curvature_error_bound=eps_curv,
         )
         is_success = curr_distance <= self.target_radius
 

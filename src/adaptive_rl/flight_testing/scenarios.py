@@ -47,7 +47,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -326,6 +326,22 @@ def _safe_provenance_value(val: Any, _visited: Optional[set[int]] = None) -> Tup
         meta = getattr(val, "metadata")
         if meta is not None:
             return _safe_provenance_value(meta, _visited=_visited)
+    if isinstance(val, (staticmethod, classmethod)):
+        fn_val = getattr(val, "__func__", None)
+        fn_prov, ok = _safe_provenance_value(fn_val, _visited=_visited)
+        return {"descriptor": type(val).__name__, "func": fn_prov}, ok
+
+    if isinstance(val, property):
+        prop_info: Dict[str, Any] = {"descriptor": "property"}
+        all_ok = True
+        for part_name, fn_part in [("fget", val.fget), ("fset", val.fset), ("fdel", val.fdel)]:
+            if fn_part is not None:
+                p_prov, p_ok = _safe_provenance_value(fn_part, _visited=_visited)
+                prop_info[part_name] = p_prov
+                if not p_ok:
+                    all_ok = False
+        return prop_info, all_ok
+
     if inspect.ismodule(val):
         return f"module:{val.__name__}", True
 
@@ -394,9 +410,18 @@ def _safe_provenance_value(val: Any, _visited: Optional[set[int]] = None) -> Tup
 
     s = str(val)
     if re.search(r"\bat 0x[0-9a-fA-F]+\b", s) or re.search(r"\b0x[0-9a-fA-F]{6,16}\b", s):
-        cleaned = re.sub(r"\bat 0x[0-9a-fA-F]+\b", "", s).strip()
-        return cleaned, False
-    return s, False
+        cleaned = re.sub(r"\bat 0x[0-9a-fA-F]+\b", "", s)
+        cleaned = re.sub(r"\b0x[0-9a-fA-F]{6,16}\b", "<addr>", cleaned).strip()
+        return {
+            "unsupported_dependency": type(val).__name__,
+            "reason": "non_deterministic_address_or_unsupported_object",
+            "repr": cleaned,
+        }, False
+    return {
+        "unsupported_dependency": type(val).__name__,
+        "reason": "unserializable_opaque_value",
+        "repr": s,
+    }, False
 
 
 def _hash_code_recursive(code_obj: Any, hasher: Any) -> None:
@@ -411,6 +436,50 @@ def _hash_code_recursive(code_obj: Any, hasher: Any) -> None:
             _hash_code_recursive(const, hasher)
         else:
             hasher.update(str(const).encode("utf-8", errors="replace"))
+
+
+def _resolve_module_dependencies(
+    mod: Any,
+    co_names: Sequence[str],
+    visited_modules: set[int],
+    _visited: set[int],
+) -> Tuple[Dict[str, Any], bool]:
+    """Recursively resolve module and submodule attributes referenced in co_names."""
+    if id(mod) in visited_modules:
+        return {"recursion_ref": getattr(mod, "__name__", str(mod))}, True
+    visited_modules.add(id(mod))
+
+    builtin_names = set(dir(builtins))
+    attrs: Dict[str, Any] = {}
+    all_ok = True
+
+    for attr_name in sorted(set(co_names)):
+        if hasattr(mod, attr_name) and attr_name not in builtin_names:
+            try:
+                attr_obj = getattr(mod, attr_name)
+                if inspect.ismodule(attr_obj):
+                    sub_attrs, sub_ok = _resolve_module_dependencies(
+                        attr_obj, co_names, set(visited_modules), _visited
+                    )
+                    attrs[attr_name] = {
+                        "module": getattr(attr_obj, "__name__", attr_name),
+                        "attributes": sub_attrs,
+                    }
+                    if not sub_ok:
+                        all_ok = False
+                else:
+                    ser_attr, ok_attr = _safe_provenance_value(attr_obj, _visited=_visited)
+                    attrs[attr_name] = ser_attr
+                    if not ok_attr:
+                        all_ok = False
+            except Exception as exc:
+                attrs[attr_name] = {
+                    "unresolved_attribute": attr_name,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                all_ok = False
+
+    return attrs, all_ok
 
 
 def extract_callable_provenance(fn: Any, _visited: Optional[set[int]] = None) -> Dict[str, Any]:
@@ -487,8 +556,12 @@ def extract_callable_provenance(fn: Any, _visited: Optional[set[int]] = None) ->
             if base is object or getattr(base, "__module__", "") == "builtins":
                 continue
             for k, v in base.__dict__.items():
-                if not k.startswith("__") or k == "__call__":
-                    if inspect.isfunction(v) or inspect.ismethod(v):
+                if not k.startswith("__") or k in ("__call__", "__init__"):
+                    if (
+                        inspect.isfunction(v)
+                        or inspect.ismethod(v)
+                        or isinstance(v, (staticmethod, classmethod, property))
+                    ):
                         m_prov, m_ok = _safe_provenance_value(v, _visited=set(_visited))
                         inherited_methods[k] = m_prov
                         if not m_ok:
@@ -567,26 +640,14 @@ def extract_callable_provenance(fn: Any, _visited: Optional[set[int]] = None) ->
             if name in fn_globals and name not in builtin_names:
                 g_val = fn_globals[name]
                 if inspect.ismodule(g_val):
-                    # Resolve module-qualified dependencies referenced in co_names
-                    mod_attrs: Dict[str, Any] = {}
-                    mod_all_ok = True
-                    for attr_name in sorted(set(co_names)):
-                        if hasattr(g_val, attr_name) and attr_name not in builtin_names:
-                            try:
-                                attr_obj = getattr(g_val, attr_name)
-                                ser_attr, ok_attr = _safe_provenance_value(
-                                    attr_obj, _visited=set(_visited)
-                                )
-                                mod_attrs[attr_name] = ser_attr
-                                if not ok_attr:
-                                    mod_all_ok = False
-                            except Exception:
-                                mod_attrs[attr_name] = f"unresolvable:{attr_name}"
-                                mod_all_ok = False
+                    # Recursively resolve module-qualified dependencies referenced in co_names
+                    mod_attrs, mod_ok = _resolve_module_dependencies(
+                        g_val, co_names, set(), set(_visited)
+                    )
                     if mod_attrs:
                         ref_globals[f"{name}.attributes"] = mod_attrs
                     ref_globals[name] = f"module:{g_val.__name__}"
-                    if not mod_all_ok:
+                    if not mod_ok:
                         provenance_complete = False
                 else:
                     ser_g, ok_g = _safe_provenance_value(g_val, _visited=set(_visited))
@@ -1372,11 +1433,15 @@ class FlightScenarioRunner:
             min_clearances.append(min_obs_d)
 
             # Collision check with analytical curvature error bound
-            a_max = (
-                self.env.dynamics.max_translational_acceleration(25.0)
-                if hasattr(self.env.dynamics, "max_translational_acceleration")
-                else 35.0
-            )
+            if hasattr(self.env.dynamics, "max_translational_acceleration"):
+                a_max = self.env.dynamics.max_translational_acceleration(
+                    max_speed_bound=getattr(scenario, "max_speed", 25.0)
+                )
+            else:
+                raise ValueError(
+                    "Safety certification failure: environment dynamics does not provide "
+                    "a physically defensible max_translational_acceleration() calculation."
+                )
             substep_h = getattr(self.env.dynamics, "substep_dt", dt)
             eps_curv = 0.125 * a_max * (substep_h**2)
             intermediate_positions = getattr(self.env.dynamics, "last_substep_positions", None)

@@ -32,11 +32,16 @@ class DynamicObstacleSphere3D:
     )
 
     def __post_init__(self) -> None:
-        self.radius = float(self.radius)
-        if not math.isfinite(self.radius) or self.radius <= 0.0:
+        if (
+            isinstance(self.radius, bool)
+            or not isinstance(self.radius, (int, float))
+            or not math.isfinite(self.radius)
+            or self.radius <= 0.0
+        ):
             raise ValueError(
-                f"Obstacle radius must be strictly positive and finite, got {self.radius}"
+                f"Obstacle radius must be strictly positive and finite, got {self.radius!r}"
             )
+        self.radius = float(self.radius)
 
         if self.motion_type not in ("bounce", "oscillate"):
             raise ValueError(
@@ -97,6 +102,13 @@ class DynamicObstacleSphere3D:
 
     def center_at(self, time_sec: float) -> np.ndarray:
         """Compute the deterministic 3D position of the obstacle at a given simulation time."""
+        if (
+            isinstance(time_sec, bool)
+            or not isinstance(time_sec, (int, float))
+            or not math.isfinite(time_sec)
+        ):
+            raise ValueError(f"time_sec must be a finite float, got {time_sec!r}")
+
         t = float(time_sec)
         if self.motion_type == "oscillate":
             omega = 2.0 * math.pi / self.oscillation_period
@@ -120,23 +132,68 @@ class DynamicObstacleSphere3D:
                 reflected[i] = b_max - (val - span)
         return reflected
 
-    def _check_subsegment_collision(
+    def get_bounce_times(self, t0: float, t1: float) -> List[float]:
+        """Identify all exact boundary reflection timestamps in (t0, t1) for bounce motion."""
+        if self.motion_type != "bounce":
+            return []
+        t0_f = float(t0)
+        t1_f = float(t1)
+        if t1_f <= t0_f:
+            return []
+
+        bounce_times: List[float] = []
+        for i in range(3):
+            vi = float(self.velocity[i])
+            if abs(vi) <= 1e-9:
+                continue
+            b_min = float(self.radius)
+            b_max = float(self.bounds[i] - self.radius)
+            span = b_max - b_min
+            if span <= 1e-9:
+                continue
+
+            x0 = float(self.center_initial[i]) + vi * t0_f
+            x1 = float(self.center_initial[i]) + vi * t1_f
+            x_min = min(x0, x1)
+            x_max = max(x0, x1)
+
+            k_start = int(math.ceil((x_min - b_min) / span))
+            k_end = int(math.floor((x_max - b_min) / span))
+
+            for k in range(k_start, k_end + 1):
+                wall_pos = b_min + k * span
+                t_bounce = (wall_pos - float(self.center_initial[i])) / vi
+                if t0_f + 1e-7 < t_bounce < t1_f - 1e-7:
+                    bounce_times.append(float(t_bounce))
+
+        if not bounce_times:
+            return []
+
+        bounce_times.sort()
+        unique_times: List[float] = [bounce_times[0]]
+        for t in bounce_times[1:]:
+            if t - unique_times[-1] > 1e-7:
+                unique_times.append(t)
+
+        return unique_times
+
+    def _check_subsegment_collision_linear(
         self,
-        p0: np.ndarray,
-        p1: np.ndarray,
+        p0_arr: np.ndarray,
+        p1_arr: np.ndarray,
         t0: float,
         t1: float,
         threshold: float,
-        veh_acc_max: float = 35.0,
+        veh_acc_max: float,
+        veh_interval_dt: Optional[float] = None,
     ) -> bool:
-        """Evaluate continuous swept-sphere collision across a single linear vehicle segment [t0, t1]."""
-        p0_arr = np.asarray(p0, dtype=np.float64)
-        p1_arr = np.asarray(p1, dtype=np.float64)
+        """Evaluate continuous collision across a single interval [t0, t1] where obstacle motion is non-reflecting."""
         dt = t1 - t0
-
         if dt <= 1e-9:
             c = self.center_at(t0)
-            return bool(np.linalg.norm(p1_arr - c) <= threshold)
+            return bool(
+                np.linalg.norm(p0_arr - c) <= threshold or np.linalg.norm(p1_arr - c) <= threshold
+            )
 
         # Immediate endpoint checks
         if np.linalg.norm(p0_arr - self.center_at(t0)) <= threshold:
@@ -155,8 +212,8 @@ class DynamicObstacleSphere3D:
         desired_substeps = max(1, int(math.ceil(dt / sub_dt)))
         num_substeps = min(max_substeps, desired_substeps)
 
-        # Theoretical curvature error bounds over subsegment tau_step:
-        # 1. Obstacle curvature bound:
+        # Theoretical curvature error bounds:
+        # 1. Obstacle curvature bound (over subsegment tau_step):
         tau_step = dt / num_substeps
         if self.motion_type == "oscillate":
             omega = 2.0 * math.pi / self.oscillation_period
@@ -165,8 +222,11 @@ class DynamicObstacleSphere3D:
         else:
             eps_obs = 0.0
 
-        # 2. 6-DOF Vehicle curvature deviation bound from chord (||p''(t)|| <= veh_acc_max):
-        eps_veh = (1.0 / 8.0) * (tau_step**2) * veh_acc_max
+        # 2. Vehicle curvature bound:
+        # If genuine intermediate trajectory was provided, veh_interval_dt is the substep dt;
+        # if only endpoints were provided, veh_interval_dt is the full interval duration dt.
+        effective_veh_dt = dt if veh_interval_dt is None else float(veh_interval_dt)
+        eps_veh = (1.0 / 8.0) * (effective_veh_dt**2) * veh_acc_max
 
         effective_threshold = threshold + eps_obs + eps_veh
 
@@ -197,14 +257,61 @@ class DynamicObstacleSphere3D:
             if min_dist <= effective_threshold:
                 return True
 
-        # When computational limits are reached (desired_substeps > max_substeps),
-        # fail conservatively if swept bounding volumes intersect.
         if desired_substeps > max_substeps:
             mid_drone = 0.5 * (p0_arr + p1_arr)
             mid_obs = 0.5 * (self.center_at(t0) + self.center_at(t1))
             envelope_dist = float(np.linalg.norm(mid_drone - mid_obs))
             swept_bound = effective_threshold + 0.5 * v_rel_max * dt
             if envelope_dist <= swept_bound:
+                return True
+
+        return False
+
+    def _check_subsegment_collision(
+        self,
+        p0: np.ndarray,
+        p1: np.ndarray,
+        t0: float,
+        t1: float,
+        threshold: float,
+        veh_acc_max: float = 35.0,
+        veh_interval_dt: Optional[float] = None,
+    ) -> bool:
+        """Evaluate continuous swept-sphere collision across [t0, t1], splitting at bounce events."""
+        t0_f = float(t0)
+        t1_f = float(t1)
+        if t1_f < t0_f:
+            raise ValueError(f"t1 ({t1_f}) must be >= t0 ({t0_f})")
+
+        p0_arr = np.asarray(p0, dtype=np.float64)
+        p1_arr = np.asarray(p1, dtype=np.float64)
+        dt = t1_f - t0_f
+
+        if dt <= 1e-9:
+            c = self.center_at(t0_f)
+            return bool(
+                np.linalg.norm(p0_arr - c) <= threshold or np.linalg.norm(p1_arr - c) <= threshold
+            )
+
+        # Identify boundary reflections and split interval at reflection events
+        bounce_times = self.get_bounce_times(t0_f, t1_f)
+        if not bounce_times:
+            return self._check_subsegment_collision_linear(
+                p0_arr, p1_arr, t0_f, t1_f, threshold, veh_acc_max, veh_interval_dt
+            )
+
+        # Multiple subintervals split at exact bounce events
+        split_times = [t0_f] + bounce_times + [t1_f]
+        for m in range(len(split_times) - 1):
+            ta = split_times[m]
+            tb = split_times[m + 1]
+            fa = (ta - t0_f) / dt
+            fb = (tb - t0_f) / dt
+            pa = p0_arr + fa * (p1_arr - p0_arr)
+            pb = p0_arr + fb * (p1_arr - p0_arr)
+            if self._check_subsegment_collision_linear(
+                pa, pb, ta, tb, threshold, veh_acc_max, veh_interval_dt
+            ):
                 return True
 
         return False
@@ -226,9 +333,45 @@ class DynamicObstacleSphere3D:
         trajectory curvature using physical acceleration limits (eps_veh <= 1/8 * a_max * dt^2).
         Fails closed on malformed or inconsistent intermediate trajectory data.
         """
-        threshold = float(self.radius + vehicle_radius)
+        if (
+            isinstance(prev_time, bool)
+            or not isinstance(prev_time, (int, float))
+            or not math.isfinite(prev_time)
+        ):
+            raise ValueError(f"prev_time must be a finite float, got {prev_time!r}")
+        if (
+            isinstance(curr_time, bool)
+            or not isinstance(curr_time, (int, float))
+            or not math.isfinite(curr_time)
+        ):
+            raise ValueError(f"curr_time must be a finite float, got {curr_time!r}")
+
         t0 = float(prev_time)
         t1 = float(curr_time)
+        if t1 < t0:
+            raise ValueError(f"curr_time ({t1}) must be >= prev_time ({t0})")
+
+        if (
+            isinstance(vehicle_radius, bool)
+            or not isinstance(vehicle_radius, (int, float))
+            or not math.isfinite(vehicle_radius)
+            or vehicle_radius < 0.0
+        ):
+            raise ValueError(
+                f"vehicle_radius must be a non-negative finite float, got {vehicle_radius!r}"
+            )
+
+        if (
+            isinstance(veh_acc_max, bool)
+            or not isinstance(veh_acc_max, (int, float))
+            or not math.isfinite(veh_acc_max)
+            or veh_acc_max < 0.0
+        ):
+            raise ValueError(
+                f"veh_acc_max must be a non-negative finite float, got {veh_acc_max!r}"
+            )
+
+        threshold = float(self.radius + vehicle_radius)
         dt = t1 - t0
 
         p_start_check = np.asarray(prev_drone_pos, dtype=np.float64)
@@ -241,7 +384,10 @@ class DynamicObstacleSphere3D:
 
         if dt <= 1e-9:
             c = self.center_at(t0)
-            return bool(np.linalg.norm(p_end_check - c) <= threshold)
+            return bool(
+                np.linalg.norm(p_start_check - c) <= threshold
+                or np.linalg.norm(p_end_check - c) <= threshold
+            )
 
         if intermediate_drone_positions is not None:
             if not isinstance(intermediate_drone_positions, (list, tuple)):
@@ -280,13 +426,20 @@ class DynamicObstacleSphere3D:
                 p_b = validated_pts[j + 1]
                 t_a = t0 + (j / num_segs) * dt
                 t_b = t0 + ((j + 1) / num_segs) * dt
+                sub_dt = t_b - t_a
                 if self._check_subsegment_collision(
-                    p_a, p_b, t_a, t_b, threshold, veh_acc_max=veh_acc_max
+                    p_a,
+                    p_b,
+                    t_a,
+                    t_b,
+                    threshold,
+                    veh_acc_max=veh_acc_max,
+                    veh_interval_dt=sub_dt,
                 ):
                     return True
             return False
 
-        # If intermediate positions are not provided, evaluate the single chord with full-interval vehicle curvature bound
+        # If intermediate positions are not provided, evaluate chord with full-interval vehicle curvature bound
         return self._check_subsegment_collision(
             p_start_check,
             p_end_check,
@@ -294,6 +447,7 @@ class DynamicObstacleSphere3D:
             t1,
             threshold,
             veh_acc_max=veh_acc_max,
+            veh_interval_dt=dt,
         )
 
     def distance_to(self, point: np.ndarray, time_sec: float) -> float:
