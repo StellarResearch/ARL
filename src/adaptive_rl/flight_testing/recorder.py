@@ -226,6 +226,9 @@ class FlightRecord:
     def verify_config_fingerprint(self) -> bool:
         """Verify that the stored config_fingerprint matches the configuration."""
         if self.configuration is not None:
+            # Inconsistent provenance check: top-level and configuration flags must agree
+            if self.provenance_complete != self.configuration.provenance_complete:
+                return False
             expected = compute_config_fingerprint(self.configuration.to_dict())
         else:
             expected = compute_config_fingerprint(self.physics.to_dict())
@@ -237,6 +240,9 @@ class FlightRecord:
 
     def verify_record_digest(self) -> bool:
         """Verify that the stored record_digest matches the SHA-256 digest of record contents."""
+        if self.configuration is not None:
+            if self.provenance_complete != self.configuration.provenance_complete:
+                return False
         payload = self.to_dict(include_digest=False)
         expected = compute_record_digest(payload)
         return self.record_digest == expected
@@ -330,15 +336,29 @@ class FlightRecorder:
         if raw_scenarios is not None:
             for sc in raw_scenarios:
                 if hasattr(sc, "to_dict"):
-                    scenario_provenance.append(sc.to_dict())
+                    d = sc.to_dict()
+                    scenario_provenance.append(d)
+                    if (
+                        getattr(sc, "provenance_complete", True) is False
+                        or d.get("provenance_complete") is False
+                    ):
+                        provenance_complete = False
                 elif isinstance(sc, dict):
                     scenario_provenance.append(sc)
+                    if sc.get("provenance_complete") is False:
+                        provenance_complete = False
         else:
             # Automatically infer scenario definitions from scenario_results
             for r in scenario_results:
                 sc_def = getattr(r, "scenario_definition", None)
                 if sc_def is not None and hasattr(sc_def, "to_dict"):
-                    scenario_provenance.append(sc_def.to_dict())
+                    d = sc_def.to_dict()
+                    scenario_provenance.append(d)
+                    if (
+                        getattr(sc_def, "provenance_complete", True) is False
+                        or d.get("provenance_complete") is False
+                    ):
+                        provenance_complete = False
                 else:
                     name = getattr(r, "scenario_name", None)
                     if name:
@@ -346,7 +366,13 @@ class FlightRecorder:
                             from adaptive_rl.flight_testing.scenarios import get_scenario
 
                             sc_obj = get_scenario(name)
-                            scenario_provenance.append(sc_obj.to_dict())
+                            d = sc_obj.to_dict()
+                            scenario_provenance.append(d)
+                            if (
+                                getattr(sc_obj, "provenance_complete", True) is False
+                                or d.get("provenance_complete") is False
+                            ):
+                                provenance_complete = False
                         except Exception:
                             provenance_complete = False
                     else:
@@ -370,7 +396,34 @@ class FlightRecorder:
                 exp_config = ExperimentConfigurationFingerprint(**configuration)
             else:
                 raise ValueError(f"Invalid configuration type: {type(configuration)}")
+
+            # Validate explicitly supplied configuration against executed scenarios:
+            cfg_valid = True
+            if expected_scenario_names:
+                cfg_names = set(exp_config.scenario_names)
+                if not expected_scenario_names.issubset(cfg_names):
+                    cfg_valid = False
+
+                cfg_sc_names = set(
+                    s.get("name")
+                    for s in exp_config.scenarios
+                    if isinstance(s, dict) and "name" in s
+                )
+                if not expected_scenario_names.issubset(cfg_sc_names):
+                    cfg_valid = False
+
+                for sc in exp_config.scenarios:
+                    if isinstance(sc, dict) and sc.get("provenance_complete") is False:
+                        cfg_valid = False
+
+            # Define ONE authoritative provenance completeness result
+            authoritative_complete = (
+                provenance_complete and cfg_valid and bool(exp_config.provenance_complete)
+            )
+            # Synchronize configuration flag so top-level and configuration always agree
+            exp_config.provenance_complete = authoritative_complete
         else:
+            authoritative_complete = provenance_complete
             exp_config = ExperimentConfigurationFingerprint(
                 physics=physics,
                 environment_bounds=list(
@@ -386,7 +439,7 @@ class FlightRecorder:
                 controller_gains=dict(physics_params.get("controller_gains", {})),
                 scenarios=scenario_provenance,
                 extra_parameters=dict(physics_params.get("extra_parameters", {})),
-                provenance_complete=provenance_complete,
+                provenance_complete=authoritative_complete,
             )
 
         config_hash = compute_config_fingerprint(exp_config.to_dict())
@@ -452,7 +505,7 @@ class FlightRecorder:
             "scenario_metrics": [m.to_dict() for m in metrics_list],
             "trajectories": collected_trajectories,
             "aggregate_summary": agg_summary,
-            "provenance_complete": provenance_complete,
+            "provenance_complete": authoritative_complete,
             "signature": signature,
             "configuration": exp_config.to_dict(),
         }
@@ -472,7 +525,7 @@ class FlightRecorder:
             trajectories=collected_trajectories,
             configuration=exp_config,
             aggregate_summary=agg_summary,
-            provenance_complete=provenance_complete,
+            provenance_complete=authoritative_complete,
             signature=signature,
         )
 

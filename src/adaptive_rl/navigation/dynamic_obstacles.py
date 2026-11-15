@@ -32,9 +32,47 @@ class DynamicObstacleSphere3D:
     )
 
     def __post_init__(self) -> None:
+        self.radius = float(self.radius)
+        if not math.isfinite(self.radius) or self.radius <= 0.0:
+            raise ValueError(
+                f"Obstacle radius must be strictly positive and finite, got {self.radius}"
+            )
+
+        if self.motion_type not in ("bounce", "oscillate"):
+            raise ValueError(
+                f"Unsupported motion_type: '{self.motion_type}'. Must be 'bounce' or 'oscillate'"
+            )
+
+        self.oscillation_period = float(self.oscillation_period)
+        if not math.isfinite(self.oscillation_period) or self.oscillation_period <= 0.0:
+            raise ValueError(
+                f"Oscillation period must be strictly positive and finite, got {self.oscillation_period}"
+            )
+
         self.center_initial = np.asarray(self.center_initial, dtype=np.float64)
+        if self.center_initial.shape != (3,) or not np.all(np.isfinite(self.center_initial)):
+            raise ValueError(
+                f"center_initial must be a finite 3D vector, got {self.center_initial}"
+            )
+
         self.velocity = np.asarray(self.velocity, dtype=np.float64)
+        if self.velocity.shape != (3,) or not np.all(np.isfinite(self.velocity)):
+            raise ValueError(f"velocity must be a finite 3D vector, got {self.velocity}")
+
         self.oscillation_amplitude = np.asarray(self.oscillation_amplitude, dtype=np.float64)
+        if self.oscillation_amplitude.shape != (3,) or not np.all(
+            np.isfinite(self.oscillation_amplitude)
+        ):
+            raise ValueError(
+                f"oscillation_amplitude must be a finite 3D vector, got {self.oscillation_amplitude}"
+            )
+
+        if len(self.bounds) != 3 or any(
+            not math.isfinite(b) or b <= 2.0 * self.radius for b in self.bounds
+        ):
+            raise ValueError(
+                f"Arena bounds must all exceed 2 * radius ({2.0 * self.radius}), got {self.bounds}"
+            )
 
     def max_speed(self) -> float:
         """Calculate the theoretical maximum translation speed of the obstacle."""
@@ -189,34 +227,51 @@ class DynamicObstacleSphere3D:
         t_start: float,
         horizon_sec: float = 3.0,
         dt: float = 0.5,
+        max_spheres: int = 2000,
     ) -> List[ObstacleSphere3D]:
         """Generate static spherical obstacle approximations covering the predicted continuous swept volume.
 
         Guarantees that consecutive spheres overlap with spacing <= 1.2 * radius,
         leaving zero gaps in the predicted flight corridor.
+        Uses a mathematically derived upper bound on the distance travelled across the horizon
+        (v_max * horizon_sec) rather than discrete endpoint displacement.
         """
-        raw_traj = self.predict_trajectory(t_start, horizon_sec, dt)
-        if not raw_traj:
-            return []
+        t_start = float(t_start)
+        horizon_sec = float(horizon_sec)
+        if horizon_sec <= 0.0:
+            return [ObstacleSphere3D(center=self.center_at(t_start), radius=self.radius)]
+
+        v_max = self.max_speed()
+        max_spacing = 1.2 * self.radius
+
+        # If obstacle is essentially stationary, a single sphere at initial position suffices
+        if v_max <= 1e-9:
+            return [ObstacleSphere3D(center=self.center_at(t_start), radius=self.radius)]
+
+        # Total distance upper bound across the entire prediction horizon
+        # For any trajectory c(t), arc length s <= integral of ||c'(t)|| dt <= v_max * horizon_sec
+        total_dist_bound = v_max * horizon_sec
+
+        # Required number of temporal steps to guarantee center spacing <= 1.2 * radius everywhere
+        needed_steps = max(1, int(math.ceil(total_dist_bound / max_spacing)))
+
+        # Handle computational limits conservatively:
+        # If needed_steps exceeds max_spheres, we clamp the number of evaluations, but we
+        # CONSERVATIVELY inflate the sphere radius so that adjacent spheres still overlap
+        # without leaving any gaps in the predicted flight corridor.
+        if needed_steps > max_spheres:
+            actual_steps = max_spheres
+            step_dt = horizon_sec / actual_steps
+            step_disp_bound = v_max * step_dt
+            eff_radius = max(self.radius, step_disp_bound / 1.2)
+        else:
+            actual_steps = needed_steps
+            eff_radius = self.radius
 
         spheres: List[ObstacleSphere3D] = []
-        max_spacing = max(0.05, 1.2 * self.radius)
-
-        for i in range(len(raw_traj) - 1):
-            t_curr, c_curr = raw_traj[i]
-            t_next, c_next = raw_traj[i + 1]
-            seg_dist = float(np.linalg.norm(c_next - c_curr))
-            n_sub = max(1, int(math.ceil(seg_dist / max_spacing)))
-
-            for j in range(n_sub):
-                alpha = j / float(n_sub)
-                t_sample = t_curr + alpha * (t_next - t_curr)
-                c_sample = self.center_at(t_sample)
-                spheres.append(ObstacleSphere3D(center=c_sample, radius=self.radius))
-
-        # Include the final horizon endpoint
-        t_last, _ = raw_traj[-1]
-        spheres.append(ObstacleSphere3D(center=self.center_at(t_last), radius=self.radius))
+        for i in range(actual_steps + 1):
+            t = t_start + (i / actual_steps) * horizon_sec
+            spheres.append(ObstacleSphere3D(center=self.center_at(t), radius=eff_radius))
 
         return spheres
 

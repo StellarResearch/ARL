@@ -401,3 +401,221 @@ def test_callable_provenance_contract_closure_and_code() -> None:
     prov_meta = extract_callable_provenance(fault_50)
     assert prov_meta.get("metadata") == {"subsystem": "avionics_esc_1"}
     assert prov_meta != prov_50
+
+
+GLOBAL_SCALING_FACTOR = 1.0
+
+
+def test_callable_provenance_defaults_and_kwdefaults() -> None:
+    """Functions with identical code but different default or kwdefault arguments produce distinct provenance."""
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    # 1. Positional defaults
+    def fault_a(step: int, thrusts: np.ndarray, factor: float = 0.5) -> np.ndarray:
+        return thrusts * factor
+
+    def fault_b(step: int, thrusts: np.ndarray, factor: float = 0.8) -> np.ndarray:
+        return thrusts * factor
+
+    prov_a = extract_callable_provenance(fault_a)
+    prov_b = extract_callable_provenance(fault_b)
+    assert prov_a["defaults"] == [0.5]
+    assert prov_b["defaults"] == [0.8]
+    assert prov_a != prov_b
+
+    # 2. Keyword-only defaults
+    def fault_kw1(step: int, thrusts: np.ndarray, *, scale: float = 1.5) -> np.ndarray:
+        return thrusts * scale
+
+    def fault_kw2(step: int, thrusts: np.ndarray, *, scale: float = 2.5) -> np.ndarray:
+        return thrusts * scale
+
+    prov_kw1 = extract_callable_provenance(fault_kw1)
+    prov_kw2 = extract_callable_provenance(fault_kw2)
+    assert prov_kw1["kwdefaults"] == {"scale": 1.5}
+    assert prov_kw2["kwdefaults"] == {"scale": 2.5}
+    assert prov_kw1 != prov_kw2
+
+
+def test_callable_provenance_referenced_globals() -> None:
+    """Functions referencing different global values produce distinct provenance."""
+    global GLOBAL_SCALING_FACTOR
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    def global_scaled_fault(step: int, thrusts: np.ndarray) -> np.ndarray:
+        return thrusts * GLOBAL_SCALING_FACTOR
+
+    GLOBAL_SCALING_FACTOR = 1.0
+    prov_g1 = extract_callable_provenance(global_scaled_fault)
+    assert prov_g1["referenced_globals"]["GLOBAL_SCALING_FACTOR"] == 1.0
+
+    GLOBAL_SCALING_FACTOR = 2.5
+    prov_g2 = extract_callable_provenance(global_scaled_fault)
+    assert prov_g2["referenced_globals"]["GLOBAL_SCALING_FACTOR"] == 2.5
+    assert prov_g1 != prov_g2
+
+
+def test_callable_objects_provenance() -> None:
+    """Callable class instances capture class identity, instance configuration, and code metadata."""
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    class ActuatorLossModel:
+        def __init__(self, motor_id: int, efficiency: float) -> None:
+            self.motor_id = motor_id
+            self.efficiency = efficiency
+
+        def __call__(self, step: int, thrusts: np.ndarray) -> np.ndarray:
+            t = thrusts.copy()
+            t[self.motor_id] *= self.efficiency
+            return t
+
+    model1 = ActuatorLossModel(motor_id=0, efficiency=0.4)
+    model2 = ActuatorLossModel(motor_id=0, efficiency=0.9)
+
+    prov1 = extract_callable_provenance(model1)
+    prov2 = extract_callable_provenance(model2)
+
+    assert "ActuatorLossModel" in prov1["callable_class"]
+    assert prov1["attributes"]["efficiency"] == 0.4
+    assert prov2["attributes"]["efficiency"] == 0.9
+    assert prov1["provenance_complete"] is True
+    assert prov2["provenance_complete"] is True
+    assert prov1 != prov2
+
+
+def test_unsupported_non_serializable_callable_state_marked_incomplete() -> None:
+    """Callable with non-serializable state is marked incomplete without leaking memory addresses."""
+    import threading
+
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    class ComplexFault:
+        def __init__(self) -> None:
+            self.lock = threading.Lock()  # Non-serializable
+
+        def __call__(self, step: int, thrusts: np.ndarray) -> np.ndarray:
+            return thrusts
+
+    fault = ComplexFault()
+    prov = extract_callable_provenance(fault)
+
+    assert prov["provenance_complete"] is False
+    # Verify no memory address leaks
+    serialized = canonical_json_dumps(prov)
+    assert "0x" not in serialized
+
+
+def test_deterministic_repeated_callable_serialization() -> None:
+    """Repeated calls to extract_callable_provenance produce identical deterministic digests."""
+    from adaptive_rl.flight_testing.scenarios import extract_callable_provenance
+
+    def sample_fault(step: int, thrusts: np.ndarray, gain: float = 0.5) -> np.ndarray:
+        return thrusts * gain
+
+    p1 = extract_callable_provenance(sample_fault)
+    p2 = extract_callable_provenance(sample_fault)
+    assert canonical_json_dumps(p1) == canonical_json_dumps(p2)
+
+
+def test_explicit_configuration_missing_scenario_definitions_marked_incomplete(
+    tmp_path: Path,
+) -> None:
+    """Explicit configuration missing scenario definitions is marked incomplete."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioDefinition,
+        FlightScenarioRunner,
+    )
+
+    runner = FlightScenarioRunner()
+    sc1 = FlightScenarioDefinition(
+        name="sc1",
+        description="1",
+        initial_position=np.array([1.0, 1.0, 1.0]),
+        max_steps=2,
+    )
+    sc2 = FlightScenarioDefinition(
+        name="sc2",
+        description="2",
+        initial_position=np.array([2.0, 2.0, 2.0]),
+        max_steps=2,
+    )
+    res1 = runner.run_scenario(sc1)
+    res2 = runner.run_scenario(sc2)
+
+    physics = PhysicsSimulationFingerprint(
+        mass=1.0,
+        gravity=9.81,
+        arm_length=0.2,
+        arm_span=0.4,
+        rotor_offset_d=0.1414,
+        rotor_radius=0.09,
+        max_thrust_per_motor=5.0,
+        torque_to_thrust_ratio=0.01,
+        linear_damping=0.1,
+        angular_damping=0.02,
+        inertia=[0.01, 0.01, 0.02],
+        dt=0.05,
+        substeps=5,
+        substep_dt=0.01,
+        body_frame_lidar=False,
+        num_lidar_rays=16,
+        lidar_range=20.0,
+    )
+
+    # Supply explicit configuration that only covers sc1, but scenario_results has [res1, res2]
+    cfg = ExperimentConfigurationFingerprint(
+        physics=physics,
+        environment_bounds=[30.0, 30.0, 15.0],
+        algorithm_name="test",
+        checkpoint_hash=None,
+        random_seed=42,
+        scenario_names=["sc1"],  # Missing sc2!
+        scenarios=[sc1.to_dict()],
+        provenance_complete=True,  # Caller falsely claims complete!
+    )
+
+    recorder = FlightRecorder(output_dir=tmp_path)
+    record = recorder.create_record(
+        experiment_id="missing_sc_test",
+        physics_params={"mass": 1.0, "gravity": 9.81},
+        scenario_results=[res1, res2],
+        configuration=cfg,
+    )
+
+    # Must be marked incomplete!
+    assert record.provenance_complete is False
+    assert record.configuration.provenance_complete is False
+    assert record.verify_config_fingerprint() is True
+
+
+def test_explicit_configuration_conflicting_completeness_detected(tmp_path: Path) -> None:
+    """Record tampering with conflicting top-level and configuration completeness fails verification."""
+    from adaptive_rl.flight_testing.scenarios import (
+        FlightScenarioDefinition,
+        FlightScenarioRunner,
+    )
+
+    runner = FlightScenarioRunner()
+    sc = FlightScenarioDefinition(
+        name="sc_ok",
+        description="ok",
+        initial_position=np.array([1.0, 1.0, 1.0]),
+        max_steps=2,
+    )
+    res = runner.run_scenario(sc)
+
+    recorder = FlightRecorder(output_dir=tmp_path)
+    record = recorder.create_record(
+        experiment_id="tamper_test",
+        physics_params={"mass": 1.0, "gravity": 9.81},
+        scenario_results=[res],
+    )
+    assert record.verify_config_fingerprint() is True
+    assert record.verify_record_digest() is True
+
+    # Tamper with top-level flag to disagree with configuration flag
+    record.provenance_complete = not record.configuration.provenance_complete
+
+    # Both verifications must catch the inconsistency!
+    assert record.verify_config_fingerprint() is False
+    assert record.verify_record_digest() is False

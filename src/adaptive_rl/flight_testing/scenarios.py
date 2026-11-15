@@ -35,11 +35,15 @@ Computes measurable, independently verifiable aerospace flight metrics:
 
 from __future__ import annotations
 
+import builtins
 import csv
+import functools
 import hashlib
+import inspect
 import json
 import logging
 import math
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -277,15 +281,110 @@ class FlightScenarioResult:
         return path
 
 
+def _safe_provenance_value(val: Any) -> Tuple[Any, bool]:
+    """Deterministically serialize a value for provenance hashing without leaking memory addresses.
+
+    Returns (serialized_value, is_complete).
+    """
+    if val is None or isinstance(val, bool):
+        return val, True
+    if isinstance(val, (int, np.integer)):
+        return int(val), True
+    if isinstance(val, (float, np.floating)):
+        f_val = float(val)
+        if not math.isfinite(f_val):
+            return str(f_val), True
+        return 0.0 if f_val == 0.0 else f_val, True
+    if isinstance(val, str):
+        # Sanitize any hex memory addresses (e.g., '0x7f...', '<... at 0x...>')
+        if re.search(r"\bat 0x[0-9a-fA-F]+\b", val) or re.search(r"\b0x[0-9a-fA-F]{6,16}\b", val):
+            cleaned = re.sub(r"\bat 0x[0-9a-fA-F]+\b", "", val)
+            cleaned = re.sub(r"\b0x[0-9a-fA-F]{6,16}\b", "<addr>", cleaned).strip()
+            return cleaned, False
+        return val, True
+    if isinstance(val, np.ndarray):
+        items, ok = _safe_provenance_value(val.tolist())
+        return items, ok
+    if isinstance(val, (list, tuple)):
+        list_results = [_safe_provenance_value(x) for x in val]
+        return [r[0] for r in list_results], all(r[1] for r in list_results)
+    if isinstance(val, dict):
+        dict_results = {
+            str(k): _safe_provenance_value(v)
+            for k, v in sorted(val.items(), key=lambda item: str(item[0]))
+        }
+        return {k: r[0] for k, r in dict_results.items()}, all(r[1] for r in dict_results.values())
+    if hasattr(val, "to_dict") and callable(getattr(val, "to_dict")):
+        try:
+            return _safe_provenance_value(val.to_dict())
+        except Exception:
+            return f"unserializable:{type(val).__name__}", False
+    if hasattr(val, "metadata"):
+        meta = getattr(val, "metadata")
+        if meta is not None:
+            return _safe_provenance_value(meta)
+    if inspect.ismodule(val):
+        return f"module:{val.__name__}", True
+    if inspect.isfunction(val) or inspect.isclass(val):
+        return (
+            f"callable:{getattr(val, '__qualname__', getattr(val, '__name__', str(type(val))))}",
+            True,
+        )
+    if hasattr(val, "__dict__"):
+        try:
+            custom_attrs = {k: v for k, v in val.__dict__.items() if not k.startswith("__")}
+            if custom_attrs:
+                return _safe_provenance_value(custom_attrs)
+        except Exception:
+            pass
+        return f"object:{type(val).__qualname__}", False
+
+    s = str(val)
+    if re.search(r"\bat 0x[0-9a-fA-F]+\b", s) or re.search(r"\b0x[0-9a-fA-F]{6,16}\b", s):
+        cleaned = re.sub(r"\bat 0x[0-9a-fA-F]+\b", "", s).strip()
+        return cleaned, False
+    return s, False
+
+
 def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
     """Extract a stable, deterministic provenance record for a callable.
 
-    Captures function identity, module, qualified name, explicit metadata,
-    custom attributes, closure variables, and a SHA-256 digest of bytecode and constants.
+    Captures function identity, module, qualified name, function defaults, keyword defaults,
+    referenced global dependencies, closure variables, custom attributes, explicit metadata,
+    and a SHA-256 digest of code object bytecode, constants, and referenced names.
     Guarantees different callback configurations generate different digests.
     """
     if fn is None:
         return {}
+
+    provenance_complete = True
+
+    # Unwrap functools.partial
+    partial_args: List[Any] = []
+    partial_keywords: Dict[str, Any] = {}
+    if isinstance(fn, functools.partial):
+        partial_args, ok_args = _safe_provenance_value(fn.args)
+        partial_keywords, ok_kw = _safe_provenance_value(fn.keywords or {})
+        if not (ok_args and ok_kw):
+            provenance_complete = False
+        fn = fn.func
+
+    # Determine underlying code object and callable type
+    is_callable_instance = False
+    if inspect.isfunction(fn) or inspect.ismethod(fn):
+        code = getattr(fn, "__code__", None)
+        fn_globals = getattr(fn, "__globals__", {})
+        target_fn = fn
+    elif hasattr(fn, "__call__"):
+        is_callable_instance = True
+        call_method = fn.__call__
+        code = getattr(call_method, "__code__", None)
+        fn_globals = getattr(call_method, "__globals__", {})
+        target_fn = call_method
+    else:
+        code = getattr(fn, "__code__", None)
+        fn_globals = getattr(fn, "__globals__", {})
+        target_fn = fn
 
     info: Dict[str, Any] = {
         "name": getattr(fn, "__name__", type(fn).__name__),
@@ -295,49 +394,96 @@ def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
     if hasattr(fn, "__module__") and fn.__module__:
         info["module"] = str(fn.__module__)
 
-    # Explicit metadata or docstring
+    if is_callable_instance:
+        info["callable_class"] = f"{type(fn).__module__}.{type(fn).__qualname__}"
+
+    if partial_args:
+        info["partial_args"] = partial_args
+    if partial_keywords:
+        info["partial_keywords"] = partial_keywords
+
+    # Function positional defaults and keyword-only defaults
+    defaults = getattr(target_fn, "__defaults__", None)
+    if defaults is not None:
+        ser_defaults, ok_def = _safe_provenance_value(defaults)
+        info["defaults"] = ser_defaults
+        if not ok_def:
+            provenance_complete = False
+
+    kwdefaults = getattr(target_fn, "__kwdefaults__", None)
+    if kwdefaults is not None:
+        ser_kwdefaults, ok_kwdef = _safe_provenance_value(kwdefaults)
+        info["kwdefaults"] = ser_kwdefaults
+        if not ok_kwdef:
+            provenance_complete = False
+
+    # Explicit metadata contract
     if hasattr(fn, "metadata"):
         meta = getattr(fn, "metadata")
-        if isinstance(meta, dict):
-            info["metadata"] = {str(k): v for k, v in sorted(meta.items())}
-        else:
-            info["metadata"] = str(meta)
+        ser_meta, ok_meta = _safe_provenance_value(meta)
+        info["metadata"] = ser_meta
+        if isinstance(meta, dict) and meta.get("provenance_complete") is False:
+            provenance_complete = False
+        elif not ok_meta:
+            provenance_complete = False
     elif getattr(fn, "__doc__", None):
         info["doc"] = fn.__doc__.strip()
 
-    # Custom attributes on the callable
-    if hasattr(fn, "__dict__"):
+    # Custom attributes on the callable instance or function
+    custom_obj = fn if is_callable_instance else target_fn
+    if hasattr(custom_obj, "__dict__"):
         custom_attrs = {
-            k: v for k, v in fn.__dict__.items() if not k.startswith("__") and k != "metadata"
+            k: v
+            for k, v in custom_obj.__dict__.items()
+            if not k.startswith("__") and k != "metadata"
         }
         if custom_attrs:
-            info["attributes"] = {str(k): str(v) for k, v in sorted(custom_attrs.items())}
+            ser_attrs, ok_attrs = _safe_provenance_value(custom_attrs)
+            info["attributes"] = ser_attrs
+            if not ok_attrs:
+                provenance_complete = False
 
     # Closure variables
     closure_vars: Dict[str, Any] = {}
-    if hasattr(fn, "__closure__") and fn.__closure__ is not None and hasattr(fn, "__code__"):
-        co_freevars = getattr(fn.__code__, "co_freevars", ())
-        for var_name, cell in zip(co_freevars, fn.__closure__):
+    if hasattr(target_fn, "__closure__") and target_fn.__closure__ is not None and code is not None:
+        co_freevars = getattr(code, "co_freevars", ())
+        for var_name, cell in zip(co_freevars, target_fn.__closure__):
             try:
                 contents = cell.cell_contents
-                if isinstance(contents, (int, float, bool, str)):
-                    closure_vars[var_name] = contents
-                elif isinstance(contents, np.ndarray):
-                    closure_vars[var_name] = contents.tolist()
-                elif isinstance(contents, (list, tuple)):
-                    closure_vars[var_name] = list(contents)
-                elif isinstance(contents, dict):
-                    closure_vars[var_name] = {str(k): v for k, v in sorted(contents.items())}
-                else:
-                    closure_vars[var_name] = str(contents)
+                ser_val, ok_val = _safe_provenance_value(contents)
+                closure_vars[var_name] = ser_val
+                if not ok_val:
+                    provenance_complete = False
             except ValueError:
                 closure_vars[var_name] = "<empty_cell>"
     if closure_vars:
         info["closure"] = {k: closure_vars[k] for k in sorted(closure_vars.keys())}
 
-    # Bytecode and constants digest
-    if hasattr(fn, "__code__"):
-        code = fn.__code__
+    # Global dependencies referenced in code.co_names
+    if code is not None and fn_globals:
+        co_names = getattr(code, "co_names", ())
+        builtin_names = set(dir(builtins))
+        ref_globals: Dict[str, Any] = {}
+        for name in sorted(set(co_names)):
+            if name in fn_globals and name not in builtin_names:
+                g_val = fn_globals[name]
+                ser_g, ok_g = _safe_provenance_value(g_val)
+                ref_globals[name] = ser_g
+                if not ok_g:
+                    provenance_complete = False
+        if ref_globals:
+            info["referenced_globals"] = ref_globals
+
+    # Code object metadata and digest
+    if code is not None:
+        info["code_metadata"] = {
+            "co_argcount": code.co_argcount,
+            "co_kwonlyargcount": getattr(code, "co_kwonlyargcount", 0),
+            "co_flags": code.co_flags,
+            "co_names": list(code.co_names),
+            "co_varnames": list(code.co_varnames),
+        }
+
         hasher = hashlib.sha256()
         hasher.update(getattr(code, "co_code", b""))
         co_consts = getattr(code, "co_consts", ())
@@ -346,8 +492,13 @@ def extract_callable_provenance(fn: Any) -> Dict[str, Any]:
                 hasher.update(const.co_code)
             else:
                 hasher.update(str(const).encode("utf-8", errors="replace"))
+        for name in getattr(code, "co_names", ()):
+            hasher.update(name.encode("utf-8", errors="replace"))
+        for vname in getattr(code, "co_varnames", ()):
+            hasher.update(vname.encode("utf-8", errors="replace"))
         info["code_hash"] = hasher.hexdigest()
 
+    info["provenance_complete"] = provenance_complete
     return info
 
 
@@ -383,6 +534,19 @@ class FlightScenarioDefinition:
     max_duration_seconds: Optional[float] = None
     disturbance_fn: Optional[Callable[[int, DroneState6DOF], np.ndarray]] = None
     actuator_fault_fn: Optional[Callable[[int, np.ndarray], np.ndarray]] = None
+
+    @property
+    def provenance_complete(self) -> bool:
+        """Indicates whether all behavior-affecting components have complete provenance."""
+        if self.actuator_fault_fn is not None:
+            fault_info = extract_callable_provenance(self.actuator_fault_fn)
+            if fault_info.get("provenance_complete") is False:
+                return False
+        if self.disturbance_fn is not None:
+            dist_info = extract_callable_provenance(self.disturbance_fn)
+            if dist_info.get("provenance_complete") is False:
+                return False
+        return True
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a deterministic, fully serializable dictionary representation for cryptographic hashing."""
@@ -446,6 +610,7 @@ class FlightScenarioDefinition:
             "max_duration_seconds": self.max_duration_seconds,
             "actuator_fault": fault_info,
             "disturbance": dist_info,
+            "provenance_complete": self.provenance_complete,
         }
 
 

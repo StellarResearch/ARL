@@ -374,3 +374,242 @@ def test_predict_occupied_spheres_zero_gaps() -> None:
         assert dist <= 1.2 * obs.radius + 1e-4, (
             f"Gap detected at index {i}: dist={dist} > {1.2 * obs.radius}"
         )
+
+
+def test_obstacle_parameter_validation() -> None:
+    """DynamicObstacleSphere3D validates positive radius, valid bounds, positive period, and motion type."""
+    import pytest
+
+    # Non-positive radius
+    with pytest.raises(ValueError, match="strictly positive"):
+        DynamicObstacleSphere3D(center_initial=np.array([10.0, 10.0, 5.0]), radius=0.0)
+    with pytest.raises(ValueError, match="strictly positive"):
+        DynamicObstacleSphere3D(center_initial=np.array([10.0, 10.0, 5.0]), radius=-0.5)
+
+    # Invalid bounds <= 2 * radius
+    with pytest.raises(ValueError, match=r"Arena bounds must all exceed 2 \* radius"):
+        DynamicObstacleSphere3D(
+            center_initial=np.array([10.0, 10.0, 5.0]),
+            radius=5.0,
+            bounds=(10.0, 30.0, 20.0),  # bounds[0] = 10 <= 2 * 5
+        )
+
+    # Invalid motion type
+    with pytest.raises(ValueError, match="Unsupported motion_type"):
+        DynamicObstacleSphere3D(
+            center_initial=np.array([10.0, 10.0, 5.0]),
+            radius=1.0,
+            motion_type="teleport",
+        )
+
+    # Non-positive oscillation period
+    with pytest.raises(ValueError, match="Oscillation period must be strictly positive"):
+        DynamicObstacleSphere3D(
+            center_initial=np.array([10.0, 10.0, 5.0]),
+            radius=1.0,
+            motion_type="oscillate",
+            oscillation_period=0.0,
+        )
+
+
+def test_predict_occupied_spheres_period_equal_sampling_interval() -> None:
+    """Obstacle oscillating with period equal to sampling interval does not lose intermediate swept path."""
+    T = 0.5
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([10.0, 10.0, 5.0]),
+        radius=0.5,
+        velocity=np.zeros(3),
+        motion_type="oscillate",
+        oscillation_period=T,
+        oscillation_amplitude=np.array([4.0, 0.0, 0.0]),
+        bounds=(30.0, 30.0, 15.0),
+    )
+    # Samples at t=0 and t=0.5 are both at x=10.0 (endpoint displacement is 0.0!)
+    assert np.allclose(obs.center_at(0.0), obs.center_at(T))
+
+    spheres = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=T, dt=T)
+    assert len(spheres) > 5
+
+    x_coords = [s.center[0] for s in spheres]
+    # At t = T/4 = 0.125s, x reaches 14.0; at t = 3T/4 = 0.375s, x reaches 6.0
+    assert max(x_coords) >= 13.5, f"Peak amplitude not captured: {max(x_coords)}"
+    assert min(x_coords) <= 6.5, f"Trough amplitude not captured: {min(x_coords)}"
+
+    # Ensure no gaps between consecutive spheres
+    for i in range(len(spheres) - 1):
+        dist = float(np.linalg.norm(spheres[i + 1].center - spheres[i].center))
+        assert dist <= 1.2 * spheres[i].radius + 1e-4
+
+
+def test_predict_occupied_spheres_multiple_cycles_between_samples() -> None:
+    """Multiple full oscillation cycles occurring between samples are fully captured without gaps."""
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([10.0, 10.0, 5.0]),
+        radius=0.5,
+        velocity=np.zeros(3),
+        motion_type="oscillate",
+        oscillation_period=0.1,  # 10 full cycles in 1.0 second!
+        oscillation_amplitude=np.array([5.0, 0.0, 0.0]),
+        bounds=(30.0, 30.0, 15.0),
+    )
+    spheres = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=1.0, dt=1.0)
+    assert len(spheres) > 20
+
+    x_coords = [s.center[0] for s in spheres]
+    assert max(x_coords) >= 14.5
+    assert min(x_coords) <= 5.5
+
+    for i in range(len(spheres) - 1):
+        dist = float(np.linalg.norm(spheres[i + 1].center - spheres[i].center))
+        assert dist <= 1.2 * spheres[i].radius + 1e-4
+
+
+def test_predict_occupied_spheres_bounce_returning_to_start() -> None:
+    """Bouncing obstacle reflecting and returning to its start position preserves its full swept path."""
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([2.0, 10.0, 5.0]),
+        radius=1.0,
+        velocity=np.array(
+            [28.0, 0.0, 0.0]
+        ),  # Travels 28m in 1s, bounces, travels back in 1s (cycle=2s)
+        bounds=(30.0, 30.0, 15.0),
+        motion_type="bounce",
+    )
+    c0 = obs.center_at(0.0)
+    c2 = obs.center_at(2.0)
+    assert np.allclose(c0, c2)
+
+    spheres = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=2.0, dt=2.0)
+    x_coords = [s.center[0] for s in spheres]
+    assert max(x_coords) >= 27.0
+    assert min(x_coords) <= 3.0
+
+    for i in range(len(spheres) - 1):
+        dist = float(np.linalg.norm(spheres[i + 1].center - spheres[i].center))
+        assert dist <= 1.2 * spheres[i].radius + 1e-4
+
+
+def test_predict_occupied_spheres_tiny_radius_no_floor_violation() -> None:
+    """Very small positive obstacle radius (0.01m) strictly satisfies <= 1.2 * radius spacing without floor violation."""
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([10.0, 10.0, 5.0]),
+        radius=0.01,  # 1 cm radius
+        velocity=np.array([0.1, 0.0, 0.0]),  # 10 cm/s
+        bounds=(30.0, 30.0, 15.0),
+    )
+    spheres = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=0.2, dt=0.2)
+    assert len(spheres) >= 2
+    for i in range(len(spheres) - 1):
+        dist = float(np.linalg.norm(spheres[i + 1].center - spheres[i].center))
+        assert dist <= 1.2 * obs.radius + 1e-6, (
+            f"Spacing {dist} exceeded 1.2 * radius ({1.2 * obs.radius})"
+        )
+
+
+def test_predict_occupied_spheres_computational_limit_conservative() -> None:
+    """When needed steps exceed max_spheres, radius is expanded conservatively so no gaps occur."""
+    obs = DynamicObstacleSphere3D(
+        center_initial=np.array([5.0, 5.0, 5.0]),
+        radius=0.001,  # 1 mm radius
+        velocity=np.array([50.0, 0.0, 0.0]),  # 50 m/s
+        bounds=(100.0, 100.0, 50.0),
+    )
+    spheres = obs.predict_occupied_spheres(t_start=0.0, horizon_sec=1.0, dt=1.0, max_spheres=100)
+    assert len(spheres) == 101
+
+    eff_r = spheres[0].radius
+    assert eff_r > obs.radius
+    for i in range(len(spheres) - 1):
+        dist = float(np.linalg.norm(spheres[i + 1].center - spheres[i].center))
+        assert dist <= 1.2 * eff_r + 1e-4, (
+            f"Gap opened under computational limit: dist={dist} > 1.2 * eff_r"
+        )
+
+
+def test_end_to_end_repeated_replanning_sequential_progression() -> None:
+    """P2: End-to-end mission with repeated dynamic obstacle interruptions preserves sequential progression."""
+    from adaptive_rl.environments.drone_6dof import DroneState6DOF
+    from adaptive_rl.navigation.mission import MissionManager, MissionState
+    from adaptive_rl.navigation.planner import AStarPlanner3D
+
+    planner = AStarPlanner3D(
+        bounds=(30.0, 30.0, 15.0),
+        resolution=1.0,
+        vehicle_radius=0.4,
+        safety_margin=0.2,
+    )
+    mgr = MissionManager(planner=planner, waypoint_acceptance_radius=0.8)
+
+    # 3 sequential high-level waypoints
+    wp1 = np.array([10.0, 10.0, 5.0])
+    wp2 = np.array([20.0, 10.0, 5.0])
+    wp3 = np.array([28.0, 10.0, 5.0])
+
+    ok = mgr.start_mission(
+        start_position=np.array([2.0, 10.0, 5.0]),
+        goals=[wp1, wp2, wp3],
+        static_obstacles=[],
+    )
+    assert ok is True
+    assert mgr.current_mission_waypoint_idx == 0
+
+    # 1. Obstacle 1 appears during segment 1 (at x=6.0, y=10.0)
+    obs1 = DynamicObstacleSphere3D(
+        center_initial=np.array([6.0, 10.0, 5.0]),
+        radius=0.6,
+        velocity=np.zeros(3),
+    )
+    drone_state = DroneState6DOF(
+        position=np.array([2.0, 10.0, 5.0]),
+        velocity=np.zeros(3),
+        quaternion=np.array([1.0, 0.0, 0.0, 0.0]),
+        angular_velocity=np.zeros(3),
+    )
+    tgt, telem = mgr.update(
+        drone_state, time_sec=0.1, static_obstacles=[], dynamic_obstacles=[obs1]
+    )
+    assert telem.replan_count == 1
+    assert mgr.state == MissionState.EXECUTING
+    assert mgr.current_mission_waypoint_idx == 0
+
+    # Fly through replanned path to reach wp1
+    while mgr.current_mission_waypoint_idx == 0:
+        drone_state.position = mgr.active_path[mgr.active_path_idx].copy()
+        tgt, telem = mgr.update(
+            drone_state, time_sec=1.0, static_obstacles=[], dynamic_obstacles=[obs1]
+        )
+    assert mgr.current_mission_waypoint_idx == 1  # Successfully reached wp1!
+
+    # 2. Obstacle 2 appears during segment 2 (at x=15.0, y=10.0)
+    obs2 = DynamicObstacleSphere3D(
+        center_initial=np.array([15.0, 10.0, 5.0]),
+        radius=0.6,
+        velocity=np.zeros(3),
+    )
+    tgt, telem = mgr.update(
+        drone_state, time_sec=2.0, static_obstacles=[], dynamic_obstacles=[obs1, obs2]
+    )
+    assert telem.replan_count == 2
+    assert mgr.state == MissionState.EXECUTING
+    assert mgr.current_mission_waypoint_idx == 1  # Still on segment to wp2
+
+    # Fly through replanned path to reach wp2
+    while mgr.current_mission_waypoint_idx == 1:
+        drone_state.position = mgr.active_path[mgr.active_path_idx].copy()
+        tgt, telem = mgr.update(
+            drone_state, time_sec=3.0, static_obstacles=[], dynamic_obstacles=[obs1, obs2]
+        )
+    assert mgr.current_mission_waypoint_idx == 2  # Successfully reached wp2!
+
+    # 3. Proceed along path to wp3
+    while mgr.current_mission_waypoint_idx < 3:
+        drone_state.position = mgr.active_path[mgr.active_path_idx].copy()
+        tgt, telem = mgr.update(
+            drone_state, time_sec=4.0, static_obstacles=[], dynamic_obstacles=[obs1, obs2]
+        )
+
+    # Arrived at final waypoint wp3
+    assert mgr.current_mission_waypoint_idx == 3
+    assert mgr.state == MissionState.ARRIVED
+    assert telem.state == MissionState.ARRIVED
+    assert telem.replan_count == 2
