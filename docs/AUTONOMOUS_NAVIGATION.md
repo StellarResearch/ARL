@@ -442,3 +442,34 @@ adaptive-rl benchmark-flight --algo PPO --dof 6 --seeds 10,11,12,13,14,15,16,17,
 # Launch interactive Flight Deck GUI (with Tab 6 3D Navigation and Telemetry)
 streamlit run app.py
 ```
+
+---
+
+## 11. Perception-Aware Autonomous Navigation Roadmap (Phase V)
+
+Phase V evolves ARL from predictive navigation operating on known simulation obstacles toward fully autonomous flight driven by uncertain, noisy, exteroceptive sensor observations.
+
+### 11.1 Architectural Evolution: Ground-Truth Isolation
+In Phase III and Phase IV, path planning (`TimeAwareAStarPlanner3D`) and mission management (`MissionManager`) operated on direct ground-truth collections (`ObstacleSphere3D` and `DynamicObstacleSphere3D`). While Phase IV.1 integrated closed-loop avionics state estimation for vehicle ego-motion (`IMUSensor` and `ComplementaryFilter`), the obstacles themselves remained privileged simulation knowledge.
+
+Phase V establishes an enforced **Information-Flow Boundary**:
+- **Simulator Ground Truth:** Isolated strictly to physical simulation and offline evaluation harnesses.
+- **Autonomous Avionics Domain:** Planners and mission controllers interact exclusively with a perception-aware world model (`PerceptionWorldModel3D`) fed by exteroceptive sensor pipelines (3D LiDAR point clouds, spatial clustering detectors, and Kalman filter dynamic obstacle tracking).
+- **Uncertainty-Aware Planning:** Trajectory clearance dynamically inflates based on the tracking filter's spatial covariance $\Sigma_p(t+\tau)$, ensuring defensive flight around uncertain moving obstacles.
+
+For full architectural specifications, data contracts, and experimental validation protocols, refer to:
+- [Phase V Perception Architecture](file:///home/aryan/ml_workspace/ARL/docs/PHASE_V_PERCEPTION_ARCHITECTURE.md)
+- [Phase V Scientific Validation Plan](file:///home/aryan/ml_workspace/ARL/docs/PHASE_V_VALIDATION_PLAN.md)
+- [Architecture Decision Records (ADRs 001–008)](file:///home/aryan/ml_workspace/ARL/docs/adr/)
+
+### 11.2 Phase V Incremental Implementation Roadmap
+
+| Milestone | Scope & Deliverables | Primary Dependencies | Status |
+| :--- | :--- | :--- | :--- |
+| **Phase V.0** | **Perception Architecture & Scientific Specification**: Architectural boundaries, strongly typed sensor contracts, coordinate transforms, 8 ADRs, validation plan, and evaluation protocol. | None (Documentation & Specification) | **SPECIFIED** (Current) |
+| **Phase V.1** | **Simulated Sensor Foundation**: `adaptive_rl.perception.sensors`; 3D LiDAR point cloud simulator (`SimulatedLiDAR3D`), ray casting, range noise, dropout, latency, and sensor extrinsics. | `numpy`, `scipy.spatial` | **PLANNED** |
+| **Phase V.2** | **3D Obstacle Detection**: `adaptive_rl.perception.detection`; spatial point cloud clustering (`ObstacleDetector3D`), Euclidean segmentation, centroid estimation, and measurement covariance calculation. | `numpy`, `scipy.spatial` | **PLANNED** |
+| **Phase V.3** | **Dynamic Obstacle Tracking**: `adaptive_rl.perception.tracking`; Multi-Object Tracking (`DynamicObstacleTracker3D`), 3D Constant Velocity Kalman Filter, Hungarian association, Mahalanobis gating, and track lifecycle state machine. | `numpy`, `scipy.optimize` | **PLANNED** |
+| **Phase V.4** | **Sensor Fusion & Multi-Rate Synchronization**: Asynchronous sensor alignment, vehicle ego-motion compensation, and spatial projection under quadrotor attitude dynamics. | `numpy`, `scipy` | **PLANNED** |
+| **Phase V.5** | **Perception-Aware Navigation**: `adaptive_rl.perception.world_model`; `PerceptionWorldModel3D` and `GroundTruthWorldModelAdapter`; integration into `TimeAwareAStarPlanner3D` and `MissionManager` with covariance-inflated clearance. | Existing ARL Planning Stack | **PLANNED** |
+| **Phase V.6** | **Adversarial Validation & Benchmarking**: Dedicated adversarial stress-testing suite (`tests/test_perception_adversarial.py`) evaluating sensor dropouts, measurement noise, extreme latency, high clutter, and obstacle divergence. | `adaptive_rl.benchmarking` | **PLANNED** |
