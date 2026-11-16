@@ -1,7 +1,7 @@
 # ADR-002: Sensor Observation Data Contract
 
 ## Status
-ACCEPTED (Architecture Specification for Phase V)
+ACCEPTED (Implemented in Phase V.1, Hardened in Phase V.1.1)
 
 ## Context
 In ARL, perception begins with exteroceptive sensor observations. Previously, the only exteroceptive range model was `compute_lidar_3d_readings` in `src/adaptive_rl/environments/drone.py`, which produced a 1D normalized range array across 16 fixed ray directions directly from the internal simulation obstacle list.
@@ -9,7 +9,7 @@ In ARL, perception begins with exteroceptive sensor observations. Previously, th
 To support realistic 3D detection, tracking, and mapping, the perception subsystem requires strongly typed, serializable data structures that capture spatial range data, sensor extrinsics, timestamps, noise characteristics, and invalid/dropped measurement flags without relying on heavy external robotics frameworks.
 
 > [!IMPORTANT]
-> The data contracts specified in this document are **ARCHITECTURAL SPECIFICATIONS** scheduled for implementation in Phase V.1 (`adaptive_rl.perception.sensors`). They are not present in the current Phase V.0 codebase.
+> The data contracts specified in this document are **IMPLEMENTED and HARDENED** in Phase V.1.1 (`adaptive_rl.perception.sensors`). Hardware validation has not been performed; all contracts are verified in numerical simulation. Phase V.2 detection and V.3 tracking remain `NOT IMPLEMENTED`.
 
 ## Decision
 We define standard sensor observation contracts for future implementation in `adaptive_rl.perception.sensors`:
@@ -51,19 +51,44 @@ class DepthFrame3D:
 ### 1. Data Integrity, Defensive Copying, and Array Immutability
 A common Python pitfall is assuming that `@dataclass(frozen=True)` makes NumPy arrays immutable. While `frozen=True` prevents reassigning the field (`point_cloud.points = new_array` raises `FrozenInstanceError`), the underlying NumPy array memory buffer remains mutable (`point_cloud.points[0, 0] = 999.0` will silently alter the data).
 
-To guarantee strict scientific data integrity in Phase V.1:
-1. **Read-Only Buffer Enforcement:** Factory constructors will mark array buffers as read-only:
+To guarantee strict scientific data integrity in Phase V.1 and Phase V.1.1:
+1. **Read-Only Buffer Enforcement:** Factory constructors mark array buffers as read-only:
    ```python
    points.flags.writeable = False
+   ranges.flags.writeable = False
    valid_mask.flags.writeable = False
+   if intensities is not None:
+       intensities.flags.writeable = False
+   if sensor_origin_w is not None:
+       sensor_origin_w.flags.writeable = False
    ```
-2. **Defensive Ingestion Copying:** All constructors must ingest arrays via `np.array(arr, copy=True)` or `arr.copy()` to prevent external caller modifications from corrupting stored frames.
-3. **Shape and Type Validation:** Preconditions must enforce exact dimensional contracts:
+2. **Defensive Ingestion Copying:** All constructors must ingest arrays via `np.array(arr, copy=True)` to prevent external caller modifications from corrupting stored frames.
+3. **Shape and Type Validation:** Preconditions enforce exact dimensional contracts:
    - `points`: shape `(N, 3)`, dtype `float64`.
    - `ranges`: shape `(N,)`, dtype `float32`.
    - `valid_mask`: shape `(N,)`, dtype `bool`.
-   - `rotation_s_to_b`: shape `(3, 3)`, orthonormal $\mathrm{SO}(3)$ check: $\|R R^T - I\| < 10^{-6}, \det(R) = +1$.
-4. **Finite Coordinates Enforcement:** All points marked `valid_mask == True` must satisfy `np.all(np.isfinite(points[valid_mask]))`. Invalid returns (NaN/Inf) must be flagged `valid_mask = False` and sanitized.
+   - `rotation_s_to_b`: shape `(3, 3)`, validated via shared `validate_so3_rotation()`:
+     $$\|R R^T - I_3\|_2 \le 10^{-5}, \quad |\det(R) - 1.0| \le 10^{-4}$$
+     Rejecting non-finite values, singular matrices, reflections ($\det=-1$), and shears.
+4. **Canonical Invalid Return Representation:**
+   All dropped, out-of-range, blind-zone, or noise-truncated returns (`valid_mask == False`) MUST report:
+   - `points[i] = [NaN, NaN, NaN]`
+   - `ranges[i] = NaN`
+   - `intensities[i] = 0.0` (if intensities are present)
+   - `valid_mask[i] = False`
+   Valid observations must never contain non-finite coordinates or ranges. Dropped or out-of-range returns are **never** silently converted to `0.0 m` or `max_range`.
+5. **Geometric Point-to-Range Consistency:**
+   Every valid return (`valid_mask == True`) must geometrically agree with its reported radial distance within documented tolerance $\epsilon_p = 10^{-3}\text{ m}$ ($1\text{ mm}$):
+   $$\left| \|\mathbf{p}_i - \mathbf{o}_{\text{frame}}\|_2 - r_i \right| \le \epsilon_p$$
+   where $\mathbf{o}_{\text{frame}}$ is:
+   - Sensor frame: $\mathbf{o}_S = [0, 0, 0]^T$
+   - Body frame: $\mathbf{o}_B = \mathbf{t}_B$
+   - World frame: $\mathbf{o}_W = \text{sensor\_origin\_w}$ (strictly required if valid points exist in world frame)
+6. **Intensity Semantics:**
+   `intensities` values are a **synthetic normalized echo-strength proxy** ($I = \frac{1}{1 + (r / r_{\max})^2} \in (0, 1]$), not a physically calibrated reflectivity or material spectroscopy model.
+7. **Timing and Latency Semantics (Option A — Caller-Managed Timing):**
+   - `timestamp` is the simulation acquisition epoch $t_{\text{meas}}$.
+   - `update_rate_hz` and `latency_sec` in `SensorConfig3D` document configured sensor specifications. The caller schedules invocations; active asynchronous queues and time-delayed observation delivery are explicitly deferred to Phase V.4.
 
 ### 2. Initial Sensor Priority: 3D LiDAR First
 We decide to implement the **Simulated 3D LiDAR** first (in Phase V.1), deferring the Depth Camera to Phase V.4:

@@ -273,9 +273,10 @@ All quantitative targets listed below are **PROVISIONAL ENGINEERING GOALS** to b
 | Phase | Milestone Name | Key Provisional Acceptance Criteria | Status |
 | :--- | :--- | :--- | :--- |
 | **Phase V.0** | Architecture & Specification | Complete specifications, 8 ADRs, validation plan, zero code regression | `COMPLETE` |
-| **Phase V.1** | Simulated Sensor Foundation | Ray casting throughput $\ge 50\text{ Hz}$ benchmark target ($< 20\text{ ms}$ per sweep) for 20 Hz simulation; range noise matches target $\sigma \pm 10\%$; dropout model verified | `VERIFIED` |
-| **Phase V.2** | 3D Obstacle Detection | Detection Precision $\ge 95\%$; Recall $\ge 90\%$; Centroid RMSE $< 0.15\text{ m}$ on isolated obstacles | `PROVISIONAL TARGET` |
-| **Phase V.3** | Dynamic Obstacle Tracking | MOTA $\ge 0.85$; Velocity RMSE $< 0.25\text{ m/s}$; Zero ID switches on linear crossing; NEES within $95\%$ bounds | `PROVISIONAL TARGET` |
-| **Phase V.4** | Sensor Fusion & Extrinsics | Projected point cloud spatial error $< 0.05\text{ m}$ under $30^\circ/\text{s}$ vehicle yaw rate | `PROVISIONAL TARGET` |
-| **Phase V.5** | Perception-Aware Navigation | Success Rate $\ge 90\%$ on Scenarios P01–P06; Zero ground-truth leakage; Minimum clearance $> 0.20\text{ m}$ | `PROVISIONAL TARGET` |
-| **Phase V.6** | Adversarial Validation | $100\%$ fail-safe hover hold on sensor blackout (conditioned on healthy localization); Success $\ge 85\%$ across full 10-scenario suite ($M \ge 10$) | `PROVISIONAL TARGET` |
+| **Phase V.1** | Simulated Sensor Foundation | Ray casting throughput $\ge 50\text{ Hz}$ benchmark target ($< 20\text{ ms}$ per sweep) for 20 Hz simulation; range noise matches target $\sigma \pm 10\%$; dropout model verified | `LOCALLY TESTED` (`BENCHMARK TARGET MET — LOCAL ENVIRONMENT`) |
+| **Phase V.1.1**| Sensor Contract Hardening | SO(3) rotation validation ($\|RR^T - I\|_2 \le 10^{-5}, \|\det(R)-1\| \le 10^{-4}$); canonical NaN invalid measurement contract; geometric point-to-range consistency ($|\|\mathbf{p}\|-r| \le 10^{-3}\text{ m}$); strict config validation; obstacle/bounds input enforcement | `IMPLEMENTED` (`LOCALLY TESTED`) |
+| **Phase V.2** | 3D Obstacle Detection | Detection Precision $\ge 95\%$; Recall $\ge 90\%$; Centroid RMSE $< 0.15\text{ m}$ on isolated obstacles | `NOT IMPLEMENTED` (`PROVISIONAL TARGET`) |
+| **Phase V.3** | Dynamic Obstacle Tracking | MOTA $\ge 0.85$; Velocity RMSE $< 0.25\text{ m/s}$; Zero ID switches on linear crossing; NEES within $95\%$ bounds | `NOT IMPLEMENTED` (`PROVISIONAL TARGET`) |
+| **Phase V.4** | Sensor Fusion & Extrinsics | Projected point cloud spatial error $< 0.05\text{ m}$ under $30^\circ/\text{s}$ vehicle yaw rate | `NOT IMPLEMENTED` (`PROVISIONAL TARGET`) |
+| **Phase V.5** | Perception-Aware Navigation | Success Rate $\ge 90\%$ on Scenarios P01–P06; Zero ground-truth leakage; Minimum clearance $> 0.20\text{ m}$ | `NOT IMPLEMENTED` (`PROVISIONAL TARGET`) |
+| **Phase V.6** | Adversarial Validation | $100\%$ fail-safe hover hold on sensor blackout (conditioned on healthy localization); Success $\ge 85\%$ across full 10-scenario suite ($M \ge 10$) | `NOT IMPLEMENTED` (`PROVISIONAL TARGET`) |

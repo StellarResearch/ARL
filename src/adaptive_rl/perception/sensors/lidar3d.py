@@ -4,6 +4,13 @@ Implements ADR-002, ADR-003, and ADR-006:
 Vectorized ray-sphere and ray-box intersection against simulation geometry,
 adding Gaussian range error, statistical dropout, and extrinsic transformation,
 outputting strongly typed, immutable PointCloud3D observations with zero ground-truth leakage.
+
+Hardened in Phase V.1.1:
+- Shared SO(3) validation on quadrotor orientation inputs.
+- Strict arena bounds validation (shape, finiteness, strictly positive dimensions, sensor origin inside).
+- Explicit obstacle input policy rejecting unsupported or non-finite geometry without silent skipping.
+- Canonical invalid measurement contract (NaN coordinates, NaN ranges, 0.0 intensity, valid_mask=False).
+- Truthful caller-managed timing and deferred latency queue documentation.
 """
 
 from __future__ import annotations
@@ -13,9 +20,74 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from adaptive_rl.environments.drone import ObstacleSphere3D
 from adaptive_rl.environments.drone_6dof import quaternion_to_rotation_matrix
+from adaptive_rl.navigation.dynamic_obstacles import DynamicObstacleSphere3D
 from adaptive_rl.perception.sensors.base import BaseSensor3D
-from adaptive_rl.perception.sensors.data import PointCloud3D, SensorConfig3D
+from adaptive_rl.perception.sensors.data import (
+    PointCloud3D,
+    SensorConfig3D,
+    validate_so3_rotation,
+)
+
+
+def _validate_and_extract_spherical_obstacle(
+    obs: Any, timestamp: float
+) -> Tuple[np.ndarray, float]:
+    """Validate and extract the center and radius of a spherical obstacle at the given timestamp.
+
+    Supported obstacle representations:
+    - ObstacleSphere3D: static spherical obstacle
+    - DynamicObstacleSphere3D: moving spherical obstacle evaluated at simulation epoch t
+    - Duck-typed obstacles with verified finite 3D center and finite strictly positive radius (>0).
+
+    Raises:
+        TypeError: If the obstacle type is not recognized.
+        ValueError: If center coordinates or radius are non-finite, wrong shape, or non-positive.
+    """
+    if isinstance(obs, (str, bytes, dict, list, set, tuple, int, float, bool)):
+        raise TypeError(
+            f"Unsupported obstacle type: {type(obs)}. Expected ObstacleSphere3D or DynamicObstacleSphere3D."
+        )
+
+    if isinstance(obs, DynamicObstacleSphere3D) or (
+        hasattr(obs, "center_at") and callable(obs.center_at)
+    ):
+        try:
+            c = obs.center_at(timestamp)
+        except Exception as err:
+            raise ValueError(
+                f"Failed to evaluate dynamic obstacle center at t={timestamp}: {err}"
+            ) from err
+    elif isinstance(obs, ObstacleSphere3D) or (
+        hasattr(obs, "center") and not callable(obs.center) and hasattr(obs, "radius")
+    ):
+        c = obs.center
+    else:
+        raise TypeError(
+            f"Unsupported obstacle type: {type(obs)}. Expected ObstacleSphere3D or DynamicObstacleSphere3D."
+        )
+
+    c_arr = np.asarray(c, dtype=np.float64)
+    if c_arr.shape != (3,):
+        raise ValueError(f"Obstacle center must have shape (3,), got {c_arr.shape}")
+    if not np.all(np.isfinite(c_arr)):
+        raise ValueError(f"Obstacle center must have finite coordinates, got {c}")
+
+    if not hasattr(obs, "radius"):
+        raise ValueError(f"Obstacle of type {type(obs)} must provide a 'radius' attribute")
+    radius_val = obs.radius
+    if (
+        isinstance(radius_val, bool)
+        or not isinstance(radius_val, (int, float))
+        or not math.isfinite(radius_val)
+        or radius_val <= 0.0
+    ):
+        raise ValueError(
+            f"Obstacle radius must be a finite strictly positive number, got {radius_val!r}"
+        )
+
+    return c_arr, float(radius_val)
 
 
 class SimulatedLiDAR3D(BaseSensor3D):
@@ -101,11 +173,22 @@ class SimulatedLiDAR3D(BaseSensor3D):
     ) -> PointCloud3D:
         """Render a 3D LiDAR point cloud observation at the given epoch.
 
+        Timing Semantics (Option A — Caller-Managed Timing):
+        - `timestamp` is the acquisition epoch (t_meas) in simulation seconds.
+        - `update_rate_hz` and `latency_sec` in SensorConfig3D document nominal sensor parameters;
+          the caller is responsible for invoking capture() at appropriate simulation times.
+          Asynchronous delivery queues and delayed consumption are deferred to Phase V.4.
+
         Internally simulates ray-casting against spherical obstacles and arena
         bounding walls using vectorized geometry. Outputs an immutable PointCloud3D.
         """
-        if not math.isfinite(timestamp) or timestamp < 0.0:
-            raise ValueError(f"timestamp must be non-negative and finite, got {timestamp}")
+        if (
+            isinstance(timestamp, bool)
+            or not isinstance(timestamp, (int, float))
+            or not math.isfinite(timestamp)
+            or timestamp < 0.0
+        ):
+            raise ValueError(f"timestamp must be non-negative and finite, got {timestamp!r}")
 
         pos_w = np.asarray(drone_pos, dtype=np.float64)
         if pos_w.shape != (3,) or not np.all(np.isfinite(pos_w)):
@@ -114,8 +197,9 @@ class SimulatedLiDAR3D(BaseSensor3D):
         rot_arr = np.asarray(drone_orientation, dtype=np.float64)
         if rot_arr.shape == (4,):
             r_b_to_w = quaternion_to_rotation_matrix(rot_arr)
+            r_b_to_w = validate_so3_rotation(r_b_to_w)
         elif rot_arr.shape == (3, 3):
-            r_b_to_w = rot_arr
+            r_b_to_w = validate_so3_rotation(rot_arr)
         else:
             raise ValueError(
                 f"drone_orientation must be quaternion (4,) or rotation matrix (3, 3), got {rot_arr.shape}"
@@ -138,30 +222,21 @@ class SimulatedLiDAR3D(BaseSensor3D):
             centers: List[np.ndarray] = []
             radii: List[float] = []
             for obs in obstacles:
-                # Support static ObstacleSphere3D, DynamicObstacleSphere3D, or duck-typed obstacles
-                if hasattr(obs, "center_at") and callable(obs.center_at):
-                    c = obs.center_at(timestamp)
-                elif hasattr(obs, "center"):
-                    c = obs.center
-                else:
-                    continue
-
-                r = float(obs.radius) if hasattr(obs, "radius") else 0.0
-                if r > 0.0:
-                    centers.append(np.asarray(c, dtype=np.float64))
-                    radii.append(r)
+                c_arr, r_val = _validate_and_extract_spherical_obstacle(obs, timestamp)
+                centers.append(c_arr)
+                radii.append(r_val)
 
             if centers:
-                c_arr = np.array(centers, dtype=np.float64)  # (M, 3)
-                r_arr = np.array(radii, dtype=np.float64)  # (M,)
-                num_obs = c_arr.shape[0]
+                c_arr_all = np.array(centers, dtype=np.float64)  # (M, 3)
+                r_arr_all = np.array(radii, dtype=np.float64)  # (M,)
+                num_obs = c_arr_all.shape[0]
 
                 # Vector from obstacle center to sensor origin: m_j = o - c_j
-                m_vecs = sensor_origin_w[np.newaxis, :] - c_arr  # (M, 3)
+                m_vecs = sensor_origin_w[np.newaxis, :] - c_arr_all  # (M, 3)
                 # b_ij = d_i . m_j = (rays_w @ m_vecs.T)
                 b_mat = rays_w @ m_vecs.T  # (N, M)
                 # c_const_j = ||m_j||^2 - r_j^2
-                c_const = np.sum(m_vecs * m_vecs, axis=1) - r_arr * r_arr  # (M,)
+                c_const = np.sum(m_vecs * m_vecs, axis=1) - r_arr_all * r_arr_all  # (M,)
 
                 # Discriminant: Delta_ij = b_ij^2 - c_const_j
                 disc = b_mat * b_mat - c_const[np.newaxis, :]  # (N, M)
@@ -190,22 +265,37 @@ class SimulatedLiDAR3D(BaseSensor3D):
         t_box = np.full(num_rays, np.inf, dtype=np.float64)
         if bounds is not None:
             b_arr = np.asarray(bounds, dtype=np.float64)
-            if b_arr.shape == (3,) and np.all(b_arr > 0.0):
-                t_exit_axes = np.full((num_rays, 3), np.inf, dtype=np.float64)
-                for axis in range(3):
-                    d_axis = rays_w[:, axis]
-                    pos_axis = sensor_origin_w[axis]
-                    max_axis = b_arr[axis]
+            if b_arr.shape != (3,):
+                raise ValueError(f"bounds must have shape (3,), got {b_arr.shape}")
+            if not np.all(np.isfinite(b_arr)):
+                raise ValueError(f"bounds must be finite, got {bounds}")
+            if np.any(b_arr <= 0.0):
+                raise ValueError(f"bounds dimensions must be strictly positive, got {bounds}")
 
-                    pos_dir = d_axis > 1e-7
-                    neg_dir = d_axis < -1e-7
+            # Verify sensor origin lies within declared arena subject to tolerance (1e-4 m)
+            tolerance_bound = 1e-4
+            if np.any(sensor_origin_w < -tolerance_bound) or np.any(
+                sensor_origin_w > b_arr + tolerance_bound
+            ):
+                raise ValueError(
+                    f"Sensor origin {sensor_origin_w} lies outside declared arena bounds {b_arr}"
+                )
 
-                    t_exit_axes[pos_dir, axis] = (max_axis - pos_axis) / d_axis[pos_dir]
-                    t_exit_axes[neg_dir, axis] = (0.0 - pos_axis) / d_axis[neg_dir]
+            t_exit_axes = np.full((num_rays, 3), np.inf, dtype=np.float64)
+            for axis in range(3):
+                d_axis = rays_w[:, axis]
+                pos_axis = sensor_origin_w[axis]
+                max_axis = b_arr[axis]
 
-                # Filter non-negative exit times
-                t_exit_axes[t_exit_axes < 0.0] = np.inf
-                t_box = np.min(t_exit_axes, axis=1)
+                pos_dir = d_axis > 1e-7
+                neg_dir = d_axis < -1e-7
+
+                t_exit_axes[pos_dir, axis] = (max_axis - pos_axis) / d_axis[pos_dir]
+                t_exit_axes[neg_dir, axis] = (0.0 - pos_axis) / d_axis[neg_dir]
+
+            # Filter non-negative exit times
+            t_exit_axes[t_exit_axes < 0.0] = np.inf
+            t_box = np.min(t_exit_axes, axis=1)
 
         # 5. Combine nearest true distances
         r_true = np.minimum(t_spheres, t_box)
@@ -223,24 +313,25 @@ class SimulatedLiDAR3D(BaseSensor3D):
         dropout_roll = self.rng.uniform(0.0, 1.0, size=num_rays)
         not_dropped = dropout_roll >= dropout_p
 
-        valid_mask = in_range_mask & not_dropped
+        potential_valid = in_range_mask & not_dropped
 
-        # Allocate output arrays
+        # Allocate output arrays with canonical invalid representation:
+        # Invalid points: [NaN, NaN, NaN]
+        # Invalid range: NaN
+        # Invalid intensity: 0.0
+        # valid_mask: False
         pts_s = np.full((num_rays, 3), np.nan, dtype=np.float64)
         ranges = np.full(num_rays, np.nan, dtype=np.float32)
         intensities = np.zeros(num_rays, dtype=np.float32)
+        valid_mask = np.zeros(num_rays, dtype=bool)
 
-        # For rays that missed everything within max_range, set range to inf
-        out_of_range_mask = r_true > max_r
-        ranges[out_of_range_mask] = np.inf
-
-        if np.any(valid_mask):
-            valid_indices = np.where(valid_mask)[0]
-            true_valid_ranges = r_true[valid_indices]
+        if np.any(potential_valid):
+            candidate_indices = np.where(potential_valid)[0]
+            true_valid_ranges = r_true[candidate_indices]
 
             # Add zero-mean Gaussian noise
             if noise_std > 0.0:
-                noise = self.rng.normal(0.0, noise_std, size=len(valid_indices))
+                noise = self.rng.normal(0.0, noise_std, size=len(candidate_indices))
                 measured_ranges = true_valid_ranges + noise
                 # Physical range guard: do not allow measured range below min_range_m
                 measured_ranges = np.maximum(min_r, measured_ranges)
@@ -248,28 +339,25 @@ class SimulatedLiDAR3D(BaseSensor3D):
                 measured_ranges = true_valid_ranges
 
             # Check if noise pushed range beyond max_range
-            beyond_max = measured_ranges > max_r
-            if np.any(beyond_max):
-                invalid_from_noise = valid_indices[beyond_max]
-                valid_mask[invalid_from_noise] = False
-                ranges[invalid_from_noise] = np.inf
+            within_max = measured_ranges <= max_r
+            if np.any(within_max):
+                final_valid_indices = candidate_indices[within_max]
+                final_ranges = measured_ranges[within_max].astype(np.float32)
 
-            # Remaining valid rays
-            remaining_valid = valid_mask[valid_indices]
-            final_valid_indices = valid_indices[remaining_valid]
-            final_ranges = measured_ranges[remaining_valid].astype(np.float32)
+                valid_mask[final_valid_indices] = True
+                ranges[final_valid_indices] = final_ranges
 
-            ranges[final_valid_indices] = final_ranges
-            # Compute 3D Cartesian coordinates in sensor frame: p_S = r * d_S
-            pts_s[final_valid_indices] = (
-                final_ranges[:, np.newaxis] * self._ray_directions_s[final_valid_indices]
-            )
+                # Compute 3D Cartesian coordinates in sensor frame: p_S = r * d_S
+                pts_s[final_valid_indices] = (
+                    final_ranges[:, np.newaxis] * self._ray_directions_s[final_valid_indices]
+                )
 
-            # Synthetic echo intensity: inverse square falloff normalized to [0.5, 1.0]
-            norm_r = final_ranges / max_r
-            intensities[final_valid_indices] = (1.0 / (1.0 + norm_r * norm_r)).astype(
-                np.float32
-            )
+                # Synthetic echo-strength proxy (inverse-square distance falloff normalized to (0, 1])
+                # Note: this is a normalized geometric proxy, not a calibrated material reflectivity model.
+                norm_r = final_ranges / max_r
+                intensities[final_valid_indices] = (1.0 / (1.0 + norm_r * norm_r)).astype(
+                    np.float32
+                )
 
         return PointCloud3D(
             timestamp=timestamp,

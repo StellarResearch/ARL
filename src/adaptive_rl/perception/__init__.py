@@ -13,6 +13,7 @@ from adaptive_rl.perception.sensors import (
     SensorConfig3D,
     SensorExtrinsics,
     SimulatedLiDAR3D,
+    validate_so3_rotation,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "SensorConfig3D",
     "SensorExtrinsics",
     "SimulatedLiDAR3D",
+    "validate_so3_rotation",
 ]

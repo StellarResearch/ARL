@@ -5,6 +5,7 @@ from adaptive_rl.perception.sensors.data import (
     PointCloud3D,
     SensorConfig3D,
     SensorExtrinsics,
+    validate_so3_rotation,
 )
 from adaptive_rl.perception.sensors.lidar3d import SimulatedLiDAR3D
 
@@ -14,4 +15,5 @@ __all__ = [
     "SensorConfig3D",
     "SensorExtrinsics",
     "SimulatedLiDAR3D",
+    "validate_so3_rotation",
 ]

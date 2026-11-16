@@ -266,12 +266,15 @@ class PointCloud3D:
     sensor_origin_w: Optional[np.ndarray] = None # Sensor position in world frame at capture
 ```
 
-#### Array Immutability, Defensive Copying & Shape Validation
+#### Array Immutability, Defensive Copying, Geometric Consistency & Validation
 In Python, `@dataclass(frozen=True)` prevents attribute reassignment (`obj.points = ...`), but **does not make the underlying NumPy array buffers read-only** (`obj.points[0, 0] = ...` would silently mutate memory).
-To enforce strict scientific data integrity in Phase V.1 implementations:
-- **Read-Only Buffers:** Constructors must explicitly set `points.flags.writeable = False` and `valid_mask.flags.writeable = False`.
-- **Defensive Ingestion:** All array parameters must be copied on ingestion (`np.copy()`).
-- **Shape and Finite-Value Preconditions:** Arrays must be validated for exact dimensions (`points.shape == (N, 3)`, `ranges.shape == (N,)`, `valid_mask.shape == (N,)`) and points with `valid_mask == True` must satisfy `np.all(np.isfinite(points[valid_mask]))`. Dropped or out-of-range returns must be flagged `valid_mask = False` and must **never** be silently converted to `0.0 m` or `max_range`.
+To enforce strict scientific data integrity in Phase V.1 / V.1.1 implementations:
+- **Read-Only Buffers:** Constructors explicitly set `flags.writeable = False` on `points`, `ranges`, `valid_mask`, `intensities`, `sensor_origin_w`, and extrinsics buffers.
+- **Defensive Ingestion:** All array parameters are copied on ingestion (`np.array(arr, copy=True)`).
+- **Canonical Invalid Return Contract:** Dropped or out-of-range returns (`valid_mask == False`) MUST report `[NaN, NaN, NaN]` coordinates, `NaN` range, and `0.0` intensity. They are **never** silently converted to `0.0 m` or `max_range`.
+- **Geometric Point-to-Range Consistency:** Valid returns (`valid_mask == True`) must satisfy $|\|\mathbf{p}_i - \mathbf{o}_{\text{frame}}\|_2 - r_i| \le 10^{-3}\text{ m}$ against the frame-specific sensor origin ($\mathbf{0}$ in sensor frame, $\mathbf{t}_B$ in body frame, $\text{sensor\_origin\_w}$ in world frame).
+- **SO(3) Rotation Validation:** All rotation matrices are verified for orthonormality ($\|R R^T - I_3\|_2 \le 10^{-5}$) and proper rotation determinant ($|\det(R) - 1.0| \le 10^{-4}$), rejecting reflections ($\det=-1$), scaling, and non-finite values.
+- **Timing & Latency Semantics:** Capture timing is caller-managed (`timestamp` is $t_{\text{meas}}$). Configured latency (`latency_sec`) specifies avionics budget; asynchronous delivery queues are deferred to Phase V.4.
 
 ---
 

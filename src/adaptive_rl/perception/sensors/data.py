@@ -1,7 +1,7 @@
 """Data contracts and immutable observation representations for 3D range sensors.
 
 Implements ADR-002 (Sensor Observation Data Contract) and ADR-003 (Coordinate-Frame
-and Timestamp Conventions) for Phase V.1.
+and Timestamp Conventions) hardened for Phase V.1.1.
 """
 
 from __future__ import annotations
@@ -13,6 +13,55 @@ from typing import Any, Dict, Optional, Sequence
 import numpy as np
 
 from adaptive_rl.environments.drone_6dof import quaternion_to_rotation_matrix
+
+
+def validate_so3_rotation(
+    rotation: np.ndarray | Sequence[Sequence[float]],
+    tolerance_ortho: float = 1e-5,
+    tolerance_det: float = 1e-4,
+) -> np.ndarray:
+    """Validate that a 3x3 matrix is an orthonormal SO(3) proper rotation matrix.
+
+    Adheres to ADR-003 and Phase V.1.1 hardening standards:
+    - Shape must be exactly (3, 3).
+    - All elements must be finite (no NaN, no Inf).
+    - Orthonormality constraint: ||R @ R^T - I_3||_2 <= tolerance_ortho.
+    - Proper rotation constraint: |det(R) - 1.0| <= tolerance_det (rejects reflections where det=-1,
+      scaling, shears, or singular matrices).
+
+    Args:
+        rotation: 3x3 array-like rotation matrix.
+        tolerance_ortho: Maximum permissible Frobenius deviation from orthogonality.
+        tolerance_det: Maximum permissible deviation of determinant from +1.0.
+
+    Returns:
+        np.ndarray: Defensive float64 copy of the validated (3, 3) rotation matrix.
+
+    Raises:
+        ValueError: If shape is not (3, 3), values are non-finite, matrix is non-orthonormal,
+                    or determinant is not +1.0.
+    """
+    rot = np.array(rotation, dtype=np.float64, copy=True)
+    if rot.shape != (3, 3):
+        raise ValueError(f"rotation matrix must have shape (3, 3), got {rot.shape}")
+    if not np.all(np.isfinite(rot)):
+        raise ValueError(f"rotation matrix must contain finite values, got {rot}")
+
+    # Enforce SO(3) orthonormality: ||R @ R.T - I_3|| <= tolerance_ortho
+    identity_err = float(np.linalg.norm(rot @ rot.T - np.eye(3)))
+    if identity_err > tolerance_ortho:
+        raise ValueError(
+            f"rotation matrix must be orthonormal, ||R*R^T - I|| = {identity_err:.6e} > {tolerance_ortho:.1e}"
+        )
+
+    det = float(np.linalg.det(rot))
+    if abs(det - 1.0) > tolerance_det:
+        raise ValueError(
+            f"rotation matrix must have determinant +1.0 (proper rotation), got det = {det:.6f} "
+            f"(error {abs(det - 1.0):.6e} > {tolerance_det:.1e})"
+        )
+
+    return rot
 
 
 @dataclass(frozen=True)
@@ -39,24 +88,8 @@ class SensorExtrinsics:
         if not np.all(np.isfinite(trans)):
             raise ValueError(f"translation_b must contain finite values, got {trans}")
 
-        rot = np.array(rotation_s_to_b, dtype=np.float64, copy=True)
-        if rot.shape != (3, 3):
-            raise ValueError(f"rotation_s_to_b must have shape (3, 3), got {rot.shape}")
-        if not np.all(np.isfinite(rot)):
-            raise ValueError(f"rotation_s_to_b must contain finite values, got {rot}")
-
-        # Enforce SO(3) orthonormality: R @ R.T ~= I and det(R) ~= +1
-        identity_err = float(np.linalg.norm(rot @ rot.T - np.eye(3)))
-        if identity_err > 1e-5:
-            raise ValueError(
-                f"rotation_s_to_b must be orthonormal, ||R*R^T - I|| = {identity_err:.6e} > 1e-5"
-            )
-
-        det = float(np.linalg.det(rot))
-        if abs(det - 1.0) > 1e-4:
-            raise ValueError(
-                f"rotation_s_to_b must have determinant +1 (proper rotation), got det = {det:.6f}"
-            )
+        # Shared SO(3) validation
+        rot = validate_so3_rotation(rotation_s_to_b)
 
         # Enforce read-only memory buffers for data integrity
         trans.flags.writeable = False
@@ -105,9 +138,7 @@ class SensorExtrinsics:
         """Serialize extrinsics to dictionary."""
         return {
             "translation_b": [round(float(x), 6) for x in self.translation_b],
-            "rotation_s_to_b": [
-                [round(float(c), 6) for c in row] for row in self.rotation_s_to_b
-            ],
+            "rotation_s_to_b": [[round(float(c), 6) for c in row] for row in self.rotation_s_to_b],
         }
 
 
@@ -115,7 +146,7 @@ class SensorExtrinsics:
 class SensorConfig3D:
     """Configuration parameters for 3D range-sensing exteroceptive sensors.
 
-    Follows Section 4.2 of PHASE_V_PERCEPTION_ARCHITECTURE.md.
+    Follows Section 4.2 of PHASE_V_PERCEPTION_ARCHITECTURE.md with strict P1 hardening.
     """
 
     sensor_id: str = "lidar_primary"
@@ -128,57 +159,103 @@ class SensorConfig3D:
     vertical_beams: int = 8  # Elevation layers
     range_noise_std_m: float = 0.03  # Zero-mean Gaussian range standard deviation
     dropout_probability: float = 0.02  # Statistical beam loss probability
-    latency_sec: float = 0.02  # Transport/processing latency
+    latency_sec: float = 0.02  # Configured transport/processing latency budget (deferred delivery)
     extrinsics: Optional[SensorExtrinsics] = None
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.update_rate_hz) or self.update_rate_hz <= 0.0:
-            raise ValueError(
-                f"update_rate_hz must be strictly positive and finite, got {self.update_rate_hz}"
-            )
+        # Validate sensor_id
+        if not isinstance(self.sensor_id, str) or not self.sensor_id.strip():
+            raise ValueError(f"sensor_id must be a non-empty string, got {self.sensor_id!r}")
+
+        # Validate update_rate_hz
         if (
-            not math.isfinite(self.min_range_m)
-            or not math.isfinite(self.max_range_m)
-            or self.min_range_m < 0.0
-            or self.min_range_m >= self.max_range_m
+            isinstance(self.update_rate_hz, bool)
+            or not isinstance(self.update_rate_hz, (int, float))
+            or not math.isfinite(self.update_rate_hz)
+            or self.update_rate_hz <= 0.0
         ):
             raise ValueError(
-                f"Invalid range bounds: min_range_m ({self.min_range_m}) must be >= 0 and < max_range_m ({self.max_range_m})"
+                f"update_rate_hz must be strictly positive and finite, got {self.update_rate_hz!r}"
             )
+
+        # Validate range bounds
+        for name, val in [("min_range_m", self.min_range_m), ("max_range_m", self.max_range_m)]:
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
+                raise ValueError(f"{name} must be a finite float, got {val!r}")
+        if self.min_range_m < 0.0 or self.min_range_m >= self.max_range_m:
+            raise ValueError(
+                f"Invalid range bounds: min_range_m ({self.min_range_m}) must be >= 0.0 and < max_range_m ({self.max_range_m})"
+            )
+
+        # Validate FOV spans
+        for name, val, upper in [
+            ("horizontal_fov_deg", self.horizontal_fov_deg, 360.0),
+            ("vertical_fov_deg", self.vertical_fov_deg, 180.0),
+        ]:
+            if (
+                isinstance(val, bool)
+                or not isinstance(val, (int, float))
+                or not math.isfinite(val)
+                or val <= 0.0
+                or val > upper
+            ):
+                raise ValueError(f"{name} must be finite in (0, {upper}], got {val!r}")
+
+        # Validate beam counts (strictly reject booleans, floats, and counts < 1)
         if (
-            not math.isfinite(self.horizontal_fov_deg)
-            or self.horizontal_fov_deg <= 0.0
-            or self.horizontal_fov_deg > 360.0
+            isinstance(self.horizontal_beams, bool)
+            or not isinstance(self.horizontal_beams, int)
+            or self.horizontal_beams < 1
         ):
             raise ValueError(
-                f"horizontal_fov_deg must be in (0, 360], got {self.horizontal_fov_deg}"
+                f"horizontal_beams must be a positive integer >= 1, got {self.horizontal_beams!r}"
             )
         if (
-            not math.isfinite(self.vertical_fov_deg)
-            or self.vertical_fov_deg <= 0.0
-            or self.vertical_fov_deg > 180.0
+            isinstance(self.vertical_beams, bool)
+            or not isinstance(self.vertical_beams, int)
+            or self.vertical_beams < 1
         ):
             raise ValueError(
-                f"vertical_fov_deg must be in (0, 180], got {self.vertical_fov_deg}"
+                f"vertical_beams must be a positive integer >= 1, got {self.vertical_beams!r}"
             )
-        if self.horizontal_beams < 1 or self.vertical_beams < 1:
-            raise ValueError(
-                f"Beams must be >= 1, got h={self.horizontal_beams}, v={self.vertical_beams}"
-            )
-        if not math.isfinite(self.range_noise_std_m) or self.range_noise_std_m < 0.0:
-            raise ValueError(
-                f"range_noise_std_m must be non-negative and finite, got {self.range_noise_std_m}"
-            )
+
+        # Validate range noise std
         if (
-            not math.isfinite(self.dropout_probability)
+            isinstance(self.range_noise_std_m, bool)
+            or not isinstance(self.range_noise_std_m, (int, float))
+            or not math.isfinite(self.range_noise_std_m)
+            or self.range_noise_std_m < 0.0
+        ):
+            raise ValueError(
+                f"range_noise_std_m must be non-negative and finite, got {self.range_noise_std_m!r}"
+            )
+
+        # Validate dropout probability
+        if (
+            isinstance(self.dropout_probability, bool)
+            or not isinstance(self.dropout_probability, (int, float))
+            or not math.isfinite(self.dropout_probability)
             or not (0.0 <= self.dropout_probability <= 1.0)
         ):
             raise ValueError(
-                f"dropout_probability must be in [0.0, 1.0], got {self.dropout_probability}"
+                f"dropout_probability must be in [0.0, 1.0], got {self.dropout_probability!r}"
             )
-        if not math.isfinite(self.latency_sec) or self.latency_sec < 0.0:
+
+        # Validate latency_sec
+        if (
+            isinstance(self.latency_sec, bool)
+            or not isinstance(self.latency_sec, (int, float))
+            or not math.isfinite(self.latency_sec)
+            or self.latency_sec < 0.0
+        ):
             raise ValueError(
-                f"latency_sec must be non-negative and finite, got {self.latency_sec}"
+                f"latency_sec must be non-negative and finite, got {self.latency_sec!r}"
+            )
+
+        # Validate extrinsics
+        if self.extrinsics is not None and not isinstance(self.extrinsics, SensorExtrinsics):
+            raise TypeError(
+                f"extrinsics must be an instance of SensorExtrinsics, got {type(self.extrinsics)}"
             )
 
         if self.extrinsics is None:
@@ -210,9 +287,12 @@ class PointCloud3D:
     """Immutable point cloud observation generated by a 3D range sensor.
 
     Strictly satisfies ADR-002, ADR-003, and ADR-006:
+    - Canonical Invalid Representation: All invalid returns (valid_mask=False)
+      MUST report [NaN, NaN, NaN] coordinates, NaN range, and 0.0 intensity.
+    - Geometric Point-to-Range Consistency: Every valid measurement must satisfy
+      ||p_i - o_frame||_2 ~= r_i within documented tolerance (1 mm).
     - Defensive copying on construction.
-    - Read-only array flags (points.flags.writeable = False, etc.).
-    - Strict validation on coordinates, validity masks, and timestamps.
+    - Read-only array memory flags.
     - Zero ground-truth leakage: Contains NO obstacle IDs, simulation objects,
       or true obstacle velocities.
     """
@@ -238,14 +318,18 @@ class PointCloud3D:
         extrinsics: SensorExtrinsics,
         sensor_origin_w: Optional[np.ndarray | Sequence[float]] = None,
         intensities: Optional[np.ndarray | Sequence[float]] = None,
+        tolerance_range_m: float = 1e-3,
     ) -> None:
-        if not math.isfinite(timestamp) or timestamp < 0.0:
-            raise ValueError(f"timestamp must be non-negative and finite, got {timestamp}")
+        if (
+            isinstance(timestamp, bool)
+            or not isinstance(timestamp, (int, float))
+            or not math.isfinite(timestamp)
+            or timestamp < 0.0
+        ):
+            raise ValueError(f"timestamp must be non-negative and finite, got {timestamp!r}")
         if frame_id not in ("sensor", "body", "world"):
-            raise ValueError(
-                f"frame_id must be one of 'sensor', 'body', 'world', got '{frame_id}'"
-            )
-        if not isinstance(sensor_id, str) or not sensor_id:
+            raise ValueError(f"frame_id must be one of 'sensor', 'body', 'world', got '{frame_id}'")
+        if not isinstance(sensor_id, str) or not sensor_id.strip():
             raise ValueError(f"sensor_id must be a non-empty string, got {sensor_id!r}")
         if not isinstance(extrinsics, SensorExtrinsics):
             raise TypeError(
@@ -270,15 +354,6 @@ class PointCloud3D:
                 f"valid_mask shape {mask.shape} does not match points length ({num_points},)"
             )
 
-        # Enforce finite-value preconditions on valid points
-        if np.any(mask):
-            valid_pts = pts[mask]
-            if not np.all(np.isfinite(valid_pts)):
-                raise ValueError("All points marked valid_mask=True must have finite coordinates")
-            valid_rngs = rngs[mask]
-            if not np.all(np.isfinite(valid_rngs)) or np.any(valid_rngs < 0.0):
-                raise ValueError("All ranges marked valid_mask=True must be finite and non-negative")
-
         # Ingest optional intensities
         ints: Optional[np.ndarray] = None
         if intensities is not None:
@@ -287,7 +362,6 @@ class PointCloud3D:
                 raise ValueError(
                     f"intensities shape {ints.shape} does not match points length ({num_points},)"
                 )
-            ints.flags.writeable = False
 
         # Ingest optional sensor_origin_w
         orig_w: Optional[np.ndarray] = None
@@ -296,15 +370,87 @@ class PointCloud3D:
             if orig_w.shape != (3,):
                 raise ValueError(f"sensor_origin_w must have shape (3,), got {orig_w.shape}")
             if not np.all(np.isfinite(orig_w)):
+                raise ValueError(f"sensor_origin_w must have finite coordinates, got {orig_w}")
+
+        # --------------------------------------------------------------------
+        # Canonical Invalid Return Validation (valid_mask == False)
+        # All invalid returns MUST have:
+        # - points: NaN coordinates
+        # - ranges: NaN
+        # - intensities: 0.0 (if present)
+        # --------------------------------------------------------------------
+        if np.any(~mask):
+            invalid_pts = pts[~mask]
+            if not np.all(np.isnan(invalid_pts)):
                 raise ValueError(
-                    f"sensor_origin_w must have finite coordinates, got {orig_w}"
+                    "Invalid returns (valid_mask=False) must have NaN coordinates [NaN, NaN, NaN]"
                 )
-            orig_w.flags.writeable = False
+            invalid_rngs = rngs[~mask]
+            if not np.all(np.isnan(invalid_rngs)):
+                raise ValueError("Invalid returns (valid_mask=False) must have NaN range values")
+            if ints is not None:
+                invalid_ints = ints[~mask]
+                if not np.all(invalid_ints == 0.0):
+                    raise ValueError(
+                        "Invalid returns (valid_mask=False) must have 0.0 echo intensity"
+                    )
+
+        # --------------------------------------------------------------------
+        # Valid Return Validation (valid_mask == True)
+        # --------------------------------------------------------------------
+        if np.any(mask):
+            valid_pts = pts[mask]
+            if not np.all(np.isfinite(valid_pts)):
+                raise ValueError("All points marked valid_mask=True must have finite coordinates")
+            valid_rngs = rngs[mask]
+            if not np.all(np.isfinite(valid_rngs)) or np.any(valid_rngs < 0.0):
+                raise ValueError(
+                    "All ranges marked valid_mask=True must be finite and non-negative"
+                )
+            if ints is not None:
+                valid_ints = ints[mask]
+                if not np.all(np.isfinite(valid_ints)) or np.any(
+                    (valid_ints < 0.0) | (valid_ints > 1.0)
+                ):
+                    raise ValueError(
+                        "All intensities marked valid_mask=True must be finite in [0.0, 1.0]"
+                    )
+
+            # ----------------------------------------------------------------
+            # Geometric Point-to-Range Consistency Check
+            # ||p_i - o_frame||_2 ~= r_i within tolerance_range_m
+            # ----------------------------------------------------------------
+            if frame_id == "sensor":
+                o_frame = np.zeros(3, dtype=np.float64)
+            elif frame_id == "body":
+                o_frame = extrinsics.translation_b
+            elif frame_id == "world":
+                if orig_w is None:
+                    raise ValueError(
+                        "sensor_origin_w must be provided for world-frame PointCloud3D containing valid points"
+                    )
+                o_frame = orig_w
+            else:
+                o_frame = np.zeros(3, dtype=np.float64)
+
+            # Compute Euclidean distances from frame origin to valid points
+            dists = np.linalg.norm(valid_pts - o_frame, axis=1)
+            discrepancy = np.abs(dists - valid_rngs)
+            max_discrepancy = float(np.max(discrepancy))
+            if max_discrepancy > tolerance_range_m:
+                raise ValueError(
+                    f"Geometric point-range inconsistency: max(| ||p - o|| - r |) = {max_discrepancy:.6e} "
+                    f"exceeds tolerance {tolerance_range_m:.1e} m in '{frame_id}' frame"
+                )
 
         # Enforce buffer immutability
         pts.flags.writeable = False
         rngs.flags.writeable = False
         mask.flags.writeable = False
+        if ints is not None:
+            ints.flags.writeable = False
+        if orig_w is not None:
+            orig_w.flags.writeable = False
 
         object.__setattr__(self, "timestamp", float(timestamp))
         object.__setattr__(self, "frame_id", str(frame_id))
@@ -340,6 +486,7 @@ class PointCloud3D:
         """Transform point cloud from sensor frame to vehicle body frame (FLU).
 
         Uses self.extrinsics: p_B = t_B + R_S^B * p_S.
+        Preserves canonical invalid return representation and exact radial range.
         """
         if self.frame_id == "body":
             return self
@@ -379,7 +526,7 @@ class PointCloud3D:
         Args:
             drone_pos: Quadrotor position in world frame [x, y, z] (3,).
             drone_orientation: Quadrotor attitude quaternion [qw, qx, qy, qz] (4,)
-                               or 3x3 rotation matrix R_B^W.
+                               or 3x3 orthonormal rotation matrix R_B^W.
         """
         if self.frame_id == "world":
             return self
@@ -393,8 +540,9 @@ class PointCloud3D:
         rot_arr = np.asarray(drone_orientation, dtype=np.float64)
         if rot_arr.shape == (4,):
             r_b_to_w = quaternion_to_rotation_matrix(rot_arr)
+            r_b_to_w = validate_so3_rotation(r_b_to_w)
         elif rot_arr.shape == (3, 3):
-            r_b_to_w = rot_arr
+            r_b_to_w = validate_so3_rotation(rot_arr)
         else:
             raise ValueError(
                 f"drone_orientation must be quaternion (4,) or rotation matrix (3, 3), got {rot_arr.shape}"
@@ -403,13 +551,13 @@ class PointCloud3D:
         # First ensure points are in body frame
         body_cloud = self if self.frame_id == "body" else self.to_body_frame()
 
+        sensor_origin_w = pos_w + r_b_to_w @ self.extrinsics.translation_b
+
         new_points = np.full_like(body_cloud.points, np.nan)
         if body_cloud.num_valid > 0:
             valid_body_pts = body_cloud.points[body_cloud.valid_mask]
             world_pts = (r_b_to_w @ valid_body_pts.T).T + pos_w
             new_points[body_cloud.valid_mask] = world_pts
-
-        sensor_origin_w = pos_w + r_b_to_w @ self.extrinsics.translation_b
 
         return PointCloud3D(
             timestamp=self.timestamp,
