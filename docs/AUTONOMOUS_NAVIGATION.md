@@ -458,9 +458,9 @@ Phase V establishes an enforced **Information-Flow Boundary**:
 - **Uncertainty-Aware Planning:** Trajectory clearance dynamically inflates based on the tracking filter's spatial covariance $\Sigma_p(t+\tau)$, ensuring defensive flight around uncertain moving obstacles.
 
 For full architectural specifications, data contracts, and experimental validation protocols, refer to:
-- [Phase V Perception Architecture](file:///home/aryan/ml_workspace/ARL/docs/PHASE_V_PERCEPTION_ARCHITECTURE.md)
-- [Phase V Scientific Validation Plan](file:///home/aryan/ml_workspace/ARL/docs/PHASE_V_VALIDATION_PLAN.md)
-- [Architecture Decision Records (ADRs 001–008)](file:///home/aryan/ml_workspace/ARL/docs/adr/)
+- [Phase V Perception Architecture](PHASE_V_PERCEPTION_ARCHITECTURE.md)
+- [Phase V Scientific Validation Plan](PHASE_V_VALIDATION_PLAN.md)
+- [Architecture Decision Records (ADRs 001–008)](adr/)
 
 ### 11.2 Phase V Incremental Implementation Roadmap
 

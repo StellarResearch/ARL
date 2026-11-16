@@ -215,6 +215,9 @@ ARL Phase V selects a **Simulated 3D Scanning LiDAR** as the primary exterocepti
 
 ### 4.2 Strongly Typed Data Contracts (`adaptive_rl.perception.sensors`)
 
+> [!IMPORTANT]
+> The data contracts specified below are **ARCHITECTURAL SPECIFICATIONS** for implementation in Phase V.1 (`adaptive_rl.perception.sensors`). They are not present in the Phase V.0 repository.
+
 ```python
 from __future__ import annotations
 from dataclasses import dataclass
@@ -226,12 +229,12 @@ import numpy as np
 class SensorExtrinsics:
     """Rigid-body pose of the sensor relative to the vehicle body frame (FLU)."""
     translation_b: np.ndarray       # [x, y, z] in meters relative to CoM
-    rotation_b_to_s: np.ndarray     # 3x3 orthonormal rotation matrix R_S^B
+    rotation_s_to_b: np.ndarray     # 3x3 orthonormal rotation matrix R_S^B (maps v_S to v_B = R_S^B * v_S)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "translation_b": [round(float(x), 4) for x in self.translation_b],
-            "rotation_b_to_s": [[round(float(c), 4) for c in row] for row in self.rotation_b_to_s],
+            "rotation_s_to_b": [[round(float(c), 4) for c in row] for row in self.rotation_s_to_b],
         }
 
 @dataclass(frozen=True)
@@ -257,11 +260,18 @@ class PointCloud3D:
     frame_id: str                       # Coordinate frame ("sensor", "body", "world")
     points: np.ndarray                  # (N, 3) float64 Cartesian coordinates [x, y, z]
     ranges: np.ndarray                  # (N,) float32 measured radial distances
-    valid_mask: np.ndarray              # (N,) bool array (True = valid echo, False = dropped)
+    valid_mask: np.ndarray              # (N,) bool array (True = valid echo, False = dropped/out-of-range)
     sensor_id: str
     extrinsics: SensorExtrinsics
     sensor_origin_w: Optional[np.ndarray] = None # Sensor position in world frame at capture
 ```
+
+#### Array Immutability, Defensive Copying & Shape Validation
+In Python, `@dataclass(frozen=True)` prevents attribute reassignment (`obj.points = ...`), but **does not make the underlying NumPy array buffers read-only** (`obj.points[0, 0] = ...` would silently mutate memory).
+To enforce strict scientific data integrity in Phase V.1 implementations:
+- **Read-Only Buffers:** Constructors must explicitly set `points.flags.writeable = False` and `valid_mask.flags.writeable = False`.
+- **Defensive Ingestion:** All array parameters must be copied on ingestion (`np.copy()`).
+- **Shape and Finite-Value Preconditions:** Arrays must be validated for exact dimensions (`points.shape == (N, 3)`, `ranges.shape == (N,)`, `valid_mask.shape == (N,)`) and points with `valid_mask == True` must satisfy `np.all(np.isfinite(points[valid_mask]))`. Dropped or out-of-range returns must be flagged `valid_mask = False` and must **never** be silently converted to `0.0 m` or `max_range`.
 
 ---
 
@@ -285,15 +295,29 @@ class ObstacleDetection3D:
     is_valid: bool = True               # Validity flag (rejected if non-finite coordinates)
 ```
 
-### 5.1 Spatial Clustering & Geometric Bounding
-1. **Spatial Filtering:** Raw world-projected points $\mathbf{p}_W$ are filtered to remove known vehicle self-reflections ($\|\mathbf{p}_W - \hat{\mathbf{p}}_B\| \le r_{\text{vehicle}}$) and floor returns ($z_W \le 0.1\text{ m}$).
-2. **Euclidean Clustering:** Points within distance threshold $d_{\text{cluster}} \le 1.2\text{ m}$ are grouped into spatial clusters using spatial KD-tree radius queries (`scipy.spatial.KDTree`).
-3. **Centroid & Bounding Radius Estimation:**
-   $$\hat{\mathbf{c}} = \frac{1}{N} \sum_{i=1}^N \mathbf{p}_i, \quad \hat{r} = \max_{i=1 \dots N} \|\mathbf{p}_i - \hat{\mathbf{c}}\|_2$$
-4. **Instantaneous Measurement Covariance ($R$):**
-   The spatial centroid uncertainty is computed from the cluster sample dispersion and underlying sensor range variance $\sigma_{\text{sensor}}^2$:
-   $$R = \frac{1}{N} \left( \frac{1}{N-1} \sum_{i=1}^N (\mathbf{p}_i - \hat{\mathbf{c}})(\mathbf{p}_i - \hat{\mathbf{c}})^T + \sigma_{\text{sensor}}^2 I_{3 \times 3} \right)$$
-   For small clusters ($N < 5$), a conservative prior covariance $R_{\text{prior}} = \sigma_{\text{prior}}^2 I_{3 \times 3}$ is enforced.
+### 5.1 Physical Extent, Measurement Noise, and Surface Dispersion
+A critical scientific error is assuming that the spatial dispersion of detected points is identical to sensor measurement noise. In Phase V, the detection layer strictly distinguishes five distinct physical and geometric quantities:
+
+1. **Physical Obstacle Extent:** The true volumetric geometry of the obstacle (e.g. solid sphere of radius $r^*$ or bounding box).
+2. **Visible Surface Dispersion ($\Sigma_{\text{surface}}$):** LiDAR rays do not penetrate obstacles; they reflect exclusively from the front-facing exterior surface manifold. The sample dispersion matrix:
+   $$\Sigma_{\text{surface}} = \frac{1}{N-1} \sum_{i=1}^N (\mathbf{p}_i - \bar{\mathbf{p}})(\mathbf{p}_i - \bar{\mathbf{p}})^T$$
+   measures the **geometric shape and curvature of the visible surface patch**, NOT sensor measurement error.
+3. **LiDAR Range Measurement Noise in Cartesian Space:**
+   Each beam measures radial distance $r_i$ along unit direction vector $\mathbf{u}_i = [\cos\phi_i \cos\theta_i, \cos\phi_i \sin\theta_i, \sin\phi_i]^T$ with radial standard deviation $\sigma_r$ and angular beam pointing noise $\sigma_{\text{beam}}$.
+   The 3D Cartesian measurement covariance for each individual return point is:
+   $$\Sigma_{\mathbf{p}_i} = \sigma_r^2 \mathbf{u}_i \mathbf{u}_i^T + (r_i \sigma_{\text{beam}})^2 (I - \mathbf{u}_i \mathbf{u}_i^T)$$
+   Because $\sigma_r \gg r_i \sigma_{\text{beam}}$ for high-accuracy pulsed LiDAR, measurement uncertainty is highly anisotropic, dominated along the line-of-sight ray axis $\mathbf{u}_i$.
+4. **Centroid Estimation Bias under Partial Observation:**
+   Because the sensor observes only the facing hemisphere, the naive sample mean $\bar{\mathbf{p}} = \frac{1}{N} \sum_{i=1}^N \mathbf{p}_i$ is **systematically biased toward the sensor** relative to the true volumetric center $\mathbf{c}^*$. For a sphere of radius $r$, the centroid of a uniform hemisphere lies at distance $\frac{1}{2} r$ from the true center along the viewing ray:
+   $$\mathbf{c}^* \approx \bar{\mathbf{p}} + \frac{1}{2} r^* \mathbf{u}_{\text{view}}$$
+   Using $\bar{\mathbf{p}}$ without depth correction places the estimated obstacle center too close to the quadrotor.
+5. **Occlusion & Conservative Bounding Geometry:**
+   The rear side of an obstacle is unobserved. Bounding radius $\hat{r} = \max_i \|\mathbf{p}_i - \bar{\mathbf{p}}\|$ measures only the visible surface chord and underestimates full physical extent. In Phase V.2, obstacle bounding must fit a parametric spherical surface model $\min_{\mathbf{c}, r} \sum_i (\|\mathbf{p}_i - \mathbf{c}\| - r)^2$ or enforce a conservative depth inflation margin $\hat{r}_{\text{conservative}} = \hat{r} + \delta_{\text{depth}}$.
+
+> [!NOTE]
+> **Open Design Questions for Phase V.2:**
+> 1. Optimal numerical solver for non-linear sphere fitting under sparse beam returns ($N < 8$ points per obstacle).
+> 2. Analytical propagation of spherical surface-fit residuals into the $3 \times 3$ centroid covariance matrix $R$.
 
 ---
 
@@ -385,7 +409,14 @@ where:
 - $\hat{r}_{\text{obs}}$: Estimated physical obstacle radius.
 - $r_{\text{vehicle}} = 0.25\text{ m}$: Bounding radius of the quadrotor.
 - $\delta_{\text{nominal}} = 0.15\text{ m}$: Base aerodynamic/control margin.
-- $k_{\sigma} = 3.0$: $3\sigma$ coverage ($98.9\%$ statistical containment bound for 3D Gaussian distribution).
+- $k_{\sigma}$: Confidence scaling multiplier derived from Chi-squared distribution $\chi^2_3$.
+  For 3D position error $\tilde{\mathbf{p}} \sim \mathcal{N}(\mathbf{0}, \Sigma_p)$, the squared Mahalanobis distance $\epsilon = \tilde{\mathbf{p}}^T \Sigma_p^{-1} \tilde{\mathbf{p}}$ follows a $\chi^2_3$ distribution. The containment probability $P$ inside the ellipsoid $\epsilon \le k_{\sigma}^2$ is:
+  $$P(\epsilon \le k_{\sigma}^2) = F_{\chi^2_3}(k_{\sigma}^2) = 2 \Phi(k_{\sigma}) - 1 - \sqrt{\frac{2}{\pi}} k_{\sigma} e^{-k_{\sigma}^2 / 2}$$
+  Evaluating this:
+  - $k_{\sigma} = 3.0$ yields $F_{\chi^2_3}(9.0) \approx 0.9707$ ($97.07\%$ containment, not $98.9\%$, which is the 2D value $1 - e^{-4.5}$).
+  - For $95\%$ containment: $k_{\sigma} = \sqrt{\chi^2_3(0.95)} = \sqrt{7.8147} \approx 2.795$.
+  - For $99\%$ containment: $k_{\sigma} = \sqrt{\chi^2_3(0.99)} = \sqrt{11.3449} \approx 3.368$.
+  Default configuration adopts $k_{\sigma} = 3.0$ ($97.07\%$ containment) with $k_{\sigma} = 3.37$ ($99.0\%$ containment) available for tight corridors.
 
 ```text
        True Physical Obstacle:   [  Radius r_obs  ]
@@ -461,23 +492,46 @@ class WorldModelInterface(ABC):
 
 ### 9.1 Authoritative Perception Fail-Safe Matrix
 
-| Failure Mode | Trigger / Detection | Immediate Action | Mission State Transition |
+| Failure Mode | Trigger / Detection | Immediate Algorithmic Action | Mission State Transition |
 | :--- | :--- | :--- | :--- |
-| **Non-Finite Sensor Data** | `np.isnan(points).any()` or `np.isinf(points).any()` | Drop corrupted returns; log error; if persistent ($> 3$ frames) abort | `ABORTED` |
-| **Invalid Covariance Matrix** | Non-symmetric or $\min(\text{eig}(P)) \le 0$ | Joseph symmetrization; clamp eigenvalue $\ge 10^{-8}$; if uncorrectable, delete track | Re-evaluate world model clearance |
-| **Sensor Transport Latency** | $t_{\text{now}} - t_{\text{meas}} > 0.20\text{ s}$ | Query historical pose buffer at $t_{\text{meas}}$ for projection; inflate $R$ | Continue; log warning if $> 0.5\text{ s}$ |
-| **Sensor Dropout / Loss** | No new sensor frames received for $\Delta t > 0.30\text{ s}$ | Coast active tracks forward; expand uncertainty $\sigma_{\max}$; brake vehicle | `WAITING` (Safe Hover Hold) |
-| **Sustained Sensor Outage** | Sensor dropout duration $> 2.0\text{ s}$ | Terminate mission; reject path execution; descend safely | `FAILED_BLOCKED` or emergency descent |
-| **Runaway Track Uncertainty**| $\sigma_{\max} = \sqrt{\lambda_{\max}(\Sigma_p)} > 2.5\text{ m}$ | Treat track as large spatial exclusion sphere ($r_{\text{eff}} = r_{\text{obs}} + 2.5\text{ m}$) | Trigger replanning; hover if blocked |
-| **Track Stagnation** | Track unobserved for $> 5$ frames ($0.25\text{ s}$) | Purge track from memory | Update active obstacle set |
-| **Corrupted Estimator Pose** | $|\|\mathbf{q}\| - 1.0| \ge 0.05$ or non-finite pose | Fail closed immediately; never substitute ground truth | `ABORTED` |
+| **Non-Finite Sensor Data** | `np.isnan(points).any()` or `np.isinf(points).any()` | Drop corrupted returns; flag `valid_mask = False`; **never** map invalid returns to $0.0\text{ m}$ (phantom collision) or `max_range` (obstacle masking). | Maintain state; if corrupted frames persist $> 3$ consecutive frames $\to$ `ABORTED` |
+| **Invalid Covariance Matrix** | Non-symmetric or $\min(\text{eig}(P)) \le 0$ | Apply Joseph stabilization $P = (I-KH)P(I-KH)^T + KRK^T$; enforce symmetry $\frac{1}{2}(P+P^T)$; clamp eigenvalues $\ge 10^{-8}$; if uncorrectable, delete track. | Invalidate track; re-evaluate world model clearance |
+| **Sensor Transport Latency** | $t_{\text{now}} - t_{\text{meas}} > 0.20\text{ s}$ | Query historical pose buffer at measurement epoch $t_{\text{meas}}$ for spatial projection; inflate measurement noise covariance $R$. | Continue; if latency $> 0.50\text{ s}$ log critical latency alert |
+| **Brief Sensor Dropout** | No frame for $\Delta t \le 0.30\text{ s}$ ($\le 6$ steps at 20 Hz) | Coast active tracks forward via Kalman filter motion model; monotonically inflate spatial covariance $\Sigma_p(t)$; enforce braking horizon speed limit. | Maintain `EXECUTING` (no abrupt abort) |
+| **Sustained Sensor Dropout** | Dropout duration $0.30\text{ s} < \Delta t \le 2.0\text{ s}$ | Freeze forward path progression; command immediate deceleration to zero-velocity stationary hover hold. | Transition to `WAITING` (Safe Hover Hold) |
+| **Terminal Sensor Outage** | Dropout duration exceeds $T_{\text{outage}} = 2.0\text{ s}$ | Terminate active mission execution; prohibit further path planning; command controlled vertical descent ($v_z = -0.5\text{ m/s}$) to safe landing. | Transition from `WAITING` to `FAILED_BLOCKED` |
+| **Loss of Localization Aiding** | Reference position/altitude drops out | Attitude remains stabilized via IMU gravimetric leveling; horizontal position drifts open-loop; command immediate zero-velocity hover hold; if unaided duration $> 3.0\text{ s} \to$ controlled descent. | Transition to `WAITING` $\to$ `FAILED_BLOCKED` |
+| **Excessive Track Uncertainty** | $\sigma_{\max} = \sqrt{\lambda_{\max}(\Sigma_p)} > 2.5\text{ m}$ | Treat track as large spatial exclusion sphere ($r_{\text{eff}} = \hat{r}_{\text{obs}} + 2.5\text{ m}$); trigger replanning. If no safe alternative corridor exists $\to$ hover hold. | Trigger `REPLANNING`; if blocked $\to$ `WAITING` |
+| **Track Stagnation** | Track unobserved for $> K_{\text{max\_coast}}$ (5 frames) | Purge track from active memory; clear associated world-model exclusion volume. | Re-evaluate world model clearance |
+| **Corrupted Vehicle Ego-Pose** | $|\|\mathbf{q}\| - 1.0| \ge 0.05$ or non-finite pose | Fail closed immediately; never substitute ground truth; cut autonomous planning. | Transition immediately to `ABORTED` |
 
-### 9.2 Unknown-Space Policy: Risk-Weighted Braking Horizon
+### 9.2 Unknown-Space Policy: Delay-Aware Braking Horizon Constraint
 In real flight, space that has not been scanned by the sensor is **unknown**, not guaranteed free.
 - **Initial Path Generation:** At mission launch, global planning allows routes through unobserved space under the provision that local execution will continuously verify clearance.
-- **Braking Horizon Speed Bound:** Forward flight velocity into unobserved space is bounded by the physical braking capability:
-  $$v_{\text{max\_allowed}} = \sqrt{2 a_{\text{brake}} \max\left(0, d_{\text{sensor\_horizon}} - d_{\text{safety\_margin}}\right)}$$
-  This guarantees that if an obstacle is suddenly revealed at the sensor boundary, the quadrotor can come to a complete stationary hover within verified free space before colliding.
+- **Physical Response Delay Decomposition:**
+  When an obstacle appears at the boundary of verified visible free space, the aircraft cannot decelerate instantaneously. The total system response delay $\tau_{\text{delay}}$ comprises:
+  $$\tau_{\text{delay}} = \tau_{\text{sensor}} + \tau_{\text{proc}} + \tau_{\text{replan}} + \tau_{\text{attitude}} + \tau_{\text{motor}}$$
+  where nominal values under standard 20 Hz simulation are:
+  - $\tau_{\text{sensor}} = 1 / f_{\text{sensor}} \approx 0.050\text{ s}$ (sensor measurement period).
+  - $\tau_{\text{proc}} \approx 0.020\text{ s}$ (point-cloud clustering and detection pipeline latency).
+  - $\tau_{\text{replan}} \approx 0.010\text{ s}$ (tracker update and mission replanning check).
+  - $\tau_{\text{attitude}} \approx 0.100\text{ s}$ (time required to tilt quadrotor to maximum braking pitch attitude $\theta_{\text{brake}}$).
+  - $\tau_{\text{motor}} \approx 0.030\text{ s}$ (first-order brushless motor thrust lag).
+  Nominal demonstrated total response delay is $\tau_{\text{delay}} \approx 0.21\text{ s}$.
+
+- **Delay-Aware Braking Horizon Inequality:**
+  During delay $\tau_{\text{delay}}$, the quadrotor continues traveling forward at speed $v$. Under demonstrated conservative horizontal braking deceleration $a_{\min} > 0$, the total stopping distance is:
+  $$d_{\text{stop}}(v) = v \cdot \tau_{\text{delay}} + \frac{v^2}{2 a_{\min}}$$
+  To guarantee that the aircraft can come to a complete stationary hover within verified visible free space $d_{\text{available}} = \max\left(0, d_{\text{visible}} - d_{\text{margin}}\right)$, the velocity must satisfy:
+  $$\frac{1}{2 a_{\min}} v^2 + \tau_{\text{delay}} v - d_{\text{available}} \le 0$$
+  Solving the quadratic inequality for the positive velocity root yields the **Delay-Aware Braking Horizon Bound**:
+  $$v_{\text{max\_allowed}} = a_{\min} \left( \sqrt{\tau_{\text{delay}}^2 + \frac{2 d_{\text{available}}}{a_{\min}}} - \tau_{\text{delay}} \right)$$
+
+  > [!NOTE]
+  > The elementary formula $v = \sqrt{2 a d}$ is strictly an idealized zero-delay ($\tau_{\text{delay}} = 0$) special case. Assuming $\tau = 0$ on physical aircraft causes substantial stopping-distance undershoot and collisions. Physical stopping guarantees are valid only when calibrated against experimentally validated $\tau_{\text{delay}}$ and $a_{\min}$ bounds.
+
+- **Blind Corridor Prohibition:**
+  If an upcoming waypoint segment has zero sensor coverage and verified visible distance $d_{\text{available}} = 0$, $v_{\text{max\_allowed}}$ evaluates to $0.0\text{ m/s}$. The mission transitions to `WAITING` and commands a local yaw sensor sweep or stationary hover hold until visibility is acquired.
 
 ### 9.3 Scope & Certification Disclaimer
 ARL is an open-source research and engineering simulation platform. While these fail-safe rules are designed on aerospace defense principles, this software architecture does not constitute physical aircraft airworthiness certification under FAA/EASA regulations (such as RTCA DO-178C, DO-254, or SORA). Physical flight requires redundant physical sensors, independent flight termination systems (FTS), and hardware-in-the-loop validation.

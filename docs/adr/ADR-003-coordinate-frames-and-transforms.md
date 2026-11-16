@@ -39,21 +39,22 @@ We formally standardize the coordinate frame hierarchy across the perception sub
 Every observed 3D point $\mathbf{p}_S \in \mathcal{F}_S$ is mapped to the World Frame $\mathbf{p}_W \in \mathcal{F}_W$ via:
 
 $$\mathbf{p}_B = \mathbf{p}_S^B + R_S^B \mathbf{p}_S$$
-$$\mathbf{p}_W = \mathbf{p}_B^W(t) + R_B^W(\mathbf{q}(t)) \mathbf{p}_B$$
+$$\mathbf{p}_W = \hat{\mathbf{p}}_B^W(t) + R_B^W(\hat{\mathbf{q}}(t)) \mathbf{p}_B$$
 
 Where:
-- $\mathbf{p}_S^B \in \mathbb{R}^3$: Extrinsic translation vector from vehicle CoM to sensor origin in body frame.
-- $R_S^B \in \mathrm{SO}(3)$: Extrinsic rotation matrix mapping sensor vectors to body coordinates.
-- $\mathbf{p}_B^W(t) \in \mathbb{R}^3$: Vehicle position in the world frame at measurement timestamp $t$.
-- $R_B^W(\mathbf{q}(t)) \in \mathrm{SO}(3)$: Vehicle attitude rotation matrix derived from unit quaternion $\mathbf{q} = [q_w, q_x, q_y, q_z]$ (scalar-first):
+- $\mathbf{p}_S^B \in \mathbb{R}^3$: Extrinsic translation vector from vehicle CoM to sensor origin in body frame (`SensorExtrinsics.translation_b`).
+- $R_S^B \in \mathrm{SO}(3)$: Extrinsic rotation matrix mapping vectors from Sensor frame to Body frame (`SensorExtrinsics.rotation_s_to_b`), satisfying:
+  $$\mathbf{v}_B = R_S^B \mathbf{v}_S, \quad \mathbf{v}_S = (R_S^B)^T \mathbf{v}_B = R_B^S \mathbf{v}_B$$
+- $\hat{\mathbf{p}}_B^W(t) \in \mathbb{R}^3$: Vehicle CoM position in the world frame at measurement epoch $t$, estimated by onboard avionics (`EstimatedDroneState.position`).
+- $R_B^W(\hat{\mathbf{q}}(t)) \in \mathrm{SO}(3)$: Vehicle attitude rotation matrix mapping vectors from Body frame to World frame, derived from unit quaternion $\hat{\mathbf{q}} = [q_w, q_x, q_y, q_z]$ (scalar-first):
 
-$$R_B^W(\mathbf{q}) = \begin{bmatrix}
+$$R_B^W(\hat{\mathbf{q}}) = \begin{bmatrix}
 1 - 2(q_y^2 + q_z^2) & 2(q_x q_y - q_w q_z) & 2(q_x q_z + q_w q_y) \\
 2(q_x q_y + q_w q_z) & 1 - 2(q_x^2 + q_z^2) & 2(q_y q_z - q_w q_x) \\
 2(q_x q_z - q_w q_y) & 2(q_y q_z + q_w q_x) & 1 - 2(q_x^2 + q_y^2)
 \end{bmatrix}$$
 
-This exactly matches `quaternion_to_rotation_matrix` in `src/adaptive_rl/environments/drone_6dof.py`.
+This exactly matches `quaternion_to_rotation_matrix(q)` and `body_to_world_vector(...)` in `src/adaptive_rl/environments/drone_6dof.py`. The inverse transformation from world to body vectors is $(R_B^W)^T = R_W^B$, matching `world_to_body_vector(...)`.
 
 ### 3. Timestamp Synchronization Conventions
 - **Simulation Time:** All components synchronize against the simulation master clock $t_{\text{sim}} \in [0, \infty)$ in elapsed seconds.

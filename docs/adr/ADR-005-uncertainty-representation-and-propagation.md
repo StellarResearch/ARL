@@ -44,7 +44,14 @@ To ensure compatibility with fast spherical clearance queries without requiring 
    - $\hat{r}_{\text{obs}}$: Estimated physical obstacle radius.
    - $r_{\text{vehicle}}$: Bounding sphere radius of quadrotor ($0.25\text{ m}$).
    - $\delta_{\text{nominal}}$: Nominal baseline aerodynamic/control buffer ($0.15\text{ m}$).
-   - $k_{\sigma}$: Confidence scaling factor. Default $k_{\sigma} = 3.0$, corresponding to a $3\sigma$ coverage ($98.9\%$ statistical containment bound for a 3-DOF Gaussian distribution via Chi-squared distribution $\chi^2_3(0.989) \approx 9.0 = 3.0^2$).
+   - $k_{\sigma}$: Confidence scaling multiplier derived from Chi-squared distribution $\chi^2_3$.
+     For 3D position error $\tilde{\mathbf{p}} \sim \mathcal{N}(\mathbf{0}, \Sigma_p)$, the squared Mahalanobis distance $\epsilon = \tilde{\mathbf{p}}^T \Sigma_p^{-1} \tilde{\mathbf{p}}$ follows a $\chi^2_3$ distribution. The containment probability $P$ inside the ellipsoid $\epsilon \le k_{\sigma}^2$ is:
+     $$P(\epsilon \le k_{\sigma}^2) = F_{\chi^2_3}(k_{\sigma}^2) = 2 \Phi(k_{\sigma}) - 1 - \sqrt{\frac{2}{\pi}} k_{\sigma} e^{-k_{\sigma}^2 / 2}$$
+     Evaluating this:
+     - $k_{\sigma} = 3.0$ yields $F_{\chi^2_3}(9.0) \approx 0.9707$ ($97.07\%$ containment, not $98.9\%$, which is the 2D value $1 - e^{-4.5}$).
+     - For $95\%$ containment: $k_{\sigma} = \sqrt{\chi^2_3(0.95)} = \sqrt{7.8147} \approx 2.795$.
+     - For $99\%$ containment: $k_{\sigma} = \sqrt{\chi^2_3(0.99)} = \sqrt{11.3449} \approx 3.368$.
+     Default configuration adopts $k_{\sigma} = 3.0$ ($97.07\%$ containment) with $k_{\sigma} = 3.37$ ($99.0\%$ containment) available for safety-critical canyon corridors.
 
 3. **Maximum Uncertainty Clamping & Fail-Closed Guard:**
    To prevent runaway inflation in the event of numerical divergence or stale tracks:

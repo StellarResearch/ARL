@@ -23,6 +23,9 @@ Furthermore, dynamic path planning requires spatiotemporal queries:
 - Is the transition between $(\mathbf{p}_1, t_1)$ and $(\mathbf{p}_2, t_2)$ collision-free under uncertainty?
 - Is candidate space free, occupied, or unobserved (unknown)?
 
+> [!IMPORTANT]
+> The interfaces and data structures defined in this document are **ARCHITECTURAL SPECIFICATIONS** for implementation in Phase V.5 (`adaptive_rl.perception.world_model`). They are not present in the current Phase V.0 codebase.
+
 ## Decision
 We define an abstract, decoupled **World Model Interface** (`WorldModelInterface`) in `adaptive_rl.perception.world_model` and refactor the planners to query this interface rather than iterating over raw obstacle collections.
 
@@ -47,6 +50,7 @@ class WorldModelInterface(ABC):
         """Compute signed minimum distance to nearest obstacle boundary at time_sec.
         
         Returns negative value if inside obstacle, positive if clear.
+        confidence_k: Mahalanobis radius multiplier (k=3.0 yields 97.07% containment under chi^2_3).
         Incorporates covariance-based uncertainty inflation.
         """
         pass
@@ -63,6 +67,7 @@ class WorldModelInterface(ABC):
     ) -> Tuple[bool, float]:
         """Continuous swept clearance check across space-time segment.
         
+        confidence_k: Mahalanobis radius multiplier (k=3.0 yields 97.07% containment under chi^2_3).
         Returns:
             (is_valid, min_clearance_along_segment)
         """

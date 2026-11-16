@@ -12,6 +12,9 @@ In noisy sensor environments:
 
 Therefore, a strict conceptual and algorithmic boundary must separate **Instantaneous Obstacle Detection** from **Persistent Obstacle Tracking**.
 
+> [!IMPORTANT]
+> The data contracts and state machines described below are **ARCHITECTURAL SPECIFICATIONS** for implementation in Phase V.2 and Phase V.3 (`adaptive_rl.perception.detection` and `adaptive_rl.perception.tracking`). They are not present in the current Phase V.0 codebase.
+
 ## Decision
 We decouple detection from tracking into two distinct processing stages with formal data structures:
 
@@ -20,16 +23,17 @@ Generated independently on each sensor frame without temporal memory:
 ```python
 @dataclass(frozen=True)
 class ObstacleDetection3D:
-    detection_id: str  # Ephemeral UUID for this frame
-    timestamp: float  # Sensor measurement epoch
-    frame_id: str  # Typically "world" after projection
-    centroid: np.ndarray  # [x, y, z] center of detected cluster
-    bounding_radius: float  # Enclosing spherical radius
-    covariance_position: np.ndarray  # 3x3 position uncertainty matrix
-    point_count: int  # Number of sensor returns supporting this detection
-    confidence: float  # Detection confidence score in [0.0, 1.0]
-    sensor_id: str  # Originating sensor
+    detection_id: str                   # Ephemeral UUID for this frame
+    timestamp: float                    # Sensor measurement epoch
+    frame_id: str                       # Typically "world" after projection
+    centroid: np.ndarray                # [x, y, z] center of detected cluster
+    bounding_radius: float              # Enclosing spherical radius
+    covariance_position: np.ndarray     # 3x3 position uncertainty matrix
+    point_count: int                    # Number of sensor returns supporting this detection
+    confidence: float                   # Detection confidence score in [0.0, 1.0]
+    sensor_id: str                      # Originating sensor
 ```
+*Note on Array Immutability:* In Phase V.2 implementations, factory methods will set `covariance_position.flags.writeable = False` and `centroid.flags.writeable = False` to prevent in-place mutation.
 
 ### 2. Persistent Track Contract (`TrackedObstacle3D`)
 Maintained over time by `DynamicObstacleTracker3D`:
@@ -42,11 +46,11 @@ class TrackState(Enum):
 
 @dataclass
 class TrackedObstacle3D:
-    track_id: int  # Persistent unique integer ID across time
+    track_id: int              # Persistent unique integer ID across time
     state: TrackState
-    state_vector: np.ndarray  # [x, y, z, vx, vy, vz]^T (6D state)
-    covariance: np.ndarray  # 6x6 state covariance matrix P
-    bounding_radius: float  # Estimated physical obstacle radius
+    state_vector: np.ndarray   # [x, y, z, vx, vy, vz]^T (6D state)
+    covariance: np.ndarray     # 6x6 state covariance matrix P
+    bounding_radius: float     # Estimated physical obstacle radius
     first_observed_time: float
     last_observed_time: float
     consecutive_hits: int
