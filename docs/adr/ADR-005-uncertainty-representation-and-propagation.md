@@ -58,12 +58,24 @@ To ensure compatibility with fast spherical clearance queries without requiring 
    $$\sigma_{\max}(\tau) = \min\left(\sigma_{\max}(\tau), \sigma_{\text{clamp\_ceiling}}\right)$$
    If $\sigma_{\max}(\tau) > \sigma_{\text{abort\_threshold}}$ (e.g. $> 2.5\text{ m}$), the track is flagged as `UNCERTAINTY_EXCEEDED`, forcing the MissionManager into a safe hovering hold or commanding a deliberate sensor-clearing maneuver.
 
-### 4. Mathematical Guarantees on Covariance Validity
-To defend against numerical instability (e.g., negative eigenvalues due to floating-point truncation):
-- Every covariance update executes Joseph stabilized formulation:
-  $$P_{k|k} = (I - K_k H) P_{k|k-1} (I - K_k H)^T + K_k R_k K_k^T$$
-- Symmetrization is explicitly enforced: $P = \frac{1}{2}(P + P^T)$.
-- SPSD verification: If $\min(\text{eig}(P)) < 0$, the smallest eigenvalue is clamped to $10^{-8}$ and a warning is logged.
+### 4. Rigorous Covariance Anomaly Taxonomy & Handling Policy
+Covariance matrices must remain symmetric positive semi-definite (SPSD) to represent mathematically valid uncertainty. Numerical issues must not be treated as a single monolith, and Joseph stabilization must not be viewed as an automatic repair mechanism for already corrupted matrices.
+
+The perception subsystem establishes a strict anomaly taxonomy and handling hierarchy:
+
+| Anomaly Class | Quantitative Criterion | Algorithmic Response | Telemetry & Lifecycle Action |
+| :--- | :--- | :--- | :--- |
+| **Wrong Shape** | `P.shape != (6, 6)` or `R.shape != (3, 3)` | Reject matrix immediately; fatal contract bug. | `covariance_health: "shape_error"`. Track invalidated. |
+| **Non-Finite Values** | `np.isnan(P).any()` or `np.isinf(P).any()` | Reject update; arithmetic breakdown cannot be repaired. | `covariance_health: "non_finite"`. Track invalidated and purged. |
+| **Non-Positive Measurement Noise** | $\min(\text{eig}(R)) \le 0$ or $\det(R) \le 0$ | Reject measurement; do not execute Kalman update. | `covariance_health: "invalid_R"`. Track coasts without update. |
+| **Small Numerical Asymmetry** | $\|P - P^T\|_{\infty} \le 10^{-7}$ | Enforce exact symmetry: $P \leftarrow \frac{1}{2}(P + P^T)$. | `covariance_health: "symmetrized"`. Track remains nominal. |
+| **Tiny Negative Eigenvalues** | $-10^{-7} \le \lambda_{\min}(P) < 0$ | Eigen-decomposition $P = V \Lambda V^T$; clamp $\lambda_i \leftarrow \max(\lambda_i, 10^{-8})$; reconstruct $P \leftarrow V \Lambda_{\text{clamped}} V^T$. | `covariance_health: "eigen_clamped"`. Log diagnostic event. |
+| **Materially Negative Eigenvalues** | $\lambda_{\min}(P) < -10^{-7}$ | **Fatal filter divergence.** Matrix is non-physical and cannot be rescued by clamping or Joseph stabilization. | `covariance_health: "divergent_invalidated"`. Track state set to `DELETED`; purged from world model. |
+
+#### Role of the Joseph Stabilized Formulation
+The Joseph formulation:
+$$P_{k|k} = (I - K_k H) P_{k|k-1} (I - K_k H)^T + K_k R_k K_k^T$$
+guarantees positive semi-definiteness algebraically **if and only if** prior covariance $P_{k|k-1}$ and measurement noise $R_k$ are valid SPSD matrices. It prevents round-off subtraction degradation that occurs in the naive form $P = (I - KH)P$. It cannot fix non-finite inputs, invalid measurement covariances, or diverged matrices. Every update step must log `covariance_health` telemetry.
 
 ## Alternatives Considered
 1. **Exact Ellipsoid-to-Segment Distance Checking in 4D Lattice:**

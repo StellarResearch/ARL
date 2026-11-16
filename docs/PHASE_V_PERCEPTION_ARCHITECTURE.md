@@ -490,45 +490,89 @@ class WorldModelInterface(ABC):
 
 ## 9. Safety, Fail-Safe Behavior & Unknown-Space Policy
 
-### 9.1 Authoritative Perception Fail-Safe Matrix
+### 9.1 Authoritative Perception Fail-Safe Matrix & Localization Decoupling
+The perception subsystem establishes a deterministic, hierarchical response to sensor and localization anomalies, strictly distinguishing high-level mission state management (`MissionManager`) from low-level autopilot flight safety actions (`FlightController`):
 
-| Failure Mode | Trigger / Detection | Immediate Algorithmic Action | Mission State Transition |
+| Failure Mode | Detection Criterion | Immediate Low-Level Flight Action | Mission State Transition |
 | :--- | :--- | :--- | :--- |
-| **Non-Finite Sensor Data** | `np.isnan(points).any()` or `np.isinf(points).any()` | Drop corrupted returns; flag `valid_mask = False`; **never** map invalid returns to $0.0\text{ m}$ (phantom collision) or `max_range` (obstacle masking). | Maintain state; if corrupted frames persist $> 3$ consecutive frames $\to$ `ABORTED` |
-| **Invalid Covariance Matrix** | Non-symmetric or $\min(\text{eig}(P)) \le 0$ | Apply Joseph stabilization $P = (I-KH)P(I-KH)^T + KRK^T$; enforce symmetry $\frac{1}{2}(P+P^T)$; clamp eigenvalues $\ge 10^{-8}$; if uncorrectable, delete track. | Invalidate track; re-evaluate world model clearance |
+| **Non-Finite Sensor Data** | `np.isnan(points)` or `np.isinf(points)` | Drop corrupted returns; flag `valid_mask = False`; **never** map invalid returns to $0.0\text{ m}$ (phantom collision) or `max_range` (obstacle masking). | Maintain state; if corrupted frames persist $> 3$ consecutive frames $\to$ `ABORTED` |
+| **Covariance Anomaly (ADR-005)** | Asymmetry, negative eigenvalue, or non-finite | If $\|P-P^T\| \le 10^{-7} \to$ symmetrize. If $-10^{-7} \le \lambda_{\min} < 0 \to$ eigen-clamp. If $\lambda_{\min} < -10^{-7} \to$ **fatal filter divergence**; track cannot be repaired by Joseph form; purge track from active memory. | Invalidate track; re-evaluate world model clearance |
 | **Sensor Transport Latency** | $t_{\text{now}} - t_{\text{meas}} > 0.20\text{ s}$ | Query historical pose buffer at measurement epoch $t_{\text{meas}}$ for spatial projection; inflate measurement noise covariance $R$. | Continue; if latency $> 0.50\text{ s}$ log critical latency alert |
-| **Brief Sensor Dropout** | No frame for $\Delta t \le 0.30\text{ s}$ ($\le 6$ steps at 20 Hz) | Coast active tracks forward via Kalman filter motion model; monotonically inflate spatial covariance $\Sigma_p(t)$; enforce braking horizon speed limit. | Maintain `EXECUTING` (no abrupt abort) |
-| **Sustained Sensor Dropout** | Dropout duration $0.30\text{ s} < \Delta t \le 2.0\text{ s}$ | Freeze forward path progression; command immediate deceleration to zero-velocity stationary hover hold. | Transition to `WAITING` (Safe Hover Hold) |
-| **Terminal Sensor Outage** | Dropout duration exceeds $T_{\text{outage}} = 2.0\text{ s}$ | Terminate active mission execution; prohibit further path planning; command controlled vertical descent ($v_z = -0.5\text{ m/s}$) to safe landing. | Transition from `WAITING` to `FAILED_BLOCKED` |
-| **Loss of Localization Aiding** | Reference position/altitude drops out | Attitude remains stabilized via IMU gravimetric leveling; horizontal position drifts open-loop; command immediate zero-velocity hover hold; if unaided duration $> 3.0\text{ s} \to$ controlled descent. | Transition to `WAITING` $\to$ `FAILED_BLOCKED` |
+| **Brief Exteroceptive Dropout** (Healthy Localization) | No sensor frame for $\Delta t \le 0.30\text{ s}$ ($\le 6$ steps at 20 Hz) | Vehicle pose $[p, v, q]$ healthy. Coast active tracks forward via Kalman filter motion model; monotonically inflate spatial covariance $\Sigma_p(t)$; enforce braking horizon speed limit. | Maintain `EXECUTING` (no abrupt abort) |
+| **Sustained Exteroceptive Dropout** (Healthy Localization) | Dropout duration $0.30\text{ s} < \Delta t \le 2.0\text{ s}$ | Vehicle pose $[p, v, q]$ healthy. Freeze forward path progression; command $\mathbf{v}_{\text{cmd}} = \mathbf{0}$, $\mathbf{p}_{\text{cmd}} = \mathbf{p}_{\text{hold}}$. **Stationary hover hold is physically feasible.** | Transition to `WAITING` (Safe Hover Hold) |
+| **Terminal Exteroceptive Outage** (Healthy Localization) | Dropout duration exceeds $T_{\text{outage}} = 2.0\text{ s}$ | Terminate active mission execution; prohibit further path planning. If a verified landing corridor exists, command controlled descent ($v_z = -0.5\text{ m/s}$); otherwise hold hover until operator intervention or battery failsafe. | Transition from `WAITING` to `FAILED_BLOCKED` |
+| **Loss of Horizontal Position Aiding** (Velocity Aided) | External position reference lost; velocity observable (e.g. optical flow/airspeed) | **Stationary position hover CANNOT be guaranteed.** Command zero-velocity hold ($\mathbf{v}_{\text{cmd}} = \mathbf{0}$); horizontal drift will slowly accumulate. If unaided duration $> 3.0\text{ s}$, initiate controlled landing descent. | Transition to `WAITING` (Degraded Velocity Hold) $\to$ `FAILED_BLOCKED` |
+| **Loss of Altitude Aiding** | Barometer / rangefinder reference lost | **Altitude hold CANNOT be maintained.** Vertical double-integration drifts quadratically. Flight controller aborts waypoint navigation and commands collective thrust ramp for immediate landing descent. | Transition to `FAILED_BLOCKED` (Low-Level Emergency) |
+| **Loss of Velocity Observability** (Pure Strapdown IMU) | Velocity and position references both lost | **Neither position hover nor zero-velocity hold can be guaranteed.** Quadratic divergence in position ($\mathcal{O}(t^2)$). Low-level autopilot commands immediate descent at current attitude. | Transition immediately to `FAILED_BLOCKED` |
+| **Complete Localization Failure** (Attitude Corrupted) | $|\|\mathbf{q}\| - 1.0| \ge 0.05$ or non-finite pose | Fail closed immediately; never substitute ground truth; disarm motors or command minimum autorotation thrust to prevent high-speed flyaway into walls. | Transition immediately to `ABORTED` |
 | **Excessive Track Uncertainty** | $\sigma_{\max} = \sqrt{\lambda_{\max}(\Sigma_p)} > 2.5\text{ m}$ | Treat track as large spatial exclusion sphere ($r_{\text{eff}} = \hat{r}_{\text{obs}} + 2.5\text{ m}$); trigger replanning. If no safe alternative corridor exists $\to$ hover hold. | Trigger `REPLANNING`; if blocked $\to$ `WAITING` |
-| **Track Stagnation** | Track unobserved for $> K_{\text{max\_coast}}$ (5 frames) | Purge track from active memory; clear associated world-model exclusion volume. | Re-evaluate world model clearance |
-| **Corrupted Vehicle Ego-Pose** | $|\|\mathbf{q}\| - 1.0| \ge 0.05$ or non-finite pose | Fail closed immediately; never substitute ground truth; cut autonomous planning. | Transition immediately to `ABORTED` |
+| **Stale Track Stagnation** | Track unobserved for $> K_{\text{max\_coast}}$ (5 frames) | Purge track from active memory; clear associated world-model exclusion volume. | Re-evaluate world model clearance |
+
+#### Policy on Emergency Controlled Descent
+In an unmapped or obstacle-rich flight arena, commanding vertical descent without active exteroceptive sensing carries inherent collision risk with obstacles directly beneath the airframe.
+Controlled vertical descent ($v_z = -0.5\text{ m/s}$) is permitted **only** when:
+1. A verified obstacle-free vertical corridor was logged prior to sensor loss, OR
+2. Downward proximity sensing (ultrasonic/optical rangefinder) remains operational, OR
+3. The emergency descent is explicitly modeled as a high-risk fail-safe action of last resort to prevent unbounded horizontal drift and arena wall impact.
 
 ### 9.2 Unknown-Space Policy: Delay-Aware Braking Horizon Constraint
 In real flight, space that has not been scanned by the sensor is **unknown**, not guaranteed free.
 - **Initial Path Generation:** At mission launch, global planning allows routes through unobserved space under the provision that local execution will continuously verify clearance.
-- **Physical Response Delay Decomposition:**
-  When an obstacle appears at the boundary of verified visible free space, the aircraft cannot decelerate instantaneously. The total system response delay $\tau_{\text{delay}}$ comprises:
-  $$\tau_{\text{delay}} = \tau_{\text{sensor}} + \tau_{\text{proc}} + \tau_{\text{replan}} + \tau_{\text{attitude}} + \tau_{\text{motor}}$$
-  where nominal values under standard 20 Hz simulation are:
-  - $\tau_{\text{sensor}} = 1 / f_{\text{sensor}} \approx 0.050\text{ s}$ (sensor measurement period).
-  - $\tau_{\text{proc}} \approx 0.020\text{ s}$ (point-cloud clustering and detection pipeline latency).
-  - $\tau_{\text{replan}} \approx 0.010\text{ s}$ (tracker update and mission replanning check).
-  - $\tau_{\text{attitude}} \approx 0.100\text{ s}$ (time required to tilt quadrotor to maximum braking pitch attitude $\theta_{\text{brake}}$).
-  - $\tau_{\text{motor}} \approx 0.030\text{ s}$ (first-order brushless motor thrust lag).
-  Nominal demonstrated total response delay is $\tau_{\text{delay}} \approx 0.21\text{ s}$.
 
-- **Delay-Aware Braking Horizon Inequality:**
-  During delay $\tau_{\text{delay}}$, the quadrotor continues traveling forward at speed $v$. Under demonstrated conservative horizontal braking deceleration $a_{\min} > 0$, the total stopping distance is:
-  $$d_{\text{stop}}(v) = v \cdot \tau_{\text{delay}} + \frac{v^2}{2 a_{\min}}$$
-  To guarantee that the aircraft can come to a complete stationary hover within verified visible free space $d_{\text{available}} = \max\left(0, d_{\text{visible}} - d_{\text{margin}}\right)$, the velocity must satisfy:
-  $$\frac{1}{2 a_{\min}} v^2 + \tau_{\text{delay}} v - d_{\text{available}} \le 0$$
-  Solving the quadratic inequality for the positive velocity root yields the **Delay-Aware Braking Horizon Bound**:
-  $$v_{\text{max\_allowed}} = a_{\min} \left( \sqrt{\tau_{\text{delay}}^2 + \frac{2 d_{\text{available}}}{a_{\min}}} - \tau_{\text{delay}} \right)$$
+#### Response Delay Classification Budget
+When an obstacle appears at the boundary of verified visible free space, the aircraft cannot decelerate instantaneously. The total system response delay $\tau_{\text{delay}}$ comprises five distinct physical and computational components, classified by evidence status:
 
-  > [!NOTE]
-  > The elementary formula $v = \sqrt{2 a d}$ is strictly an idealized zero-delay ($\tau_{\text{delay}} = 0$) special case. Assuming $\tau = 0$ on physical aircraft causes substantial stopping-distance undershoot and collisions. Physical stopping guarantees are valid only when calibrated against experimentally validated $\tau_{\text{delay}}$ and $a_{\min}$ bounds.
+| Delay Component | Parameter Symbol | Nominal Value | Evidence Classification | Technical Justification |
+| :--- | :--- | :--- | :--- | :--- |
+| **Sensor Measurement Interval** | $\tau_{\text{sensor}}$ | $0.050\text{ s}$ | `DERIVED` | Derived from configured sensor update rate ($f_{\text{sensor}} = 20\text{ Hz} \implies \Delta t = 0.050\text{ s}$). Represents worst-case arrival latency within discrete clock. |
+| **Point-Cloud Processing Latency** | $\tau_{\text{proc}}$ | $0.020\text{ s}$ | `PROVISIONAL TARGET` | Engineering target for spatial clustering and detection pipeline execution on standard benchmark hardware in Phase V.2. |
+| **Tracking & Replanning Latency** | $\tau_{\text{replan}}$ | $0.010\text{ s}$ | `PROVISIONAL TARGET` | Engineering target for Kalman filter state update and local clearance check. |
+| **Attitude Tilt Reorientation Delay** | $\tau_{\text{attitude}}$ | $0.100\text{ s}$ | `ASSUMED` | Estimated duration required to reorient quadrotor from cruise pitch $\theta_{\text{cruise}}$ to maximum reverse braking pitch $\theta_{\text{brake}}$ under angular rate limits ($\dot{\theta}_{\max} \approx 3.0\text{ rad/s}$). **Not yet experimentally measured on 6-DOF simulator.** |
+| **Motor Thrust Lag** | $\tau_{\text{motor}}$ | $0.030\text{ s}$ | `DERIVED` | Derived directly from physical first-order brushless ESC/motor lag parameter $\tau_{\text{motor}} = 0.030\text{ s}$ in `DroneDynamics6DOF`. |
+| **Total Response Delay** | $\tau_{\text{delay}}$ | $\approx 0.210\text{ s}$ | `ASSUMED COMPOSITE BUDGET` | Upper-bounded composite response delay budget. |
+
+> [!CAUTION]
+> Neither the total delay budget ($\tau_{\text{delay}} = 0.21\text{ s}$) nor the braking deceleration ($a_{\text{brake\_min}}$) has been experimentally demonstrated on physical flight hardware. They represent a provisional engineering budget to be validated in Phase V.5.
+
+#### Conservative Bounded-Acceleration Stopping Distance Formulation
+If the quadrotor is accelerating forward (e.g. during waypoint departure or speed transitions) at the moment an obstacle is detected, assuming constant velocity during the response delay $\tau_{\text{delay}}$ will dangerously underestimate the stopping distance.
+
+Let:
+- $v$: Current forward velocity at detection epoch.
+- $a_{\text{forward\_max}}$: Upper bound on forward acceleration during the response delay interval ($\tau_{\text{delay}}$).
+- $a_{\text{brake\_min}}$: Guaranteed lower bound on achievable horizontal braking deceleration.
+- $\tau_{\text{delay}}$: Upper-bounded total system response delay.
+
+1. **Velocity at Initiation of Active Braking:**
+   $$v_{\text{brake\_entry}} = v + a_{\text{forward\_max}} \cdot \tau_{\text{delay}}$$
+2. **Displacement During Response Delay:**
+   $$d_{\text{delay}} = v \cdot \tau_{\text{delay}} + \frac{1}{2} a_{\text{forward\_max}} \cdot \tau_{\text{delay}}^2$$
+3. **Displacement During Active Deceleration:**
+   $$d_{\text{braking}} = \frac{v_{\text{brake\_entry}}^2}{2 a_{\text{brake\_min}}} = \frac{(v + a_{\text{forward\_max}} \cdot \tau_{\text{delay}})^2}{2 a_{\text{brake\_min}}}$$
+4. **General Conservative Stopping Distance:**
+   $$d_{\text{stop}}(v) = v \cdot \tau_{\text{delay}} + \frac{1}{2} a_{\text{forward\_max}} \cdot \tau_{\text{delay}}^2 + \frac{(v + a_{\text{forward\_max}} \cdot \tau_{\text{delay}})^2}{2 a_{\text{brake\_min}}}$$
+
+#### Justification for the Constant-Speed Simplification
+The simplified delay-aware formula:
+$$d_{\text{stop}}(v) = v \cdot \tau_{\text{delay}} + \frac{v^2}{2 a_{\text{brake\_min}}}$$
+is valid **if and only if** $a_{\text{forward\_max}} = 0$, which is strictly restricted to flight phases where:
+1. The quadrotor has completed its waypoint acceleration phase and is in steady-state cruise.
+2. The mission manager commands zero or negative forward acceleration setpoints.
+3. Aerodynamic tailwinds are bounded by $v_{\text{wind\_tail}} \le 0$.
+
+Under this justified assumption ($a_{\text{forward_max}} = 0$), requiring $d_{\text{stop}}(v) \le d_{\text{available}}$ (where $d_{\text{available}} = \max\left(0, d_{\text{visible}} - d_{\text{margin}}\right)$) yields the quadratic inequality:
+$$\frac{1}{2 a_{\text{brake\_min}}} v^2 + \tau_{\text{delay}} v - d_{\text{available}} \le 0$$
+Solving the quadratic inequality for the positive velocity root yields the **Delay-Aware Braking Horizon Bound**:
+$$v_{\text{max\_allowed}} = a_{\text{brake\_min}} \left( \sqrt{\tau_{\text{delay}}^2 + \frac{2 d_{\text{available}}}{a_{\text{brake\_min}}}} - \tau_{\text{delay}} \right)$$
+
+#### Protocol for Measuring $a_{\text{brake\_min}}$ in Simulation (Phase V.5)
+The value of $a_{\text{brake\_min}}$ will be evaluated empirically in `Drone6DOFEnv` across adversarial Monte Carlo test runs:
+- Maximum gross vehicle weight ($m = 1.15\text{ kg}$ via domain randomization).
+- Degraded motor thrust ($k_{\text{thrust}} = 0.90$).
+- Conservative pitch tilt limit ($\theta_{\text{brake\_limit}} \le 30^\circ$).
+- Sustained tailwind disturbance ($v_{\text{wind}} = 3.0\text{ m/s}$).
+- First-order motor lag $\tau_{\text{motor}} = 0.03\text{ s}$ and RK4 integration.
+The minimum sustained horizontal deceleration observed across these worst-case runs defines $a_{\text{brake\_min}}$. Prior to those empirical benchmarks, any numerical figure is classified as a `PROVISIONAL TARGET`.
 
 - **Blind Corridor Prohibition:**
   If an upcoming waypoint segment has zero sensor coverage and verified visible distance $d_{\text{available}} = 0$, $v_{\text{max\_allowed}}$ evaluates to $0.0\text{ m/s}$. The mission transitions to `WAITING` and commands a local yaw sensor sweep or stationary hover hold until visibility is acquired.
