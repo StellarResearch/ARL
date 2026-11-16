@@ -317,6 +317,7 @@ class DroneDynamics6DOF:
         motor_time_constant: float = 0.03,
         wind_vector: Optional[np.ndarray | Sequence[float]] = None,
         enable_ground_effect: bool = False,
+        quadratic_drag_coeff: float = 0.0,
     ) -> None:
         for name, val in [
             ("mass", mass),
@@ -383,6 +384,7 @@ class DroneDynamics6DOF:
 
         # Simplified Cheeseman-Bennett ground effect model
         self.enable_ground_effect = bool(enable_ground_effect)
+        self.quadratic_drag_coeff = max(0.0, float(quadratic_drag_coeff))
 
         self.state = DroneState6DOF(
             position=np.zeros(3, dtype=np.float64),
@@ -390,6 +392,8 @@ class DroneDynamics6DOF:
             quaternion=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
             angular_velocity=np.zeros(3, dtype=np.float64),
         )
+        self.last_substep_positions: List[np.ndarray] = [self.state.position.copy()]
+        self.last_substep_velocities: List[np.ndarray] = [self.state.velocity.copy()]
 
     @property
     def arm_span(self) -> float:
@@ -478,6 +482,95 @@ class DroneDynamics6DOF:
             self.state.angular_velocity = np.zeros(3, dtype=np.float64)
 
         self.actual_motor_thrusts = np.full(4, self.hover_thrust_per_motor, dtype=np.float64)
+        self.last_substep_positions = [self.state.position.copy()]
+        self.last_substep_velocities = [self.state.velocity.copy()]
+
+    def max_translational_acceleration(self, max_speed_bound: Optional[float] = None) -> float:
+        """Derive an analytical, physically defensible upper bound on translational acceleration ||p_ddot|| in m/s^2.
+
+        From the translational equations of motion:
+            p_ddot = (1/m)*R(q)*[0, 0, T] + [0, 0, -g] + F_drag / m
+        By triangle inequality:
+            ||p_ddot|| <= (T_max / m) + g + (||F_drag||_max / m)
+
+        Validates all physical parameters, rejecting NaN, Inf, and invalid bounds.
+        Accounts for the actual vehicle operating speed envelope: if max_speed_bound is supplied,
+        it verifies whether the vehicle's state or recent substeps exceed the nominal bound,
+        always taking the conservative envelope max(max_speed_bound, actual_speed).
+        If max_speed_bound is omitted (None), derives the analytical terminal velocity under
+        continuous maximum diving thrust and gravity.
+        """
+        # Validate internal physical parameters
+        if not math.isfinite(self.mass) or self.mass <= 0.0:
+            raise ValueError(f"Dynamics mass must be positive finite, got {self.mass}")
+        if not math.isfinite(self.gravity) or self.gravity < 0.0:
+            raise ValueError(f"Dynamics gravity must be non-negative finite, got {self.gravity}")
+        if not math.isfinite(self.max_thrust_per_motor) or self.max_thrust_per_motor <= 0.0:
+            raise ValueError(
+                f"Dynamics max_thrust_per_motor must be positive finite, got {self.max_thrust_per_motor}"
+            )
+        if not math.isfinite(self.linear_damping) or self.linear_damping < 0.0:
+            raise ValueError(
+                f"Dynamics linear_damping must be non-negative finite, got {self.linear_damping}"
+            )
+        if not math.isfinite(self.quadratic_drag_coeff) or self.quadratic_drag_coeff < 0.0:
+            raise ValueError(
+                f"Dynamics quadratic_drag_coeff must be non-negative finite, got {self.quadratic_drag_coeff}"
+            )
+        if not np.all(np.isfinite(self.wind_vector)):
+            raise ValueError(f"Dynamics wind_vector contains non-finite values: {self.wind_vector}")
+
+        # Maximum collective thrust across all 4 motors
+        t_max_nominal = 4.0 * self.max_thrust_per_motor
+        if self.enable_ground_effect:
+            t_max = 1.30 * t_max_nominal
+        else:
+            t_max = t_max_nominal
+
+        # Actual speeds observed in current physical state and recent substeps
+        v_state = float(np.linalg.norm(self.state.velocity))
+        v_substep = max(
+            (float(np.linalg.norm(v)) for v in getattr(self, "last_substep_velocities", [])),
+            default=0.0,
+        )
+        v_actual_max = max(v_state, v_substep)
+
+        if max_speed_bound is not None:
+            if (
+                isinstance(max_speed_bound, bool)
+                or not isinstance(max_speed_bound, (int, float))
+                or not math.isfinite(max_speed_bound)
+                or max_speed_bound < 0.0
+            ):
+                raise ValueError(
+                    f"max_speed_bound must be a non-negative finite float, got {max_speed_bound!r}"
+                )
+            v_envelope = max(float(max_speed_bound), v_actual_max)
+        else:
+            # Analytical terminal velocity under continuous full thrust + gravity in flight direction
+            f_drive = t_max + self.mass * self.gravity
+            if self.quadratic_drag_coeff > 0.0:
+                disc = (self.linear_damping**2) + 4.0 * self.quadratic_drag_coeff * f_drive
+                v_term = (-self.linear_damping + math.sqrt(disc)) / (
+                    2.0 * self.quadratic_drag_coeff
+                )
+            elif self.linear_damping > 0.0:
+                v_term = f_drive / self.linear_damping
+            else:
+                v_term = 0.0
+            v_envelope = max(v_term, v_actual_max)
+
+        # Airspeed bound incorporating atmospheric wind vector
+        wind_speed = float(np.linalg.norm(self.wind_vector))
+        v_rel_max = v_envelope + wind_speed
+
+        # Drag force upper bound
+        drag_force_max = self.linear_damping * v_rel_max
+        if self.quadratic_drag_coeff > 0.0:
+            drag_force_max += self.quadratic_drag_coeff * (v_rel_max**2)
+
+        acc_max = (t_max / self.mass) + self.gravity + (drag_force_max / self.mass)
+        return float(acc_max)
 
     def compute_forces_and_torques(
         self, motor_thrusts: np.ndarray, altitude: Optional[float] = None
@@ -538,6 +631,10 @@ class DroneDynamics6DOF:
         gravity_world = np.array([0.0, 0.0, -self.mass * self.gravity], dtype=np.float64)
         v_rel = vel - self.wind_vector
         drag_force = -self.linear_damping * v_rel
+        if self.quadratic_drag_coeff > 0.0:
+            v_rel_speed = float(np.linalg.norm(v_rel))
+            if v_rel_speed > 1e-12:
+                drag_force -= self.quadratic_drag_coeff * v_rel_speed * v_rel
         d_vel = (gravity_world + thrust_world + drag_force) / self.mass
 
         # 3. Quaternion derivative: dq/dt = 0.5 * q (x) [0, omega]
@@ -561,26 +658,37 @@ class DroneDynamics6DOF:
         quat = self.state.quaternion.copy()
         omega = self.state.angular_velocity.copy()
 
+        substep_positions = [pos.copy()]
+        substep_velocities = [vel.copy()]
+
         for _ in range(self.substeps):
-            # Integrate actuator first-order response if enabled
-            if self.enable_motor_dynamics:
-                d_thrust = (h / self.motor_time_constant) * (f_cmd - self.actual_motor_thrusts)
-                self.actual_motor_thrusts = np.clip(
-                    self.actual_motor_thrusts + d_thrust, 0.0, self.max_thrust_per_motor
+            f_0 = self.actual_motor_thrusts.copy()
+
+            # Continuous coupled actuator integration across RK4 evaluation stages
+            if self.enable_motor_dynamics and self.motor_time_constant > 1e-9:
+                tau = self.motor_time_constant
+                alpha_half = math.exp(-0.5 * h / tau)
+                alpha_full = math.exp(-h / tau)
+
+                f_k1 = f_0
+                f_k2 = np.clip(
+                    f_0 * alpha_half + f_cmd * (1.0 - alpha_half), 0.0, self.max_thrust_per_motor
                 )
+                f_k3 = f_k2
+                f_k4 = np.clip(
+                    f_0 * alpha_full + f_cmd * (1.0 - alpha_full), 0.0, self.max_thrust_per_motor
+                )
+                self.actual_motor_thrusts = f_k4.copy()
             else:
-                self.actual_motor_thrusts = np.clip(f_cmd, 0.0, self.max_thrust_per_motor)
+                f_clipped = np.clip(f_cmd, 0.0, self.max_thrust_per_motor)
+                f_k1 = f_k2 = f_k3 = f_k4 = f_clipped
+                self.actual_motor_thrusts = f_clipped.copy()
 
-            total_thrust, torques = self.compute_forces_and_torques(
-                self.actual_motor_thrusts, altitude=pos[2]
-            )
+            # k1 (at t = 0)
+            t1, tau1 = self.compute_forces_and_torques(f_k1, altitude=pos[2])
+            k1_p, k1_v, k1_q, k1_w = self._state_derivatives(pos, vel, quat, omega, t1, tau1)
 
-            # k1
-            k1_p, k1_v, k1_q, k1_w = self._state_derivatives(
-                pos, vel, quat, omega, total_thrust, torques
-            )
-
-            # k2
+            # k2 (at t = h/2)
             p2 = pos + 0.5 * h * k1_p
             v2 = vel + 0.5 * h * k1_v
             q2 = quat + 0.5 * h * k1_q
@@ -588,9 +696,10 @@ class DroneDynamics6DOF:
             if q2_norm > 1e-12:
                 q2 /= q2_norm
             w2 = omega + 0.5 * h * k1_w
-            k2_p, k2_v, k2_q, k2_w = self._state_derivatives(p2, v2, q2, w2, total_thrust, torques)
+            t2, tau2 = self.compute_forces_and_torques(f_k2, altitude=p2[2])
+            k2_p, k2_v, k2_q, k2_w = self._state_derivatives(p2, v2, q2, w2, t2, tau2)
 
-            # k3
+            # k3 (at t = h/2)
             p3 = pos + 0.5 * h * k2_p
             v3 = vel + 0.5 * h * k2_v
             q3 = quat + 0.5 * h * k2_q
@@ -598,9 +707,10 @@ class DroneDynamics6DOF:
             if q3_norm > 1e-12:
                 q3 /= q3_norm
             w3 = omega + 0.5 * h * k2_w
-            k3_p, k3_v, k3_q, k3_w = self._state_derivatives(p3, v3, q3, w3, total_thrust, torques)
+            t3, tau3 = self.compute_forces_and_torques(f_k3, altitude=p3[2])
+            k3_p, k3_v, k3_q, k3_w = self._state_derivatives(p3, v3, q3, w3, t3, tau3)
 
-            # k4
+            # k4 (at t = h)
             p4 = pos + h * k3_p
             v4 = vel + h * k3_v
             q4 = quat + h * k3_q
@@ -608,7 +718,8 @@ class DroneDynamics6DOF:
             if q4_norm > 1e-12:
                 q4 /= q4_norm
             w4 = omega + h * k3_w
-            k4_p, k4_v, k4_q, k4_w = self._state_derivatives(p4, v4, q4, w4, total_thrust, torques)
+            t4, tau4 = self.compute_forces_and_torques(f_k4, altitude=p4[2])
+            k4_p, k4_v, k4_q, k4_w = self._state_derivatives(p4, v4, q4, w4, t4, tau4)
 
             # RK4 update
             pos += (h / 6.0) * (k1_p + 2.0 * k2_p + 2.0 * k3_p + k4_p)
@@ -619,6 +730,11 @@ class DroneDynamics6DOF:
                 quat /= q_norm
             omega += (h / 6.0) * (k1_w + 2.0 * k2_w + 2.0 * k3_w + k4_w)
 
+            substep_positions.append(pos.copy())
+            substep_velocities.append(vel.copy())
+
+        self.last_substep_positions = substep_positions
+        self.last_substep_velocities = substep_velocities
         self.state.position = pos
         self.state.velocity = vel
         self.state.quaternion = quat
@@ -678,6 +794,13 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         body_frame_lidar: bool = False,
         render_mode: Optional[str] = None,
         split: Optional[str] = None,
+        enable_motor_dynamics: bool = False,
+        motor_time_constant: float = 0.03,
+        wind_vector: Optional[np.ndarray | Sequence[float]] = None,
+        enable_ground_effect: bool = False,
+        quadratic_drag_coeff: float = 0.0,
+        randomize_domain: bool = False,
+        domain_randomizer: Optional[Any] = None,
     ) -> None:
         super().__init__()
 
@@ -838,6 +961,29 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         self.max_velocity = 10.0  # normalization scale for velocity
         self.max_angular_velocity = 10.0  # normalization scale for angular velocity
 
+        self.enable_motor_dynamics = bool(enable_motor_dynamics)
+        self.motor_time_constant = float(motor_time_constant)
+        self.wind_vector = (
+            np.asarray(wind_vector, dtype=np.float64)
+            if wind_vector is not None
+            else np.zeros(3, dtype=np.float64)
+        )
+        self.enable_ground_effect = bool(enable_ground_effect)
+        self.quadratic_drag_coeff = max(0.0, float(quadratic_drag_coeff))
+        self.randomize_domain = bool(randomize_domain)
+        self.domain_randomizer = domain_randomizer
+        self._last_randomized_parameters: Optional[Dict[str, Any]] = None
+
+        self.nominal_mass: float = float(mass)
+        self.nominal_inertia: Optional[Tuple[float, float, float]] = inertia
+        self.nominal_max_thrust: float = float(max_thrust_per_motor)
+        self.nominal_c_tau: float = float(torque_to_thrust_ratio)
+        self.nominal_linear_damping: float = float(linear_damping)
+        self.nominal_angular_damping: float = float(angular_damping)
+        self.nominal_motor_time_constant: float = float(motor_time_constant)
+        self.nominal_wind_vector: np.ndarray = self.wind_vector.copy()
+        self.nominal_quadratic_drag: float = self.quadratic_drag_coeff
+
         self.dynamics = DroneDynamics6DOF(
             mass=mass,
             arm_length=arm_length,
@@ -849,6 +995,11 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
             angular_damping=angular_damping,
             dt=dt,
             substeps=substeps,
+            enable_motor_dynamics=self.enable_motor_dynamics,
+            motor_time_constant=self.motor_time_constant,
+            wind_vector=self.wind_vector,
+            enable_ground_effect=self.enable_ground_effect,
+            quadratic_drag_coeff=self.quadratic_drag_coeff,
         )
 
         # Action space: 4 motor commands in [-1, 1], mapped to [0, max_thrust]
@@ -906,9 +1057,9 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         act_arr = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
         return (act_arr + 1.0) * 0.5 * self.dynamics.max_thrust_per_motor
 
-    def _get_obs(self) -> np.ndarray:
+    def _get_obs(self, custom_state: Optional[DroneState6DOF] = None) -> np.ndarray:
         bx, by, bz = self.bounds
-        state = self.dynamics.state
+        state = custom_state if custom_state is not None else self.dynamics.state
 
         norm_pos = [state.position[0] / bx, state.position[1] / by, state.position[2] / bz]
         norm_vel = [
@@ -957,10 +1108,36 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         return np.asarray(np.clip(raw, -1.0, 1.0), dtype=np.float32)
 
     def _check_collision(
-        self, pos: np.ndarray, prev_pos: Optional[np.ndarray] = None
+        self,
+        pos: np.ndarray,
+        prev_pos: Optional[np.ndarray] = None,
+        intermediate_positions: Optional[Sequence[np.ndarray]] = None,
+        curvature_error_bound: Optional[float] = None,
     ) -> Tuple[bool, str]:
-        r = self.collision_radius
+        r = float(self.collision_radius)
         bx, by, bz = self.bounds
+
+        if curvature_error_bound is not None:
+            if (
+                isinstance(curvature_error_bound, bool)
+                or not isinstance(curvature_error_bound, (int, float))
+                or not math.isfinite(curvature_error_bound)
+                or curvature_error_bound < 0.0
+            ):
+                raise ValueError(
+                    f"curvature_error_bound must be a non-negative finite float, got {curvature_error_bound!r}"
+                )
+            eps_curv = float(curvature_error_bound)
+        elif prev_pos is not None:
+            # Derive physically defensible curvature bound from dynamics
+            a_max = self.dynamics.max_translational_acceleration(self.max_velocity)
+            if intermediate_positions is not None:
+                dt_step = self.dynamics.substep_dt
+            else:
+                dt_step = self.dynamics.dt
+            eps_curv = 0.125 * a_max * (dt_step**2)
+        else:
+            eps_curv = 0.0
 
         if prev_pos is None:
             if pos[0] - r <= 0.0 or pos[0] + r >= bx:
@@ -975,36 +1152,76 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
                     return True, "obstacle"
             return False, "none"
 
-        # Continuous swept collision check between prev_pos and pos
         p0 = np.asarray(prev_pos, dtype=np.float64)
         p1 = np.asarray(pos, dtype=np.float64)
 
-        # 1. Swept boundary check
-        min_p = np.minimum(p0, p1)
-        max_p = np.maximum(p0, p1)
-        if min_p[0] - r <= 0.0 or max_p[0] + r >= bx:
-            return True, "boundary_x"
-        if min_p[1] - r <= 0.0 or max_p[1] + r >= by:
-            return True, "boundary_y"
-        if min_p[2] - r <= 0.0 or max_p[2] + r >= bz:
-            return True, "boundary_z"
+        if p0.shape != (3,) or not np.all(np.isfinite(p0)):
+            raise ValueError(f"prev_pos must be a finite 3-element vector, got {prev_pos}")
+        if p1.shape != (3,) or not np.all(np.isfinite(p1)):
+            raise ValueError(f"pos must be a finite 3-element vector, got {pos}")
 
-        # 2. Swept obstacle spheres check
-        seg = p1 - p0
-        seg_len_sq = float(np.dot(seg, seg))
+        # If intermediate positions are provided, decompose path into subsegments
+        if intermediate_positions is not None:
+            if not isinstance(intermediate_positions, (list, tuple)):
+                raise ValueError("intermediate_positions must be a sequence of 3D coordinates")
+            if len(intermediate_positions) < 2:
+                raise ValueError("intermediate_positions must contain at least 2 positions")
 
-        for obs in self._obstacles:
-            c = obs.center
-            threshold = obs.radius + r
-            if seg_len_sq < 1e-12:
-                dist = float(np.linalg.norm(p0 - c))
-            else:
-                t = float(np.dot(c - p0, seg) / seg_len_sq)
-                t_clamped = max(0.0, min(1.0, t))
-                closest_point = p0 + t_clamped * seg
-                dist = float(np.linalg.norm(closest_point - c))
-            if dist <= threshold:
-                return True, "obstacle"
+            validated_pts: List[np.ndarray] = []
+            for idx, pt in enumerate(intermediate_positions):
+                arr = np.asarray(pt, dtype=np.float64)
+                if arr.shape != (3,):
+                    raise ValueError(
+                        f"intermediate_positions[{idx}] must have shape (3,), got {arr.shape}"
+                    )
+                if not np.all(np.isfinite(arr)):
+                    raise ValueError(
+                        f"intermediate_positions[{idx}] contains non-finite values: {arr}"
+                    )
+                validated_pts.append(arr)
+
+            if np.linalg.norm(validated_pts[0] - p0) > 1e-3:
+                raise ValueError(
+                    f"intermediate_positions[0] {validated_pts[0]} does not match prev_pos {p0}"
+                )
+            if np.linalg.norm(validated_pts[-1] - p1) > 1e-3:
+                raise ValueError(
+                    f"intermediate_positions[-1] {validated_pts[-1]} does not match pos {p1}"
+                )
+
+            segments = [
+                (validated_pts[k], validated_pts[k + 1]) for k in range(len(validated_pts) - 1)
+            ]
+        else:
+            segments = [(p0, p1)]
+
+        for p_start, p_end in segments:
+            # 1. Swept boundary check with curvature error bound
+            min_p = np.minimum(p_start, p_end)
+            max_p = np.maximum(p_start, p_end)
+            if min_p[0] - r - eps_curv <= 0.0 or max_p[0] + r + eps_curv >= bx:
+                return True, "boundary_x"
+            if min_p[1] - r - eps_curv <= 0.0 or max_p[1] + r + eps_curv >= by:
+                return True, "boundary_y"
+            if min_p[2] - r - eps_curv <= 0.0 or max_p[2] + r + eps_curv >= bz:
+                return True, "boundary_z"
+
+            # 2. Swept obstacle spheres check with curvature error bound
+            seg = p_end - p_start
+            seg_len_sq = float(np.dot(seg, seg))
+
+            for obs in self._obstacles:
+                c = obs.center
+                threshold = obs.radius + r + eps_curv
+                if seg_len_sq < 1e-12:
+                    dist = float(np.linalg.norm(p_start - c))
+                else:
+                    t = float(np.dot(c - p_start, seg) / seg_len_sq)
+                    t_clamped = max(0.0, min(1.0, t))
+                    closest_point = p_start + t_clamped * seg
+                    dist = float(np.linalg.norm(closest_point - c))
+                if dist <= threshold:
+                    return True, "obstacle"
 
         return False, "none"
 
@@ -1044,6 +1261,8 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         if current_split is not None:
             info["split"] = current_split
             info["split_seed"] = self._last_split_seed
+        if self._last_randomized_parameters is not None:
+            info["randomized_parameters"] = self._last_randomized_parameters
         return info
 
     @property
@@ -1153,6 +1372,32 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
 
         self.dynamics.reset(position=self._position)
 
+        # Domain randomization if enabled
+        if self.randomize_domain:
+            self.dynamics.mass = self.nominal_mass
+            if self.nominal_inertia is not None:
+                self.dynamics.inertia_diag = np.array(self.nominal_inertia, dtype=np.float64)
+                self.dynamics.inv_inertia = 1.0 / self.dynamics.inertia_diag
+            self.dynamics.max_thrust_per_motor = self.nominal_max_thrust
+            self.dynamics.c_tau = self.nominal_c_tau
+            self.dynamics.linear_damping = self.nominal_linear_damping
+            self.dynamics.angular_damping = self.nominal_angular_damping
+            self.dynamics.wind_vector = self.nominal_wind_vector.copy()
+            self.dynamics.motor_time_constant = self.nominal_motor_time_constant
+            self.dynamics.hover_thrust_per_motor = (
+                self.dynamics.mass * self.dynamics.gravity
+            ) / 4.0
+
+            if self.domain_randomizer is None:
+                from adaptive_rl.environments.randomization import DomainRandomizer
+
+                self.domain_randomizer = DomainRandomizer(seed=effective_seed)
+            params = self.domain_randomizer.sample_parameters(
+                nominal_dynamics=self.dynamics, seed=effective_seed
+            )
+            self.domain_randomizer.apply_to_dynamics(self.dynamics, params)
+            self._last_randomized_parameters = params
+
         self._obstacles = generate_drone_obstacles(
             bounds=self.bounds,
             start_pos=self._position,
@@ -1193,7 +1438,13 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         dist_delta = self._prev_distance_to_goal - curr_distance
         self._prev_distance_to_goal = curr_distance
 
-        is_collision, collision_type = self._check_collision(self._position, prev_pos=old_pos)
+        inter_pos = self.dynamics.last_substep_positions
+
+        is_collision, collision_type = self._check_collision(
+            self._position,
+            prev_pos=old_pos,
+            intermediate_positions=inter_pos,
+        )
         is_success = curr_distance <= self.target_radius
 
         terminated = False

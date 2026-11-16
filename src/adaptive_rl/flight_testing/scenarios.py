@@ -35,14 +35,19 @@ Computes measurable, independently verifiable aerospace flight metrics:
 
 from __future__ import annotations
 
+import builtins
 import csv
+import functools
+import hashlib
+import inspect
 import json
 import logging
 import math
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -55,6 +60,7 @@ from adaptive_rl.environments.drone_6dof import (
     quaternion_to_euler_angles,
 )
 from adaptive_rl.navigation.dynamic_obstacles import DynamicObstacleSphere3D
+from adaptive_rl.navigation.mission import MissionManager, MissionState
 from adaptive_rl.navigation.planner import AStarPlanner3D
 
 logger = logging.getLogger(__name__)
@@ -80,6 +86,10 @@ class FlightStepTelemetry:
     is_success: bool
     commanded_thrusts: Optional[np.ndarray] = None
     actuator_fault_active: bool = False
+    estimated_position: Optional[np.ndarray] = None
+    estimated_velocity: Optional[np.ndarray] = None
+    position_estimation_error: Optional[float] = None
+    attitude_estimation_error_deg: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         cmd_thrusts = (
@@ -87,7 +97,7 @@ class FlightStepTelemetry:
             if self.commanded_thrusts is not None
             else [round(float(x), 4) for x in self.motor_thrusts]
         )
-        return {
+        d: Dict[str, Any] = {
             "step": self.step,
             "time_sec": round(self.time_sec, 4),
             "position": [round(float(x), 4) for x in self.position],
@@ -110,6 +120,15 @@ class FlightStepTelemetry:
             "is_collision": self.is_collision,
             "is_success": self.is_success,
         }
+        if self.estimated_position is not None:
+            d["estimated_position"] = [round(float(x), 4) for x in self.estimated_position]
+        if self.estimated_velocity is not None:
+            d["estimated_velocity"] = [round(float(x), 4) for x in self.estimated_velocity]
+        if self.position_estimation_error is not None:
+            d["position_estimation_error"] = round(float(self.position_estimation_error), 4)
+        if self.attitude_estimation_error_deg is not None:
+            d["attitude_estimation_error_deg"] = round(float(self.attitude_estimation_error_deg), 3)
+        return d
 
 
 @dataclass
@@ -152,6 +171,7 @@ class FlightScenarioResult:
     description: str
     metrics: FlightScenarioMetrics
     telemetry: List[FlightStepTelemetry] = field(default_factory=list)
+    scenario_definition: Optional[FlightScenarioDefinition] = None
 
     def to_dict(self, include_telemetry: bool = True) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -159,6 +179,8 @@ class FlightScenarioResult:
             "description": self.description,
             "metrics": self.metrics.to_dict(),
         }
+        if self.scenario_definition is not None:
+            data["scenario_definition"] = self.scenario_definition.to_dict()
         if include_telemetry:
             data["telemetry"] = [step.to_dict() for step in self.telemetry]
         return data
@@ -259,6 +281,400 @@ class FlightScenarioResult:
         return path
 
 
+def _safe_provenance_value(val: Any, _visited: Optional[set[int]] = None) -> Tuple[Any, bool]:
+    """Deterministically serialize a value for provenance hashing without leaking memory addresses.
+
+    Returns (serialized_value, is_complete).
+    """
+    if _visited is None:
+        _visited = set()
+
+    if val is None or isinstance(val, bool):
+        return val, True
+    if isinstance(val, (int, np.integer)):
+        return int(val), True
+    if isinstance(val, (float, np.floating)):
+        f_val = float(val)
+        if not math.isfinite(f_val):
+            return str(f_val), True
+        return 0.0 if f_val == 0.0 else f_val, True
+    if isinstance(val, str):
+        # Sanitize any hex memory addresses (e.g., '0x7f...', '<... at 0x...>')
+        if re.search(r"\bat 0x[0-9a-fA-F]+\b", val) or re.search(r"\b0x[0-9a-fA-F]{6,16}\b", val):
+            cleaned = re.sub(r"\bat 0x[0-9a-fA-F]+\b", "", val)
+            cleaned = re.sub(r"\b0x[0-9a-fA-F]{6,16}\b", "<addr>", cleaned).strip()
+            return cleaned, False
+        return val, True
+    if isinstance(val, np.ndarray):
+        items, ok = _safe_provenance_value(val.tolist(), _visited=_visited)
+        return items, ok
+    if isinstance(val, (list, tuple)):
+        list_results = [_safe_provenance_value(x, _visited=_visited) for x in val]
+        return [r[0] for r in list_results], all(r[1] for r in list_results)
+    if isinstance(val, dict):
+        dict_results = {
+            str(k): _safe_provenance_value(v, _visited=_visited)
+            for k, v in sorted(val.items(), key=lambda item: str(item[0]))
+        }
+        return {k: r[0] for k, r in dict_results.items()}, all(r[1] for r in dict_results.values())
+    if hasattr(val, "to_dict") and callable(getattr(val, "to_dict")):
+        try:
+            return _safe_provenance_value(val.to_dict(), _visited=_visited)
+        except Exception:
+            return f"unserializable:{type(val).__name__}", False
+    if hasattr(val, "metadata"):
+        meta = getattr(val, "metadata")
+        if meta is not None:
+            return _safe_provenance_value(meta, _visited=_visited)
+    if isinstance(val, (staticmethod, classmethod)):
+        fn_val = getattr(val, "__func__", None)
+        fn_prov, ok = _safe_provenance_value(fn_val, _visited=_visited)
+        return {"descriptor": type(val).__name__, "func": fn_prov}, ok
+
+    if isinstance(val, property):
+        prop_info: Dict[str, Any] = {"descriptor": "property"}
+        all_ok = True
+        for part_name, fn_part in [("fget", val.fget), ("fset", val.fset), ("fdel", val.fdel)]:
+            if fn_part is not None:
+                p_prov, p_ok = _safe_provenance_value(fn_part, _visited=_visited)
+                prop_info[part_name] = p_prov
+                if not p_ok:
+                    all_ok = False
+        return prop_info, all_ok
+
+    if inspect.ismodule(val):
+        return f"module:{val.__name__}", True
+
+    # Referenced helper function or method
+    if inspect.isfunction(val) or inspect.ismethod(val):
+        if id(val) in _visited:
+            qual = getattr(val, "__qualname__", getattr(val, "__name__", str(val)))
+            return {"recursion_ref": qual}, True
+        fn_prov = extract_callable_provenance(val, _visited=set(_visited))
+        return fn_prov, fn_prov.get("provenance_complete", True)
+
+    # Class dependency
+    if inspect.isclass(val):
+        if id(val) in _visited:
+            qual = getattr(val, "__qualname__", getattr(val, "__name__", str(val)))
+            return {"recursion_ref": qual}, True
+        _visited.add(id(val))
+        mod = getattr(val, "__module__", "")
+        qual = getattr(val, "__qualname__", getattr(val, "__name__", str(val)))
+        if mod == "builtins" or mod.startswith("numpy") or mod.startswith("scipy"):
+            return f"class:{mod}.{qual}", True
+
+        # Custom class: inspect MRO for base classes and inherited methods
+        mro_bases = [
+            f"{b.__module__}.{b.__qualname__}"
+            for b in inspect.getmro(val)
+            if b not in (object,) and getattr(b, "__module__", "") != "builtins"
+        ]
+        cls_attrs: Dict[str, Any] = {}
+        cls_complete = True
+
+        for base in reversed(inspect.getmro(val)):
+            if base is object or getattr(base, "__module__", "") == "builtins":
+                continue
+            for k, v in sorted(base.__dict__.items(), key=lambda item: str(item[0])):
+                if not k.startswith("__") or k in ("__call__", "__init__"):
+                    ser_v, ok_v = _safe_provenance_value(v, _visited=_visited)
+                    cls_attrs[k] = ser_v
+                    if not ok_v:
+                        cls_complete = False
+
+        return {
+            "class": f"{mod}.{qual}",
+            "mro": mro_bases,
+            "attributes": cls_attrs,
+        }, cls_complete
+
+    # Callable class instance
+    if callable(val) and hasattr(val, "__call__"):
+        if id(val) in _visited:
+            return {"recursion_ref": type(val).__qualname__}, True
+        inst_prov = extract_callable_provenance(val, _visited=set(_visited))
+        return inst_prov, inst_prov.get("provenance_complete", True)
+
+    if hasattr(val, "__dict__"):
+        if id(val) in _visited:
+            return {"recursion_ref": type(val).__qualname__}, True
+        _visited.add(id(val))
+        try:
+            custom_attrs = {k: v for k, v in val.__dict__.items() if not k.startswith("__")}
+            if custom_attrs:
+                return _safe_provenance_value(custom_attrs, _visited=_visited)
+        except Exception:
+            pass
+        return f"object:{type(val).__qualname__}", False
+
+    s = str(val)
+    if re.search(r"\bat 0x[0-9a-fA-F]+\b", s) or re.search(r"\b0x[0-9a-fA-F]{6,16}\b", s):
+        cleaned = re.sub(r"\bat 0x[0-9a-fA-F]+\b", "", s)
+        cleaned = re.sub(r"\b0x[0-9a-fA-F]{6,16}\b", "<addr>", cleaned).strip()
+        return {
+            "unsupported_dependency": type(val).__name__,
+            "reason": "non_deterministic_address_or_unsupported_object",
+            "repr": cleaned,
+        }, False
+    return {
+        "unsupported_dependency": type(val).__name__,
+        "reason": "unserializable_opaque_value",
+        "repr": s,
+    }, False
+
+
+def _hash_code_recursive(code_obj: Any, hasher: Any) -> None:
+    """Recursively hash code object bytecode, referenced names, and nested code constants."""
+    hasher.update(getattr(code_obj, "co_code", b""))
+    for name in getattr(code_obj, "co_names", ()):
+        hasher.update(name.encode("utf-8", errors="replace"))
+    for vname in getattr(code_obj, "co_varnames", ()):
+        hasher.update(vname.encode("utf-8", errors="replace"))
+    for const in getattr(code_obj, "co_consts", ()):
+        if inspect.iscode(const) or hasattr(const, "co_code"):
+            _hash_code_recursive(const, hasher)
+        else:
+            hasher.update(str(const).encode("utf-8", errors="replace"))
+
+
+def _resolve_module_dependencies(
+    mod: Any,
+    co_names: Sequence[str],
+    visited_modules: set[int],
+    _visited: set[int],
+) -> Tuple[Dict[str, Any], bool]:
+    """Recursively resolve module and submodule attributes referenced in co_names."""
+    if id(mod) in visited_modules:
+        return {"recursion_ref": getattr(mod, "__name__", str(mod))}, True
+    visited_modules.add(id(mod))
+
+    builtin_names = set(dir(builtins))
+    attrs: Dict[str, Any] = {}
+    all_ok = True
+
+    for attr_name in sorted(set(co_names)):
+        if hasattr(mod, attr_name) and attr_name not in builtin_names:
+            try:
+                attr_obj = getattr(mod, attr_name)
+                if inspect.ismodule(attr_obj):
+                    sub_attrs, sub_ok = _resolve_module_dependencies(
+                        attr_obj, co_names, set(visited_modules), _visited
+                    )
+                    attrs[attr_name] = {
+                        "module": getattr(attr_obj, "__name__", attr_name),
+                        "attributes": sub_attrs,
+                    }
+                    if not sub_ok:
+                        all_ok = False
+                else:
+                    ser_attr, ok_attr = _safe_provenance_value(attr_obj, _visited=_visited)
+                    attrs[attr_name] = ser_attr
+                    if not ok_attr:
+                        all_ok = False
+            except Exception as exc:
+                attrs[attr_name] = {
+                    "unresolved_attribute": attr_name,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                all_ok = False
+
+    return attrs, all_ok
+
+
+def extract_callable_provenance(fn: Any, _visited: Optional[set[int]] = None) -> Dict[str, Any]:
+    """Extract a stable, deterministic provenance record for a callable.
+
+    Captures function identity, module, qualified name, function defaults, keyword defaults,
+    referenced global dependencies (recursively), closure variables, custom attributes,
+    explicit metadata, and a SHA-256 digest of code object bytecode, constants, and referenced names.
+    Guarantees different callback configurations generate different digests.
+    """
+    if fn is None:
+        return {}
+
+    if _visited is None:
+        _visited = set()
+
+    if id(fn) in _visited:
+        return {
+            "recursion_ref": getattr(
+                fn, "__qualname__", getattr(fn, "__name__", type(fn).__name__)
+            ),
+            "provenance_complete": True,
+        }
+    _visited.add(id(fn))
+
+    provenance_complete = True
+
+    # Unwrap functools.partial
+    partial_args: List[Any] = []
+    partial_keywords: Dict[str, Any] = {}
+    if isinstance(fn, functools.partial):
+        partial_args, ok_args = _safe_provenance_value(fn.args, _visited=set(_visited))
+        partial_keywords, ok_kw = _safe_provenance_value(fn.keywords or {}, _visited=set(_visited))
+        if not (ok_args and ok_kw):
+            provenance_complete = False
+        fn = fn.func
+
+    # Determine underlying code object and callable type
+    is_callable_instance = False
+    if inspect.isfunction(fn) or inspect.ismethod(fn):
+        code = getattr(fn, "__code__", None)
+        fn_globals = getattr(fn, "__globals__", {})
+        target_fn = fn
+    elif hasattr(fn, "__call__"):
+        is_callable_instance = True
+        call_method = fn.__call__
+        code = getattr(call_method, "__code__", None)
+        fn_globals = getattr(call_method, "__globals__", {})
+        target_fn = call_method
+    else:
+        code = getattr(fn, "__code__", None)
+        fn_globals = getattr(fn, "__globals__", {})
+        target_fn = fn
+
+    info: Dict[str, Any] = {
+        "name": getattr(fn, "__name__", type(fn).__name__),
+        "qualname": getattr(fn, "__qualname__", getattr(fn, "__name__", str(type(fn)))),
+        "callable_type": type(fn).__name__,
+    }
+    if hasattr(fn, "__module__") and fn.__module__:
+        info["module"] = str(fn.__module__)
+
+    if is_callable_instance:
+        cls = type(fn)
+        info["callable_class"] = f"{cls.__module__}.{cls.__qualname__}"
+        info["class_mro"] = [
+            f"{b.__module__}.{b.__qualname__}"
+            for b in inspect.getmro(cls)
+            if b not in (object,) and getattr(b, "__module__", "") != "builtins"
+        ]
+        # Inspect inherited methods across MRO
+        inherited_methods: Dict[str, Any] = {}
+        for base in reversed(inspect.getmro(cls)):
+            if base is object or getattr(base, "__module__", "") == "builtins":
+                continue
+            for k, v in base.__dict__.items():
+                if not k.startswith("__") or k in ("__call__", "__init__"):
+                    if (
+                        inspect.isfunction(v)
+                        or inspect.ismethod(v)
+                        or isinstance(v, (staticmethod, classmethod, property))
+                    ):
+                        m_prov, m_ok = _safe_provenance_value(v, _visited=set(_visited))
+                        inherited_methods[k] = m_prov
+                        if not m_ok:
+                            provenance_complete = False
+        if inherited_methods:
+            info["class_methods"] = inherited_methods
+
+    if partial_args:
+        info["partial_args"] = partial_args
+    if partial_keywords:
+        info["partial_keywords"] = partial_keywords
+
+    # Function positional defaults and keyword-only defaults
+    defaults = getattr(target_fn, "__defaults__", None)
+    if defaults is not None:
+        ser_defaults, ok_def = _safe_provenance_value(defaults, _visited=set(_visited))
+        info["defaults"] = ser_defaults
+        if not ok_def:
+            provenance_complete = False
+
+    kwdefaults = getattr(target_fn, "__kwdefaults__", None)
+    if kwdefaults is not None:
+        ser_kwdefaults, ok_kwdef = _safe_provenance_value(kwdefaults, _visited=set(_visited))
+        info["kwdefaults"] = ser_kwdefaults
+        if not ok_kwdef:
+            provenance_complete = False
+
+    # Explicit metadata contract
+    if hasattr(fn, "metadata"):
+        meta = getattr(fn, "metadata")
+        ser_meta, ok_meta = _safe_provenance_value(meta, _visited=set(_visited))
+        info["metadata"] = ser_meta
+        if isinstance(meta, dict) and meta.get("provenance_complete") is False:
+            provenance_complete = False
+        elif not ok_meta:
+            provenance_complete = False
+    elif getattr(fn, "__doc__", None):
+        info["doc"] = fn.__doc__.strip()
+
+    # Custom attributes on the callable instance or function
+    custom_obj = fn if is_callable_instance else target_fn
+    if hasattr(custom_obj, "__dict__"):
+        custom_attrs = {
+            k: v
+            for k, v in custom_obj.__dict__.items()
+            if not k.startswith("__") and k != "metadata"
+        }
+        if custom_attrs:
+            ser_attrs, ok_attrs = _safe_provenance_value(custom_attrs, _visited=set(_visited))
+            info["attributes"] = ser_attrs
+            if not ok_attrs:
+                provenance_complete = False
+
+    # Closure variables
+    closure_vars: Dict[str, Any] = {}
+    if hasattr(target_fn, "__closure__") and target_fn.__closure__ is not None and code is not None:
+        co_freevars = getattr(code, "co_freevars", ())
+        for var_name, cell in zip(co_freevars, target_fn.__closure__):
+            try:
+                contents = cell.cell_contents
+                ser_val, ok_val = _safe_provenance_value(contents, _visited=set(_visited))
+                closure_vars[var_name] = ser_val
+                if not ok_val:
+                    provenance_complete = False
+            except ValueError:
+                closure_vars[var_name] = "<empty_cell>"
+    if closure_vars:
+        info["closure"] = {k: closure_vars[k] for k in sorted(closure_vars.keys())}
+
+    # Global dependencies referenced in code.co_names (recursively fingerprinted)
+    if code is not None and fn_globals:
+        co_names = getattr(code, "co_names", ())
+        builtin_names = set(dir(builtins))
+        ref_globals: Dict[str, Any] = {}
+        for name in sorted(set(co_names)):
+            if name in fn_globals and name not in builtin_names:
+                g_val = fn_globals[name]
+                if inspect.ismodule(g_val):
+                    # Recursively resolve module-qualified dependencies referenced in co_names
+                    mod_attrs, mod_ok = _resolve_module_dependencies(
+                        g_val, co_names, set(), set(_visited)
+                    )
+                    if mod_attrs:
+                        ref_globals[f"{name}.attributes"] = mod_attrs
+                    ref_globals[name] = f"module:{g_val.__name__}"
+                    if not mod_ok:
+                        provenance_complete = False
+                else:
+                    ser_g, ok_g = _safe_provenance_value(g_val, _visited=set(_visited))
+                    ref_globals[name] = ser_g
+                    if not ok_g:
+                        provenance_complete = False
+        if ref_globals:
+            info["referenced_globals"] = ref_globals
+
+    # Code object metadata and digest
+    if code is not None:
+        info["code_metadata"] = {
+            "co_argcount": code.co_argcount,
+            "co_kwonlyargcount": getattr(code, "co_kwonlyargcount", 0),
+            "co_flags": code.co_flags,
+            "co_names": list(code.co_names),
+            "co_varnames": list(code.co_varnames),
+        }
+
+        hasher = hashlib.sha256()
+        _hash_code_recursive(code, hasher)
+        info["code_hash"] = hasher.hexdigest()
+
+    info["provenance_complete"] = provenance_complete
+    return info
+
+
 @dataclass
 class FlightScenarioDefinition:
     """Specification of an autonomous flight validation scenario."""
@@ -282,8 +698,93 @@ class FlightScenarioDefinition:
     collision_radius: float = 0.8
     step_duration_sec: float = 0.05
     use_path_planner: bool = False
+    settling_velocity_threshold: float = 0.5
+    max_recovery_tilt_deg: float = 35.0
+    min_recovery_altitude: float = 0.8
+    enable_sensor_estimation: bool = False
+    sensor_seed: Optional[int] = None
+    sensor_in_the_loop: bool = False
+    max_duration_seconds: Optional[float] = None
     disturbance_fn: Optional[Callable[[int, DroneState6DOF], np.ndarray]] = None
     actuator_fault_fn: Optional[Callable[[int, np.ndarray], np.ndarray]] = None
+
+    @property
+    def provenance_complete(self) -> bool:
+        """Indicates whether all behavior-affecting components have complete provenance."""
+        if self.actuator_fault_fn is not None:
+            fault_info = extract_callable_provenance(self.actuator_fault_fn)
+            if fault_info.get("provenance_complete") is False:
+                return False
+        if self.disturbance_fn is not None:
+            dist_info = extract_callable_provenance(self.disturbance_fn)
+            if dist_info.get("provenance_complete") is False:
+                return False
+        return True
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a deterministic, fully serializable dictionary representation for cryptographic hashing."""
+        obs_dicts = [
+            {"center": [float(x) for x in obs.center], "radius": float(obs.radius)}
+            for obs in sorted(
+                self.obstacles,
+                key=lambda o: (
+                    float(o.center[0]),
+                    float(o.center[1]),
+                    float(o.center[2]),
+                    float(o.radius),
+                ),
+            )
+        ]
+        dyn_obs_dicts = [
+            d.to_dict()
+            if hasattr(d, "to_dict")
+            else {
+                "center_initial": [float(x) for x in d.center_initial],
+                "radius": float(d.radius),
+                "velocity": [float(x) for x in d.velocity],
+                "bounds": [float(x) for x in d.bounds],
+                "motion_type": str(d.motion_type),
+                "oscillation_period": float(d.oscillation_period),
+                "oscillation_amplitude": [float(x) for x in d.oscillation_amplitude],
+            }
+            for d in self.dynamic_obstacles
+        ]
+
+        fault_info: Dict[str, Any] = {}
+        if self.actuator_fault_fn is not None:
+            fault_info = extract_callable_provenance(self.actuator_fault_fn)
+
+        dist_info: Dict[str, Any] = {}
+        if self.disturbance_fn is not None:
+            dist_info = extract_callable_provenance(self.disturbance_fn)
+
+        return {
+            "name": self.name,
+            "description": self.description,
+            "initial_position": [float(x) for x in self.initial_position],
+            "initial_velocity": [float(x) for x in self.initial_velocity],
+            "initial_quaternion": [float(x) for x in self.initial_quaternion],
+            "initial_angular_velocity": [float(x) for x in self.initial_angular_velocity],
+            "waypoints": [[float(x) for x in w] for w in self.waypoints],
+            "obstacles": obs_dicts,
+            "dynamic_obstacles": dyn_obs_dicts,
+            "bounds": [float(x) for x in self.bounds],
+            "max_steps": self.max_steps,
+            "target_radius": float(self.target_radius),
+            "collision_radius": float(self.collision_radius),
+            "step_duration_sec": float(self.step_duration_sec),
+            "use_path_planner": self.use_path_planner,
+            "settling_velocity_threshold": float(self.settling_velocity_threshold),
+            "max_recovery_tilt_deg": float(self.max_recovery_tilt_deg),
+            "min_recovery_altitude": float(self.min_recovery_altitude),
+            "enable_sensor_estimation": self.enable_sensor_estimation,
+            "sensor_seed": self.sensor_seed,
+            "sensor_in_the_loop": self.sensor_in_the_loop,
+            "max_duration_seconds": self.max_duration_seconds,
+            "actuator_fault": fault_info,
+            "disturbance": dist_info,
+            "provenance_complete": self.provenance_complete,
+        }
 
 
 def get_standard_flight_scenarios() -> List[FlightScenarioDefinition]:
@@ -604,6 +1105,22 @@ def get_advanced_navigation_scenarios() -> List[FlightScenarioDefinition]:
         )
     )
 
+    # 19. State Estimation In-the-Loop Flight
+    scenarios.append(
+        FlightScenarioDefinition(
+            name="sensor_estimated_navigation",
+            description="Precision hover loiter driven entirely by sensor-fusion estimated state under IMU noise and drift.",
+            initial_position=np.array([10.0, 10.0, 5.0]),
+            waypoints=[np.array([10.0, 10.0, 5.0])],
+            obstacles=[],
+            max_steps=200,
+            target_radius=1.0,
+            enable_sensor_estimation=True,
+            sensor_in_the_loop=True,
+            sensor_seed=101,
+        )
+    )
+
     return scenarios
 
 
@@ -672,9 +1189,10 @@ class FlightScenarioRunner:
         self.env._position = scenario.initial_position.copy()
         self.env._current_step = 0
 
-        # Resolve waypoints (optionally via 3D A* path planning)
+        # Resolve waypoints (optionally via 3D A* path planning or MissionManager)
         waypoints: List[np.ndarray] = []
-        if scenario.use_path_planner and scenario.obstacles:
+        mission_manager: Optional[MissionManager] = None
+        if scenario.use_path_planner and (scenario.obstacles or scenario.dynamic_obstacles):
             planner = AStarPlanner3D(
                 bounds=scenario.bounds,
                 resolution=1.0,
@@ -682,10 +1200,20 @@ class FlightScenarioRunner:
                 safety_margin=0.3,
             )
             raw_target = scenario.waypoints[-1] if scenario.waypoints else scenario.initial_position
-            plan_res = planner.plan(scenario.initial_position, raw_target, scenario.obstacles)
-            if plan_res.status == "SUCCESS" and len(plan_res.waypoints) > 1:
-                waypoints = plan_res.waypoints[1:]  # sequenced targets ahead
-            else:
+            mission_manager = MissionManager(
+                planner=planner,
+                waypoint_acceptance_radius=scenario.target_radius,
+                replan_clearance_threshold=scenario.collision_radius + 0.5,
+            )
+            targets = scenario.waypoints if scenario.waypoints else [scenario.initial_position]
+            ok = mission_manager.start_mission(
+                start_position=scenario.initial_position,
+                goals=targets,
+                static_obstacles=scenario.obstacles,
+                dynamic_obstacles=scenario.dynamic_obstacles,
+                time_sec=0.0,
+            )
+            if not ok or mission_manager.state == MissionState.FAILED_BLOCKED:
                 # Planning failure (e.g. goal or start blocked)
                 elapsed_ms = (time.perf_counter() - start_wall_time) * 1000.0
                 initial_goal_dist = float(np.linalg.norm(raw_target - scenario.initial_position))
@@ -708,7 +1236,7 @@ class FlightScenarioRunner:
                     max_angular_speed=0.0,
                     initial_goal_distance=initial_goal_dist,
                     final_goal_distance=initial_goal_dist,
-                    min_obstacle_clearance=plan_res.min_clearance,
+                    min_obstacle_clearance=-1.0,
                     collision_count=0,
                     control_effort=0.0,
                     execution_wall_time_ms=elapsed_ms,
@@ -718,9 +1246,11 @@ class FlightScenarioRunner:
                     description=scenario.description,
                     metrics=metrics,
                     telemetry=[],
+                    scenario_definition=scenario,
                 )
+            waypoints = [w.copy() for w in mission_manager.active_path]
         else:
-            waypoints = list(scenario.waypoints)
+            waypoints = [w.copy() for w in scenario.waypoints]
 
         if not waypoints:
             waypoints = [scenario.initial_position.copy()]
@@ -732,6 +1262,26 @@ class FlightScenarioRunner:
 
         initial_goal_dist = float(np.linalg.norm(waypoints[-1] - scenario.initial_position))
 
+        # Sensor estimation avionics in-the-loop if enabled
+        imu_sensor = None
+        state_estimator = None
+        sensor_rng = None
+        est_drone_state: Optional[DroneState6DOF] = None
+        if scenario.enable_sensor_estimation or scenario.sensor_in_the_loop:
+            from adaptive_rl.sensors.estimation import ComplementaryFilter
+            from adaptive_rl.sensors.imu import IMUSensor
+
+            sensor_rng = np.random.default_rng(scenario.sensor_seed or 42)
+            imu_sensor = IMUSensor(
+                gravity=self.env.dynamics.gravity, seed=scenario.sensor_seed or 42
+            )
+            state_estimator = ComplementaryFilter(gravity=self.env.dynamics.gravity)
+            state_estimator.reset(
+                position=scenario.initial_position,
+                velocity=scenario.initial_velocity,
+                quaternion=scenario.initial_quaternion,
+            )
+
         telemetry: List[FlightStepTelemetry] = []
         pos_errors: List[float] = []
         vel_errors: List[float] = []
@@ -741,14 +1291,36 @@ class FlightScenarioRunner:
         control_efforts: List[float] = []
 
         is_collision = False
+        coll_type = "none"
         outcome = "max_steps"
         step = 0
         dt = self.env.dynamics.dt
+        fault_ever_active = False
+        all_waypoints_completed = False
 
         while step < scenario.max_steps:
             step += 1
             time_sec = step * dt
             current_state = self.env.dynamics.state
+
+            # Determine feedback state for closed-loop control (sensor-in-the-loop if active)
+            feedback_state = (
+                est_drone_state
+                if (scenario.sensor_in_the_loop and est_drone_state is not None)
+                else current_state
+            )
+
+            # Predictive dynamic obstacle avoidance via MissionManager
+            if mission_manager is not None:
+                current_target, _ = mission_manager.update(
+                    drone_state=feedback_state,
+                    time_sec=time_sec,
+                    static_obstacles=scenario.obstacles,
+                    dynamic_obstacles=scenario.dynamic_obstacles,
+                )
+                self.env._goal = current_target.copy()
+                if hasattr(ctrl, "set_target"):
+                    ctrl.set_target(current_target)
 
             # Compute tracking errors relative to current waypoint
             pos_err = current_target - current_state.position
@@ -769,16 +1341,16 @@ class FlightScenarioRunner:
             omega_mag = float(np.linalg.norm(current_state.angular_velocity))
             angular_speeds.append(omega_mag)
 
-            # Compute controller action
+            # Compute controller action using feedback_state (sensor-in-the-loop if active)
             if hasattr(ctrl, "compute_action"):
                 action, ctrl_info = ctrl.compute_action(
-                    current_state,
+                    feedback_state,
                     target_position=current_target,
                     target_velocity=np.zeros(3),
                     dt=dt,
                 )
             elif hasattr(ctrl, "predict"):
-                obs = self.env._get_obs()
+                obs = self.env._get_obs(custom_state=feedback_state)
                 action, _ = ctrl.predict(obs, deterministic=True)
             else:
                 action = np.zeros(4, dtype=np.float32)
@@ -795,18 +1367,58 @@ class FlightScenarioRunner:
             if scenario.actuator_fault_fn is not None:
                 thrusts_actual = scenario.actuator_fault_fn(step, thrusts_cmd)
                 fault_active = not np.allclose(thrusts_actual, thrusts_cmd)
+            if fault_active:
+                fault_ever_active = True
+
+            # Snapshot pre-integration physical state to prevent object aliasing
+            pre_state = self.env.dynamics.state.copy()
+            pre_velocity = pre_state.velocity.copy()
+            old_pos = pre_state.position.copy()
+
+            # External aerodynamic disturbance applied to velocity
+            if scenario.disturbance_fn is not None:
+                dist_force = scenario.disturbance_fn(step, pre_state)
+                self.env.dynamics.state.velocity += (dist_force / self.env.dynamics.mass) * dt
 
             # Step physical dynamics with Runge-Kutta 4
-            old_pos = current_state.position.copy()
-
-            # External aerodynamic disturbance
-            if scenario.disturbance_fn is not None:
-                dist_force = scenario.disturbance_fn(step, current_state)
-                current_state.velocity += (dist_force / self.env.dynamics.mass) * dt
-
             new_state = self.env.dynamics.step_rk4(thrusts_actual)
             self.env._position = new_state.position.copy()
             self.env._current_step = step
+
+            # Sensor in-the-loop estimation if enabled
+            est_pos = None
+            est_vel = None
+            pos_est_err = None
+            att_est_err = None
+            if imu_sensor is not None and state_estimator is not None and sensor_rng is not None:
+                # Calculate true net inertial acceleration between distinct pre and post states
+                inertial_acc = (new_state.velocity - pre_velocity) / dt
+                meas = imu_sensor.measure(
+                    new_state,
+                    inertial_acceleration=inertial_acc,
+                    dt=dt,
+                    timestamp=time_sec,
+                )
+                # Avionics sensor fusion: IMU fused with noisy position and altitude observations
+                pos_obs_noise = sensor_rng.normal(0.0, 0.02, size=3)
+                noisy_pos_ref = new_state.position + pos_obs_noise
+                est_state = state_estimator.update(
+                    meas,
+                    dt=dt,
+                    position_ref=noisy_pos_ref,
+                    altitude_ref=float(noisy_pos_ref[2]),
+                    true_state=new_state,
+                )
+                est_pos = est_state.position.copy()
+                est_vel = est_state.velocity.copy()
+                pos_est_err = est_state.position_error
+                att_est_err = est_state.attitude_error_deg
+                est_drone_state = DroneState6DOF(
+                    position=est_state.position.copy(),
+                    velocity=est_state.velocity.copy(),
+                    quaternion=est_state.quaternion.copy(),
+                    angular_velocity=est_state.angular_velocity.copy(),
+                )
 
             # Obstacle clearance check (combining static and dynamic obstacles)
             min_obs_d = float("inf")
@@ -820,13 +1432,37 @@ class FlightScenarioRunner:
                     min_obs_d = d
             min_clearances.append(min_obs_d)
 
-            # Collision check
-            coll, coll_type = self.env._check_collision(new_state.position, prev_pos=old_pos)
-            # Also check dynamic obstacles collisions
+            # Collision check with analytical curvature error bound
+            if hasattr(self.env.dynamics, "max_translational_acceleration"):
+                a_max = self.env.dynamics.max_translational_acceleration(
+                    max_speed_bound=getattr(scenario, "max_speed", 25.0)
+                )
+            else:
+                raise ValueError(
+                    "Safety certification failure: environment dynamics does not provide "
+                    "a physically defensible max_translational_acceleration() calculation."
+                )
+            substep_h = getattr(self.env.dynamics, "substep_dt", dt)
+            eps_curv = 0.125 * a_max * (substep_h**2)
+            intermediate_positions = getattr(self.env.dynamics, "last_substep_positions", None)
+
+            coll, coll_type = self.env._check_collision(
+                new_state.position,
+                prev_pos=old_pos,
+                intermediate_positions=intermediate_positions,
+                curvature_error_bound=eps_curv,
+            )
+            # Continuous swept dynamic obstacle collision check
             if not coll:
                 for dyn_obs in scenario.dynamic_obstacles:
-                    if dyn_obs.distance_to(new_state.position, time_sec) <= (
-                        dyn_obs.radius + scenario.collision_radius
+                    if dyn_obs.check_continuous_collision(
+                        prev_drone_pos=old_pos,
+                        curr_drone_pos=new_state.position,
+                        prev_time=time_sec - dt,
+                        curr_time=time_sec,
+                        vehicle_radius=scenario.collision_radius,
+                        intermediate_drone_positions=intermediate_positions,
+                        veh_acc_max=a_max,
                     ):
                         coll = True
                         coll_type = "obstacle"
@@ -836,24 +1472,45 @@ class FlightScenarioRunner:
                 is_collision = True
                 outcome = "collision" if coll_type == "obstacle" else "boundary_breach"
 
-            # Waypoint sequencing
+            # Waypoint sequencing for static waypoint list
             dist_to_curr_waypoint = float(np.linalg.norm(current_target - new_state.position))
             is_at_curr_waypoint = dist_to_curr_waypoint <= scenario.target_radius
 
-            if is_at_curr_waypoint and waypoint_idx < len(waypoints) - 1:
+            if (
+                mission_manager is None
+                and is_at_curr_waypoint
+                and waypoint_idx < len(waypoints) - 1
+            ):
                 waypoint_idx += 1
                 current_target = waypoints[waypoint_idx].copy()
                 self.env._goal = current_target.copy()
                 if hasattr(ctrl, "set_target"):
                     ctrl.set_target(current_target)
 
-            # Final success check
-            dist_to_final_waypoint = float(np.linalg.norm(waypoints[-1] - new_state.position))
-            is_final_success = (
-                waypoint_idx == len(waypoints) - 1
-                and dist_to_final_waypoint <= scenario.target_radius
-                and not is_collision
+            # Final arrival and settling check
+            final_coord = (
+                scenario.waypoints[-1] if scenario.waypoints else scenario.initial_position
             )
+            dist_to_final = float(np.linalg.norm(final_coord - new_state.position))
+            curr_speed = float(np.linalg.norm(new_state.velocity))
+            is_pos_settled = dist_to_final <= scenario.target_radius
+            is_vel_settled = curr_speed <= scenario.settling_velocity_threshold
+
+            all_waypoints_completed = (
+                (
+                    mission_manager.state == MissionState.ARRIVED
+                    and mission_manager.current_mission_waypoint_idx
+                    >= len(mission_manager.mission_waypoints)
+                )
+                if mission_manager is not None
+                else (waypoint_idx == len(waypoints) - 1 and is_at_curr_waypoint)
+            )
+
+            is_mission_completed = (
+                all_waypoints_completed and is_pos_settled and is_vel_settled and not is_collision
+            )
+
+            is_final_success = is_mission_completed
 
             # Record telemetry
             telemetry.append(
@@ -874,10 +1531,20 @@ class FlightScenarioRunner:
                     is_success=is_final_success,
                     commanded_thrusts=thrusts_cmd.copy(),
                     actuator_fault_active=fault_active,
+                    estimated_position=est_pos,
+                    estimated_velocity=est_vel,
+                    position_estimation_error=pos_est_err,
+                    attitude_estimation_error_deg=att_est_err,
                 )
             )
 
             if coll:
+                break
+
+            if (
+                scenario.max_duration_seconds is not None
+                and time_sec >= scenario.max_duration_seconds
+            ):
                 break
 
             if is_final_success and len(waypoints) > 1:
@@ -887,20 +1554,58 @@ class FlightScenarioRunner:
                 outcome = "success"
                 break
 
-        final_pos_err = float(np.linalg.norm(waypoints[-1] - self.env._position))
-        final_goal_dist = final_pos_err
+        final_pos_err = float(
+            np.linalg.norm(
+                (scenario.waypoints[-1] if scenario.waypoints else scenario.initial_position)
+                - self.env._position
+            )
+        )
+        final_speed = float(np.linalg.norm(self.env.dynamics.state.velocity))
+        max_tilt = max(att_errors_deg) if att_errors_deg else 0.0
+        min_alt = (
+            float(np.min([t.position[2] for t in telemetry]))
+            if telemetry
+            else float(self.env._position[2])
+        )
 
-        # Disambiguated outcome classification
-        if scenario.actuator_fault_fn is not None:
-            max_tilt = max(att_errors_deg) if att_errors_deg else 0.0
-            if is_collision or max_tilt >= 35.0 or self.env._position[2] <= 0.8:
-                outcome = "crash_fault"
-            else:
-                outcome = "recovered_degraded"
+        is_pos_settled = final_pos_err <= scenario.target_radius
+        is_vel_settled = final_speed <= scenario.settling_velocity_threshold
+        is_mission_completed = (
+            all_waypoints_completed and is_pos_settled and is_vel_settled and not is_collision
+        )
+
+        # Authoritative, mutually exclusive outcome classification
+        if fault_ever_active and (
+            is_collision
+            or max_tilt >= scenario.max_recovery_tilt_deg
+            or min_alt <= scenario.min_recovery_altitude
+        ):
+            outcome = "crash_fault"
         elif is_collision:
             outcome = "collision" if coll_type == "obstacle" else "boundary_breach"
-        elif final_pos_err <= scenario.target_radius:
+        elif fault_ever_active:
+            # Active actuator fault was injected:
+            # Requires authoritative mission completion, stable flight, altitude maintenance, and velocity settling
+            if (
+                is_mission_completed
+                and max_tilt < scenario.max_recovery_tilt_deg
+                and min_alt > scenario.min_recovery_altitude
+            ):
+                outcome = "recovered_degraded"
+            elif (
+                scenario.max_duration_seconds is not None
+                and (step * dt) >= scenario.max_duration_seconds
+            ):
+                outcome = "timeout"
+            else:
+                outcome = "max_steps"
+        elif is_mission_completed:
             outcome = "success"
+        elif (
+            scenario.max_duration_seconds is not None
+            and (step * dt) >= scenario.max_duration_seconds
+        ):
+            outcome = "timeout"
         else:
             outcome = "max_steps"
 
@@ -928,11 +1633,12 @@ class FlightScenarioRunner:
             mean_angular_speed=float(np.mean(angular_speeds)) if angular_speeds else 0.0,
             max_angular_speed=float(np.max(angular_speeds)) if angular_speeds else 0.0,
             initial_goal_distance=initial_goal_dist,
-            final_goal_distance=final_goal_dist,
+            final_goal_distance=final_pos_err,
             min_obstacle_clearance=float(min(min_clearances)) if min_clearances else float("inf"),
             collision_count=1 if is_collision else 0,
             control_effort=float(np.sum(control_efforts)) if control_efforts else 0.0,
             execution_wall_time_ms=elapsed_ms,
+            replan_count=mission_manager.replan_count if mission_manager is not None else 0,
         )
 
         return FlightScenarioResult(
@@ -940,6 +1646,7 @@ class FlightScenarioRunner:
             description=scenario.description,
             metrics=metrics,
             telemetry=telemetry,
+            scenario_definition=scenario,
         )
 
     def run_all_scenarios(

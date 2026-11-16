@@ -198,9 +198,17 @@ class AStarPlanner3D:
         self,
         waypoints: List[np.ndarray],
         obstacles: Sequence[ObstacleSphere3D],
-    ) -> List[np.ndarray]:
-        """Greedy line-of-sight shortcutting (string pulling) with strict collision revalidation."""
+    ) -> Optional[List[np.ndarray]]:
+        """Greedy line-of-sight shortcutting (string pulling) with strict collision revalidation.
+
+        Returns None if no safe continuation exists between waypoints, ensuring an unvalidated
+        segment is never appended.
+        """
         if len(waypoints) <= 2:
+            if len(waypoints) == 2:
+                valid, _ = self.is_segment_valid(waypoints[0], waypoints[1], obstacles)
+                if not valid:
+                    return None
             return [w.copy() for w in waypoints]
 
         simplified = [waypoints[0].copy()]
@@ -208,8 +216,7 @@ class AStarPlanner3D:
         n = len(waypoints)
 
         while curr_idx < n - 1:
-            # Look ahead as far as possible
-            furthest_valid_idx = curr_idx + 1
+            furthest_valid_idx: Optional[int] = None
             for next_idx in range(n - 1, curr_idx, -1):
                 valid, _ = self.is_segment_valid(
                     waypoints[curr_idx], waypoints[next_idx], obstacles
@@ -217,8 +224,19 @@ class AStarPlanner3D:
                 if valid:
                     furthest_valid_idx = next_idx
                     break
+
+            if furthest_valid_idx is None:
+                # No collision-free continuation exists from curr_idx; do not append unvalidated segment
+                return None
+
             simplified.append(waypoints[furthest_valid_idx].copy())
             curr_idx = furthest_valid_idx
+
+        # Invariant check: every consecutive segment must pass continuous collision validation
+        for i in range(len(simplified) - 1):
+            valid, _ = self.is_segment_valid(simplified[i], simplified[i + 1], obstacles)
+            if not valid:
+                return None
 
         return simplified
 
@@ -286,18 +304,49 @@ class AStarPlanner3D:
         def to_world(coord: Tuple[int, int, int]) -> np.ndarray:
             return np.array([coord[0] * res, coord[1] * res, coord[2] * res], dtype=np.float64)
 
-        start_grid = to_grid(start_pt)
+        base_start = to_grid(start_pt)
         goal_grid = to_grid(goal_pt)
+
+        # 4. Search valid, collision-free candidate grid connections for start_pt
+        # Examines base grid cell and all 26 spatial neighbors
+        candidate_offsets = [(0, 0, 0)] + list(self._NEIGHBOR_OFFSETS)
+        valid_start_nodes: List[Tuple[Tuple[int, int, int], float]] = []
+        for off in candidate_offsets:
+            cand_coord = (base_start[0] + off[0], base_start[1] + off[1], base_start[2] + off[2])
+            cand_world = to_world(cand_coord)
+            v_pt, _ = self.is_point_valid(cand_world, obstacles)
+            if not v_pt:
+                continue
+            v_seg, _ = self.is_segment_valid(start_pt, cand_world, obstacles)
+            if not v_seg:
+                continue
+            dist_cand = float(np.linalg.norm(cand_world - start_pt))
+            valid_start_nodes.append((cand_coord, dist_cand))
+
+        # If no neighboring grid node has a collision-free connection to start_pt, fail safely
+        if not valid_start_nodes:
+            elapsed = (time.perf_counter() - t0) * 1000.0
+            return PlanningResult(
+                status="NO_PATH",
+                planning_time_ms=elapsed,
+                nodes_expanded=0,
+            )
+
+        valid_start_nodes.sort(key=lambda item: item[1])
 
         # Priority queue item: (f_score, g_score, grid_coord)
         open_set: List[Tuple[float, float, Tuple[int, int, int]]] = []
-        h_start = float(np.linalg.norm(to_world(start_grid) - goal_pt))
-        heapq.heappush(open_set, (h_start, 0.0, start_grid))
+        came_from: Dict[Tuple[int, int, int], Optional[Tuple[int, int, int]]] = {}
+        g_scores: Dict[Tuple[int, int, int], float] = {}
 
-        came_from: Dict[Tuple[int, int, int], Tuple[int, int, int]] = {}
-        g_scores: Dict[Tuple[int, int, int], float] = {start_grid: 0.0}
+        for cand_coord, d_start in valid_start_nodes:
+            cand_world = to_world(cand_coord)
+            h_score = float(np.linalg.norm(cand_world - goal_pt))
+            g_scores[cand_coord] = d_start
+            came_from[cand_coord] = None
+            heapq.heappush(open_set, (d_start + h_score, d_start, cand_coord))
+
         visited: set[Tuple[int, int, int]] = set()
-
         goal_reached_coord: Optional[Tuple[int, int, int]] = None
         expansions = 0
 
@@ -310,8 +359,8 @@ class AStarPlanner3D:
 
             curr_world = to_world(current)
 
-            # Check if close enough to goal or line-of-sight to goal is open
-            if current == goal_grid or np.linalg.norm(curr_world - goal_pt) <= res:
+            # Check if line-of-sight to non-grid goal is open
+            if current == goal_grid or np.linalg.norm(curr_world - goal_pt) <= 2.0 * res:
                 can_see_goal, _ = self.is_segment_valid(curr_world, goal_pt, obstacles)
                 if can_see_goal:
                     goal_reached_coord = current
@@ -323,8 +372,13 @@ class AStarPlanner3D:
                     continue
 
                 neighbor_world = to_world(neighbor)
-                valid, _ = self.is_point_valid(neighbor_world, obstacles)
-                if not valid:
+                valid_pt, _ = self.is_point_valid(neighbor_world, obstacles)
+                if not valid_pt:
+                    continue
+
+                # Continuous segment check to prevent diagonal corner-cutting
+                valid_seg, _ = self.is_segment_valid(curr_world, neighbor_world, obstacles)
+                if not valid_seg:
                     continue
 
                 step_cost = math.sqrt(offset[0] ** 2 + offset[1] ** 2 + offset[2] ** 2) * res
@@ -344,14 +398,22 @@ class AStarPlanner3D:
                 nodes_expanded=expansions,
             )
 
-        # 5. Reconstruct raw grid path
+        # 5. Reconstruct raw grid path with provable collision-free continuous connections
         raw_path: List[np.ndarray] = [goal_pt.copy()]
-        curr = goal_reached_coord
-        while curr in came_from:
-            raw_path.append(to_world(curr))
-            curr = came_from[curr]
+        curr_step: Optional[Tuple[int, int, int]] = goal_reached_coord
+        while curr_step is not None:
+            raw_path.append(to_world(curr_step))
+            curr_step = came_from.get(curr_step)
         raw_path.append(start_pt.copy())
         raw_path.reverse()
+
+        # Deduplicate consecutive waypoints that are identical within tolerance
+        dedup_path: List[np.ndarray] = []
+        for pt in raw_path:
+            if not dedup_path or np.linalg.norm(pt - dedup_path[-1]) > 1e-6:
+                dedup_path.append(pt)
+        if len(dedup_path) >= 2:
+            raw_path = dedup_path
 
         # Compute raw length
         raw_len = sum(
@@ -360,6 +422,23 @@ class AStarPlanner3D:
 
         # 6. Apply line-of-sight shortcutting
         simplified = self.simplify_path(raw_path, obstacles)
+        if simplified is None:
+            # Fall back to raw grid path only if every raw segment is provably collision-free
+            raw_valid = True
+            for i in range(len(raw_path) - 1):
+                v_seg, _ = self.is_segment_valid(raw_path[i], raw_path[i + 1], obstacles)
+                if not v_seg:
+                    raw_valid = False
+                    break
+            if raw_valid:
+                simplified = raw_path
+            else:
+                elapsed = (time.perf_counter() - t0) * 1000.0
+                return PlanningResult(
+                    status="NO_PATH",
+                    planning_time_ms=elapsed,
+                    nodes_expanded=expansions,
+                )
 
         # Compute simplified metrics
         simp_len = sum(

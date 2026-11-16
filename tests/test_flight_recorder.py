@@ -25,8 +25,8 @@ def test_canonical_json_dumps_determinism() -> None:
     s1 = canonical_json_dumps(d1)
     s2 = canonical_json_dumps(d2)
     assert s1 == s2
-    # Floats are rounded to 6 decimal places for stable hashing
-    assert "2.123457" in s1
+    # Exact finite floating-point representation is preserved without lossy rounding
+    assert "2.12345678" in s1
 
     h1 = compute_config_fingerprint(d1)
     h2 = compute_config_fingerprint(d2)

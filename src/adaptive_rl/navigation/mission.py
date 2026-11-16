@@ -45,12 +45,16 @@ class MissionTelemetry:
     distance_to_final_goal: float
     replan_count: int
     min_clearance_observed: float
+    mission_waypoint_index: int = 0
+    total_mission_waypoints: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "state": self.state.value,
             "active_waypoint_index": self.active_waypoint_index,
             "total_waypoints": self.total_waypoints,
+            "mission_waypoint_index": self.mission_waypoint_index,
+            "total_mission_waypoints": self.total_mission_waypoints,
             "current_target": [round(float(x), 4) for x in self.current_target],
             "distance_to_target": round(self.distance_to_target, 4),
             "distance_to_final_goal": round(self.distance_to_final_goal, 4),
@@ -78,6 +82,7 @@ class MissionManager:
 
         self.state: MissionState = MissionState.IDLE
         self.mission_waypoints: List[np.ndarray] = []
+        self.current_mission_waypoint_idx: int = 0
         self.active_path: List[np.ndarray] = []
         self.active_path_idx: int = 0
         self.replan_count: int = 0
@@ -99,14 +104,17 @@ class MissionManager:
         if not self.mission_waypoints:
             raise ValueError("Mission must contain at least one destination waypoint.")
 
+        self.current_mission_waypoint_idx = 0
         self.final_goal = self.mission_waypoints[-1].copy()
         self.replan_count = 0
         self.min_clearance_observed = float("inf")
         self.state = MissionState.PLANNING
 
-        # Collect current obstacle set
+        # Collect current obstacle set including horizon-predicted dynamic obstacles
         dyn_obs = dynamic_obstacles or []
-        current_obs = list(static_obstacles) + [d.as_static_obstacle_at(time_sec) for d in dyn_obs]
+        current_obs = list(static_obstacles)
+        for d in dyn_obs:
+            current_obs.extend(d.predict_occupied_spheres(time_sec, horizon_sec=3.0, dt=0.5))
 
         # Plan through each high-level mission waypoint
         full_path: List[np.ndarray] = [self.home_position.copy()]
@@ -152,42 +160,94 @@ class MissionManager:
             if clear < self.min_clearance_observed:
                 self.min_clearance_observed = clear
 
-        # Current target waypoint
+        # Current target waypoint along active path
         if self.active_path_idx < len(self.active_path):
             current_target = self.active_path[self.active_path_idx]
         else:
-            current_target = self.active_path[-1]
+            current_target = self.active_path[-1] if self.active_path else pos.copy()
 
         dist_to_target = float(np.linalg.norm(current_target - pos))
 
-        # Check if current path segment ahead is blocked by dynamic obstacle
+        # Check if current path segment ahead is blocked by dynamic obstacle in near future
         if self.active_path_idx < len(self.active_path):
-            segment_clear, _ = self.planner.is_segment_valid(pos, current_target, current_obs)
+            predicted_dyn_obs: List[ObstacleSphere3D] = []
+            for d in dyn_obs:
+                predicted_dyn_obs.extend(
+                    d.predict_occupied_spheres(time_sec, horizon_sec=2.5, dt=0.5)
+                )
+            eval_obs = list(static_obstacles) + predicted_dyn_obs
+
+            segment_clear, _ = self.planner.is_segment_valid(pos, current_target, eval_obs)
             if not segment_clear:
                 logger.info(
-                    "Dynamic obstacle encroaching active path at t=%.2fs! Replanning...", time_sec
+                    "Dynamic obstacle predicted in flight corridor at t=%.2fs! Replanning...",
+                    time_sec,
                 )
                 self.state = MissionState.REPLANNING
                 self.replan_count += 1
-                # Replan from current position to the destination
-                dest = self.mission_waypoints[-1] if self.mission_waypoints else current_target
-                replan_res = self.planner.plan(pos, dest, current_obs)
-                if replan_res.status == "SUCCESS" and replan_res.waypoints:
-                    self.active_path = replan_res.waypoints
-                    self.active_path_idx = 1 if len(replan_res.waypoints) > 1 else 0
+
+                # Replan sequentially through all remaining mission waypoints to preserve order
+                remaining_goals = self.mission_waypoints[self.current_mission_waypoint_idx :]
+                if not remaining_goals:
+                    remaining_goals = [
+                        self.final_goal if self.final_goal is not None else current_target
+                    ]
+
+                replan_path: List[np.ndarray] = [pos.copy()]
+                curr_pt = pos.copy()
+                replan_ok = True
+
+                for goal in remaining_goals:
+                    seg_plan = self.planner.plan(curr_pt, goal, eval_obs)
+                    if seg_plan.status != "SUCCESS" or not seg_plan.waypoints:
+                        replan_ok = False
+                        break
+                    for wp in seg_plan.waypoints[1:]:
+                        replan_path.append(wp.copy())
+                    curr_pt = goal.copy()
+
+                if replan_ok and len(replan_path) > 1:
+                    self.active_path = replan_path
+                    self.active_path_idx = 1
                     current_target = self.active_path[self.active_path_idx]
+                    dist_to_target = float(np.linalg.norm(current_target - pos))
                     self.state = MissionState.EXECUTING
                 else:
-                    self.state = MissionState.FAILED_BLOCKED
+                    # Safe stop in place (hover hold) while dynamic obstacle clears the corridor
+                    # Preserve safe hover/hold without falsely advancing mission
+                    current_target = pos.copy()
                     return current_target, self.get_telemetry(drone_state)
 
-        # Advance waypoint if reached
+        # Advance active path waypoint if reached
         if dist_to_target <= self.waypoint_acceptance_radius:
             if self.active_path_idx < len(self.active_path) - 1:
                 self.active_path_idx += 1
                 current_target = self.active_path[self.active_path_idx]
+
+        # Advance high-level mission waypoints sequentially as reached
+        while self.current_mission_waypoint_idx < len(self.mission_waypoints):
+            dist_to_mwp = float(
+                np.linalg.norm(self.mission_waypoints[self.current_mission_waypoint_idx] - pos)
+            )
+            if dist_to_mwp <= self.waypoint_acceptance_radius:
+                self.current_mission_waypoint_idx += 1
             else:
-                self.state = MissionState.ARRIVED
+                break
+
+        # Mission arrival check: all mission waypoints must be completed in order
+        all_mission_wps_reached = self.current_mission_waypoint_idx >= len(self.mission_waypoints)
+        final_goal_reached = (
+            float(
+                np.linalg.norm(
+                    (self.mission_waypoints[-1] if self.mission_waypoints else current_target) - pos
+                )
+            )
+            <= self.waypoint_acceptance_radius
+        )
+        at_end_of_path = self.active_path_idx >= len(self.active_path) - 1
+
+        if all_mission_wps_reached and final_goal_reached and at_end_of_path:
+            self.state = MissionState.ARRIVED
 
         return current_target, self.get_telemetry(drone_state)
 
@@ -204,6 +264,7 @@ class MissionManager:
             self.active_path = res.waypoints
             self.active_path_idx = 1 if len(res.waypoints) > 1 else 0
             self.mission_waypoints = [self.home_position.copy()]
+            self.current_mission_waypoint_idx = 0
             self.final_goal = self.home_position.copy()
             self.state = MissionState.EXECUTING
             return True
@@ -232,4 +293,6 @@ class MissionManager:
             distance_to_final_goal=dist_final,
             replan_count=self.replan_count,
             min_clearance_observed=self.min_clearance_observed,
+            mission_waypoint_index=self.current_mission_waypoint_idx,
+            total_mission_waypoints=len(self.mission_waypoints),
         )
