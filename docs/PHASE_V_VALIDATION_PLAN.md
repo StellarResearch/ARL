@@ -181,6 +181,19 @@ Ten standardized perception benchmark scenarios are defined to test the percepti
 | **P09** | `heavy_sensor_noise_stress` | LiDAR range noise increased to $\sigma = 0.20\text{ m}$ ($6\times$ nominal). | Filter robustness, NEES calibration, false positive rejection. |
 | **P10** | `dense_clutter_perception_flight`| Full autonomous mission: 3 sequential waypoints, 3 dynamic + 3 static obstacles. | End-to-end perception-aware navigation; zero ground truth. |
 
+### 2.1 Provisional Avionics & Fail-Safe Injection Scenarios (P11 – P17)
+To validate the Authoritative Fail-Safe Decision Table (ADR-008) under adverse conditions, seven dedicated failure-injection test scenarios are provisionally scheduled for Phase V.6:
+
+| Scenario ID | Name | Injected Anomaly Condition | Expected System-Level & Fail-Safe Response |
+| :--- | :--- | :--- | :--- |
+| **P11** | `horizontal_aiding_loss_adversarial` | External horizontal position aiding dropped at $t=2.0\text{ s}$; velocity remains observable. | Vehicle commands velocity damping setpoint $\mathbf{v}_{\text{cmd}, xy} = \mathbf{0}$; does **not** claim stationary position hold; transitions to `WAITING` then initiates controlled descent if unaided duration $> 3.0\text{ s}$. |
+| **P12** | `altitude_sensor_failure` | Barometer / rangefinder reference corrupted with non-finite or frozen readings. | Autonomous flight terminates closed-loop vertical control; commands collective sub-hover thrust ramp ($T \approx 0.90 mg$) to settle; transitions to `FAILED_BLOCKED`. |
+| **P13** | `strapdown_dead_reckoning_divergence`| Position and velocity aiding lost simultaneously; pure strapdown IMU dead-reckoning. | Quadrotor levels wings ($\phi = \theta = 0$); engages open-loop sub-hover descent thrust ($T \approx 0.85 mg$); transitions immediately to `FAILED_BLOCKED`. |
+| **P14** | `attitude_filter_singularity_injection` | Quaternion corrupted ($|\|\mathbf{q}\|-1| \ge 0.05$) or gyro rate saturation injected. | Immediate fail-closed transition to `ABORTED`; triggers `NO VALIDATED SAFE ACTION SPECIFIED — SYSTEM CAPABILITY LIMITATION`. Prohibits autorotation claims. |
+| **P15** | `total_estimator_breakdown` | Full state estimator divergence across all channels. | Immediate transition to `ABORTED`; all active path planning and tracking loops halted. |
+| **P16** | `battery_exhaustion_during_waiting` | Battery State of Charge (SoC) drops to $\le 20\%$ reserve threshold while hovering in `WAITING`. | Bounded waiting rule triggers: $t_{\text{wait}} \le \min(t_{\text{max\_wait}}, t_{\text{battery\_reserve}})$; terminates hover immediately; commands emergency landing rather than hovering to power exhaustion. |
+| **P17** | `c2_datalink_blackout` | Command and control heartbeat lost for $> 5.0\text{ s}$. | Autonomous contingency engages: continues route if corridor verified free; enters bounded `WAITING` ($5.0\text{ s}$) then executes autonomous back-tracking to last known comms link or vertical descent. |
+
 ---
 
 ## 3. Ground-Truth Evaluation Harness Architecture

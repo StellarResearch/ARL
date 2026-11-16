@@ -2,7 +2,7 @@
 
 **Protocol Version**: 2.0<br>
 **Status**: Preregistered & Frozen<br>
-**Governing Protocol**: [`docs/research/adaptive_rl_hypothesis.md`](file:///home/ux0/ARL/docs/research/adaptive_rl_hypothesis.md)<br>
+**Governing Protocol**: [`adaptive_rl_hypothesis.md`](adaptive_rl_hypothesis.md)<br>
 **Target Milestone**: Issue #265 (`[Research] Online adaptation after a distribution shift: Adaptive policy vs Fixed policy`)
 
 ---

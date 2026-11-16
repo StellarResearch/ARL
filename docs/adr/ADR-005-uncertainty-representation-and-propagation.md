@@ -61,21 +61,77 @@ To ensure compatibility with fast spherical clearance queries without requiring 
 ### 4. Rigorous Covariance Anomaly Taxonomy & Handling Policy
 Covariance matrices must remain symmetric positive semi-definite (SPSD) to represent mathematically valid uncertainty. Numerical issues must not be treated as a single monolith, and Joseph stabilization must not be viewed as an automatic repair mechanism for already corrupted matrices.
 
-The perception subsystem establishes a strict anomaly taxonomy and handling hierarchy:
+#### 4.1 Mixed-Unit Dimensional Normalization
+The full 6D tracking state vector combines spatial position and linear velocity:
+$$\mathbf{x} = \begin{bmatrix} \mathbf{p} \\ \mathbf{v} \end{bmatrix} = \begin{bmatrix} x & y & z & v_x & v_y & v_z \end{bmatrix}^T \in \mathbb{R}^6$$
+where position coordinates have physical units of meters ($\text{m}$), and velocity components have physical units of meters per second ($\text{m/s}$).
 
-| Anomaly Class | Quantitative Criterion | Algorithmic Response | Telemetry & Lifecycle Action |
+Consequently, the state covariance matrix $P \in \mathbb{R}^{6 \times 6}$ is partitioned as:
+$$P = \begin{bmatrix} P_{pp} & P_{pv} \\ P_{pv}^T & P_{vv} \end{bmatrix}$$
+where:
+- Spatial position covariance $P_{pp} \in \mathbb{R}^{3 \times 3}$ has units of $\text{m}^2$.
+- Velocity covariance $P_{vv} \in \mathbb{R}^{3 \times 3}$ has units of $(\text{m/s})^2 = \text{m}^2/\text{s}^2$.
+- Cross-covariance $P_{pv} \in \mathbb{R}^{3 \times 3}$ has units of $\text{m}^2/\text{s}$.
+
+> [!WARNING]
+> Applying an unscaled absolute eigenvalue threshold (e.g., $\lambda_{\min} < -10^{-7}$) directly to the mixed-unit matrix $P$ is dimensionally inconsistent because an unscaled eigenvalue problem $\det(P - \lambda I) = 0$ equates $\text{m}^2$ with $(\text{m/s})^2$. An eigenvalue check that passes in one unit system may fail if units are changed (e.g. from meters to millimeters).
+
+To ensure scale invariance and dimensional consistency, all numerical health checks (symmetry, positive semi-definiteness, and condition number) are evaluated in **Dimensionless Coordinates**:
+
+Let $D \in \mathbb{R}^{6 \times 6}$ denote the diagonal scale normalization matrix:
+$$D = \operatorname{diag}\left( L_{\text{char}}, L_{\text{char}}, L_{\text{char}}, \; V_{\text{char}}, V_{\text{char}}, V_{\text{char}} \right)$$
+where characteristic physical scales are derived from verified subsystem parameters:
+- $L_{\text{char}} = 10.0\text{ m}$: Characteristic spatial scale, derived from maximum LiDAR sensor range ($d_{\text{max\_range}} = 10.0\text{ m}$).
+- $V_{\text{char}} = 5.0\text{ m/s}$: Characteristic velocity scale, derived from maximum vehicle operational cruise speed ($v_{\max} = 5.0\text{ m/s}$ in `DroneDynamics6DOF`).
+
+The dimensionless state vector $\mathbf{z}$ and dimensionless covariance matrix $P_z$ are defined as:
+$$\mathbf{z} = D^{-1} \mathbf{x}, \quad P_z = D^{-1} P D^{-T} = D^{-1} P D^{-1} \in \mathbb{R}^{6 \times 6}$$
+Because $P_z$ is unitless, absolute tolerances $\epsilon_{\text{sym}} = 10^{-7}$ and $\epsilon_{\text{eigen}} = 10^{-7}$ applied to $P_z$ are mathematically rigorous, scale-invariant, and dimensionless.
+
+For 3D measurement covariance $R \in \mathbb{R}^{3 \times 3}$ (pure position units $\text{m}^2$), the dimensionless measurement covariance is:
+$$R_z = \frac{1}{L_{\text{char}}^2} R$$
+
+#### 4.2 Authoritative Covariance Anomaly Taxonomy
+The perception subsystem establishes a deterministic taxonomy covering 11 mutually exclusive numerical and structural anomaly classes:
+
+| Anomaly Class | Quantitative Detection Criterion | Algorithmic Response | Telemetry & Lifecycle Action |
 | :--- | :--- | :--- | :--- |
-| **Wrong Shape** | `P.shape != (6, 6)` or `R.shape != (3, 3)` | Reject matrix immediately; fatal contract bug. | `covariance_health: "shape_error"`. Track invalidated. |
-| **Non-Finite Values** | `np.isnan(P).any()` or `np.isinf(P).any()` | Reject update; arithmetic breakdown cannot be repaired. | `covariance_health: "non_finite"`. Track invalidated and purged. |
-| **Non-Positive Measurement Noise** | $\min(\text{eig}(R)) \le 0$ or $\det(R) \le 0$ | Reject measurement; do not execute Kalman update. | `covariance_health: "invalid_R"`. Track coasts without update. |
-| **Small Numerical Asymmetry** | $\|P - P^T\|_{\infty} \le 10^{-7}$ | Enforce exact symmetry: $P \leftarrow \frac{1}{2}(P + P^T)$. | `covariance_health: "symmetrized"`. Track remains nominal. |
-| **Tiny Negative Eigenvalues** | $-10^{-7} \le \lambda_{\min}(P) < 0$ | Eigen-decomposition $P = V \Lambda V^T$; clamp $\lambda_i \leftarrow \max(\lambda_i, 10^{-8})$; reconstruct $P \leftarrow V \Lambda_{\text{clamped}} V^T$. | `covariance_health: "eigen_clamped"`. Log diagnostic event. |
-| **Materially Negative Eigenvalues** | $\lambda_{\min}(P) < -10^{-7}$ | **Fatal filter divergence.** Matrix is non-physical and cannot be rescued by clamping or Joseph stabilization. | `covariance_health: "divergent_invalidated"`. Track state set to `DELETED`; purged from world model. |
+| **1. Wrong Shape** | `P.shape != (6, 6)` or `R.shape != (3, 3)` | Reject matrix immediately; fatal interface contract violation. | `covariance_health: "shape_error"`. Track invalidated and purged. |
+| **2. Non-Finite Values** | `np.isnan(P).any()` or `np.isinf(P).any()` or `np.isnan(R).any()` | Reject update; arithmetic breakdown cannot be repaired. | `covariance_health: "non_finite"`. Track invalidated and purged. |
+| **3. Excessive Asymmetry** | $\frac{\|P_z - P_z^T\|_{\infty}}{\max(\|P_z\|_{\infty}, 10^{-12})} > \epsilon_{\text{sym}} = 10^{-7}$ | Matrix has suffered catastrophic numerical corruption. Reject update. | `covariance_health: "excessive_asymmetry"`. Track invalidated. |
+| **4. Small Numerical Asymmetry** | $\frac{\|P_z - P_z^T\|_{\infty}}{\max(\|P_z\|_{\infty}, 10^{-12})} \le \epsilon_{\text{sym}} = 10^{-7}$ | Floating-point truncation error. Enforce exact symmetry: $P_z \leftarrow \frac{1}{2}(P_z + P_z^T)$. | `covariance_health: "symmetrized"`. Track remains nominal. |
+| **5. Valid Positive Semi-Definite** | $\lambda_{\min}(P_z) \ge 0$ | Nominal condition. Matrix represents physically valid dispersion. | `covariance_health: "valid_psd"`. Nominal execution. |
+| **6. Tiny Negative Eigenvalues** | $-10^{-7} \le \lambda_{\min}(P_z) < 0$ | Eigen-decomposition $P_z = V \Lambda V^T$; clamp $\lambda_i \leftarrow \max(\lambda_i, 10^{-8})$; reconstruct $P_z \leftarrow V \Lambda_{\text{clamped}} V^T$. | `covariance_health: "eigen_clamped"`. Log diagnostic event. |
+| **7. Materially Negative Eigenvalues** | $\lambda_{\min}(P_z) < -10^{-7}$ | **Fatal filter divergence.** Matrix is non-physical and cannot be rescued by clamping or Joseph stabilization. | `covariance_health: "divergent_invalidated"`. Track state set to `DELETED`; purged from world model. |
+| **8. Invalid Measurement Covariance** | $\min(\operatorname{eig}(R_z)) \le 0$ or $\det(R_z) \le 0$ | Sensor measurement noise is non-positive. Reject measurement; do NOT execute Kalman update; coast track forward with motion model. | `covariance_health: "invalid_R"`. Track coasts without update. |
+| **9. Ill-Conditioned / Singular Covariance** | $\kappa(P_z) = \frac{\lambda_{\max}(P_z)}{\max(\lambda_{\min}(P_z), 10^{-15})} > 10^{12}$ | Extreme uncertainty ratio causing numerical failure during matrix inversion of $S = H P H^T + R$. Regularize: $P_z \leftarrow P_z + 10^{-6} I$. | `covariance_health: "ill_conditioned_regularized"`. Log condition warning. |
+| **10. Invalid State / Measurement Values** | $\|\mathbf{p}\| > d_{\text{arena\_max}}$ or $\|\mathbf{v}\| > 20\text{ m/s}$ or non-finite centroid | Physical plausibility bounds violated. Reject candidate measurement update. | `covariance_health: "state_out_of_bounds"`. Measurement dropped. |
+| **11. Failed Innovation Inversion** | Cholesky factorization of $S = H P H^T + R$ fails (`LinAlgError`) | Numerical singularity during Kalman gain computation. Reject measurement; coast track with motion model. | `covariance_health: "inversion_failed"`. Track coasts. |
 
-#### Role of the Joseph Stabilized Formulation
-The Joseph formulation:
-$$P_{k|k} = (I - K_k H) P_{k|k-1} (I - K_k H)^T + K_k R_k K_k^T$$
-guarantees positive semi-definiteness algebraically **if and only if** prior covariance $P_{k|k-1}$ and measurement noise $R_k$ are valid SPSD matrices. It prevents round-off subtraction degradation that occurs in the naive form $P = (I - KH)P$. It cannot fix non-finite inputs, invalid measurement covariances, or diverged matrices. Every update step must log `covariance_health` telemetry.
+#### 4.3 Deterministic Order of Operations
+To prevent race conditions and ensure predictable numerical hygiene, every Kalman filter prediction and correction cycle MUST execute checks and transformations in the following strict sequential order:
+
+1. **Finite Value Verification:** Check `np.isfinite(P).all()` and `np.isfinite(R).all()`. If non-finite $\to$ Class 2 (fatal purge).
+2. **Dimension & Shape Verification:** Validate array dimensions. If mismatch $\to$ Class 1 (fatal contract defect).
+3. **Measurement Covariance Validation ($R$):** Check $R$ for positive definiteness $\min(\operatorname{eig}(R)) > 0$. If invalid $\to$ Class 8 (reject measurement; coast track).
+4. **Dimensionless Coordinate Transformation:** Map physical covariance to dimensionless form:
+   $$P_z = D^{-1} P D^{-1}$$
+5. **Symmetry Assessment & Symmetrization:** Compute relative asymmetry $\Delta_{\text{sym}} = \|P_z - P_z^T\|_{\infty} / \max(\|P_z\|_{\infty}, 10^{-12})$.
+   - If $\Delta_{\text{sym}} > 10^{-7} \implies$ Class 3 (fatal asymmetry; invalidate track).
+   - If $\Delta_{\text{sym}} \le 10^{-7} \implies$ Class 4: enforce $P_z \leftarrow \frac{1}{2}(P_z + P_z^T)$.
+6. **Spectral Decomposition & Eigenvalue Clamping:**
+   Compute eigenvalues $\lambda_i$ and eigenvectors $V$ using `scipy.linalg.eigh(P_z)`.
+   - If $\lambda_{\min} < -10^{-7} \implies$ Class 7: **fatal filter divergence**. Set track status to `DELETED`; purge from world model.
+   - If $-10^{-7} \le \lambda_{\min} < 0 \implies$ Class 6: clamp $\lambda_i \leftarrow \max(\lambda_i, 10^{-8})$ and reconstruct $P_z \leftarrow V \Lambda_{\text{clamped}} V^T$.
+   - If $\lambda_{\min} \ge 0 \implies$ Class 5: valid PSD.
+7. **Condition Number Verification:** Compute $\kappa(P_z) = \lambda_{\max} / \lambda_{\min}$. If $\kappa(P_z) > 10^{12} \implies$ Class 9: regularize with $10^{-6} I$.
+8. **Physical Coordinate Reconstruction:** Transform back to physical units:
+   $$P \leftarrow D P_z D$$
+9. **Joseph-Stabilized Measurement Update:**
+   When incorporating measurement $R$:
+   $$P_{k|k} = (I - K_k H) P_{k|k-1} (I - K_k H)^T + K_k R_k K_k^T$$
+   The Joseph formulation guarantees positive semi-definiteness algebraically **if and only if** prior $P_{k|k-1}$ and measurement noise $R_k$ are valid SPSD matrices. It prevents round-off subtraction degradation that occurs in the naive form $P = (I - KH)P$. It cannot fix non-finite inputs, invalid measurement covariances, or diverged matrices.
+10. **Telemetry Emission:** Log `covariance_health` event and eigenvalue spectrum at every execution step.
 
 ## Alternatives Considered
 1. **Exact Ellipsoid-to-Segment Distance Checking in 4D Lattice:**
