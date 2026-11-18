@@ -87,6 +87,48 @@ def test_build_arena_3d_figure() -> None:
     assert "Drone" in trace_names
     assert "Velocity Vector" in trace_names
 
+    # Verify actual volumetric mesh traces (not just markers/lines)
+    mesh_traces = [t for t in fig.data if isinstance(t, go.Mesh3d)]
+    mesh_names = [t.name for t in mesh_traces if t.name]
+    assert len(mesh_traces) >= 5, (
+        f"Expected at least 5 volumetric mesh traces, got {len(mesh_traces)}"
+    )
+    assert "Fuselage" in mesh_names
+    assert "Front Arms" in mesh_names
+    assert "Rear Arms" in mesh_names
+    assert "Rotor Assemblies" in mesh_names
+    assert "Front Propellers" in mesh_names
+    assert "Rear Propellers" in mesh_names
+
+    # Inspect each mesh trace for finite vertices, valid indices, and nonzero bounding extent
+    for mt in mesh_traces:
+        vx = np.asarray(mt.x, dtype=np.float64)
+        vy = np.asarray(mt.y, dtype=np.float64)
+        vz = np.asarray(mt.z, dtype=np.float64)
+        ti = np.asarray(mt.i, dtype=np.int32)
+        tj = np.asarray(mt.j, dtype=np.int32)
+        tk = np.asarray(mt.k, dtype=np.int32)
+
+        n_verts = len(vx)
+        assert n_verts > 0, f"Mesh {mt.name} has no vertices"
+        assert len(vy) == n_verts and len(vz) == n_verts
+        assert np.all(np.isfinite(vx)) and np.all(np.isfinite(vy)) and np.all(np.isfinite(vz))
+
+        n_triangles = len(ti)
+        assert n_triangles > 0, f"Mesh {mt.name} has no triangles"
+        assert len(tj) == n_triangles and len(tk) == n_triangles
+
+        # All triangle vertex indices must point to valid vertex indices
+        assert np.all((ti >= 0) & (ti < n_verts))
+        assert np.all((tj >= 0) & (tj < n_verts))
+        assert np.all((tk >= 0) & (tk < n_verts))
+
+        # Check nonzero physical bounding dimensions
+        span_x = float(np.max(vx) - np.min(vx))
+        span_y = float(np.max(vy) - np.min(vy))
+        span_z = float(np.max(vz) - np.min(vz))
+        assert span_x > 0.0 or span_y > 0.0 or span_z > 0.0
+
 
 def test_run_drone_simulation_episode() -> None:
     """Verify deterministic episode execution and trajectory data structure."""
@@ -288,6 +330,112 @@ def test_quadrotor_geometry_pitch_and_roll_transformations() -> None:
     # Rotors distance from center is preserved
     for r in geom_roll["rotors"]:
         assert np.all(np.isfinite(r))
+
+
+def test_quadrotor_volumetric_mesh_geometry_properties() -> None:
+    """Verify all volumetric mesh components have thickness, finite vertices, valid indices, and nonzero volume."""
+    center = np.array([12.0, 14.0, 8.0])
+    # 45 deg roll, 30 deg pitch, 60 deg yaw
+    roll, pitch, yaw = math.radians(45.0), math.radians(30.0), math.radians(60.0)
+    cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+    cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+    cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+    q = np.array(
+        [
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        ]
+    )
+    geom = compute_quadrotor_3d_geometry(center_pos=center, quaternion=q, arm_length=0.25)
+
+    mesh_keys = [
+        "mesh_fuselage",
+        "mesh_arms",
+        "mesh_front_arms",
+        "mesh_rear_arms",
+        "mesh_motors_front",
+        "mesh_motors_rear",
+        "mesh_rotor_hubs",
+        "mesh_props_front",
+        "mesh_props_rear",
+    ]
+
+    for key in mesh_keys:
+        assert key in geom, f"Missing geometry component {key}"
+        m = geom[key]
+        x, y, z = m["x"], m["y"], m["z"]
+        i, j, k = m["i"], m["j"], m["k"]
+
+        # Finite vertices
+        assert len(x) > 0 and len(y) == len(x) and len(z) == len(x)
+        assert np.all(np.isfinite(x)) and np.all(np.isfinite(y)) and np.all(np.isfinite(z))
+
+        # Valid triangle index bounds
+        assert len(i) > 0 and len(j) == len(i) and len(k) == len(i)
+        assert np.all((i >= 0) & (i < len(x)))
+        assert np.all((j >= 0) & (j < len(x)))
+        assert np.all((k >= 0) & (k < len(x)))
+
+        # Nonzero volumetric spatial dimensions (not a flat 2D or degenerate 1D line)
+        dx = float(np.max(x) - np.min(x))
+        dy = float(np.max(y) - np.min(y))
+        dz = float(np.max(z) - np.min(z))
+        assert dx > 0.01, f"{key} has degenerate X dimension: {dx}"
+        assert dy > 0.01, f"{key} has degenerate Y dimension: {dy}"
+        assert dz > 0.005, f"{key} has degenerate thickness Z dimension: {dz}"
+
+
+def test_build_arena_lidar_dimension_validation_and_nan_filtering() -> None:
+    """Verify that build_arena_3d_figure strictly validates LiDAR dimensions and excludes NaNs/invalids."""
+    pos = (10.0, 10.0, 5.0)
+
+    # 1. Dimension mismatch between rays and ranges must raise ValueError (no silent zip truncation)
+    mismatched_rays = np.zeros((8, 3), dtype=np.float64)
+    mismatched_ranges = [5.0] * 16
+    with pytest.raises(
+        ValueError, match="lidar_rays length \\(8\\) does not match lidar_ranges length \\(16\\)"
+    ):
+        build_arena_3d_figure(
+            current_pos=pos,
+            lidar_rays=mismatched_rays,
+            lidar_ranges=mismatched_ranges,
+            show_lidar=True,
+        )
+
+    # 2. Invalid rays shape (N, 2) must raise ValueError
+    bad_shape_rays = np.zeros((16, 2), dtype=np.float64)
+    with pytest.raises(ValueError, match="lidar_rays must have shape \\(N, 3\\)"):
+        build_arena_3d_figure(
+            current_pos=pos,
+            lidar_rays=bad_shape_rays,
+            lidar_ranges=[5.0] * 16,
+            show_lidar=True,
+        )
+
+    # 3. Canonical invalid/NaN/non-finite returns are excluded from contact points
+    rays = np.array(
+        [
+            [1.0, 0.0, 0.0],  # Valid return at 5m
+            [0.0, 1.0, 0.0],  # NaN return (blind zone / out of range)
+            [-1.0, 0.0, 0.0],  # Inf return
+            [0.0, -1.0, 0.0],  # Negative return
+        ]
+    )
+    ranges = [5.0, np.nan, np.inf, -1.0]
+    fig = build_arena_3d_figure(
+        current_pos=pos,
+        lidar_rays=rays,
+        lidar_ranges=ranges,
+        show_lidar=True,
+    )
+    contact_trace = [t for t in fig.data if t.name == "LiDAR Contact Points"][0]
+    # Only the 1 valid beam (at 5m) should produce a contact point
+    assert len(contact_trace.x) == 1
+    assert math.isclose(contact_trace.x[0], 15.0)  # pos[0] + 5.0
+    assert math.isclose(contact_trace.y[0], 10.0)
+    assert math.isclose(contact_trace.z[0], 5.0)
 
 
 def test_quadrotor_geometry_finite_and_figure_traces() -> None:

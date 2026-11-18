@@ -218,10 +218,97 @@ def _blade_mesh_body(
 
     verts = np.vstack([upper, lower])
     # 16 vertices total: 0..7 upper, 8..15 lower
-    # Top faces & bottom faces
-    i_list = [0, 0, 4, 4, 8, 8, 12, 12]
-    j_list = [1, 2, 5, 6, 10, 9, 14, 13]
-    k_list = [2, 3, 6, 7, 9, 11, 13, 15]
+    # Top and bottom faces for blade 1 (0..3 & 8..11) and blade 2 (4..7 & 12..15)
+    i_list = [
+        # Top faces
+        0,
+        0,
+        4,
+        4,
+        # Bottom faces
+        8,
+        8,
+        12,
+        12,
+        # Blade 1 side faces: (0,1), (1,2), (2,3), (3,0)
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
+        3,
+        3,
+        # Blade 2 side faces: (4,5), (5,6), (6,7), (7,4)
+        4,
+        4,
+        5,
+        5,
+        6,
+        6,
+        7,
+        7,
+    ]
+    j_list = [
+        # Top faces
+        1,
+        2,
+        5,
+        6,
+        # Bottom faces
+        10,
+        9,
+        14,
+        13,
+        # Blade 1 sides
+        1,
+        9,
+        2,
+        10,
+        3,
+        11,
+        0,
+        8,
+        # Blade 2 sides
+        5,
+        13,
+        6,
+        14,
+        7,
+        15,
+        4,
+        12,
+    ]
+    k_list = [
+        # Top faces
+        2,
+        3,
+        6,
+        7,
+        # Bottom faces
+        9,
+        11,
+        13,
+        15,
+        # Blade 1 sides
+        9,
+        8,
+        10,
+        9,
+        11,
+        10,
+        8,
+        11,
+        # Blade 2 sides
+        13,
+        12,
+        14,
+        13,
+        15,
+        14,
+        12,
+        15,
+    ]
 
     return (
         verts[:, 0],
@@ -1141,10 +1228,23 @@ def build_arena_3d_figure(
     # 7. 16-Ray LiDAR Beams with Distance-Based Color-Coding and Contact Points
     if show_lidar and current_pos is not None and lidar_ranges is not None:
         c_pos = np.asarray(current_pos, dtype=np.float64)
+        if c_pos.shape != (3,) or not np.all(np.isfinite(c_pos)):
+            raise ValueError(f"current_pos must be a finite 3D vector, got {current_pos}")
+
+        ranges_arr = np.asarray(lidar_ranges, dtype=np.float64)
+        if ranges_arr.ndim != 1:
+            raise ValueError(f"lidar_ranges must be 1D, got shape {ranges_arr.shape}")
+
         if lidar_rays is not None:
             active_rays = np.asarray(lidar_rays, dtype=np.float64)
+            if active_rays.ndim != 2 or active_rays.shape[1] != 3:
+                raise ValueError(f"lidar_rays must have shape (N, 3), got {active_rays.shape}")
+            if len(active_rays) != len(ranges_arr):
+                raise ValueError(
+                    f"lidar_rays length ({len(active_rays)}) does not match lidar_ranges length ({len(ranges_arr)})"
+                )
         else:
-            n_rays = len(lidar_ranges)
+            n_rays = len(ranges_arr)
             angles = np.linspace(0, 2 * np.pi, n_rays, endpoint=False)
             active_rays = np.column_stack([np.cos(angles), np.sin(angles), np.zeros_like(angles)])
 
@@ -1160,7 +1260,17 @@ def build_arena_3d_figure(
         hit_y: List[float] = []
         hit_z: List[float] = []
 
-        for ray_dir, dist in zip(active_rays, lidar_ranges):
+        # Validate array dimensions before rendering; do not use zip() to silently truncate
+        num_beams = len(ranges_arr)
+        for idx in range(num_beams):
+            dist = float(ranges_arr[idx])
+            # Exclude invalid and non-finite returns
+            if not math.isfinite(dist) or dist <= 0.0:
+                continue
+            ray_dir = active_rays[idx]
+            if not np.all(np.isfinite(ray_dir)):
+                continue
+
             end_pt = c_pos + ray_dir * dist
             lx.extend([c_pos[0], end_pt[0], None])
             ly.extend([c_pos[1], end_pt[1], None])
