@@ -206,12 +206,13 @@ class PerceptionStepRecord:
     timestamp: float
     drone_true_position: np.ndarray
     drone_est_position: np.ndarray
-    true_obstacles: List[Dict[str, Any]]        # True IDs, positions, velocities
-    raw_detections: List[ObstacleDetection3D]   # Instantaneous detections
+    true_obstacles: List[Dict[str, Any]]  # True IDs, positions, velocities
+    raw_detections: List[ObstacleDetection3D]  # Instantaneous detections
     tracked_obstacles: List[TrackedObstacle3D]  # Active filter tracks with P
     min_physical_clearance: float
     is_collision: bool
     mission_state: str
+
 
 class PerceptionEvaluationHarness:
     """Offline evaluator computing scientific perception and tracking metrics."""
@@ -274,7 +275,7 @@ All quantitative targets listed below are **PROVISIONAL ENGINEERING GOALS** to b
 | :--- | :--- | :--- | :--- |
 | **Phase V.0** | Architecture & Specification | Complete specifications, 8 ADRs, validation plan, zero code regression | `COMPLETE` |
 | **Phase V.1** | Simulated Sensor Foundation | Ray casting throughput $\ge 50\text{ Hz}$ benchmark target ($< 20\text{ ms}$ per sweep) for 20 Hz simulation; range noise matches target $\sigma \pm 10\%$; dropout model verified | `LOCALLY TESTED` (`BENCHMARK TARGET MET — LOCAL ENVIRONMENT`) |
-| **Phase V.1.1**| Sensor Contract Hardening | SO(3) rotation validation ($\|RR^T - I\|_2 \le 10^{-5}, \|\det(R)-1\| \le 10^{-4}$); canonical NaN invalid measurement contract; geometric point-to-range consistency ($|\|\mathbf{p}\|-r| \le 10^{-3}\text{ m}$); strict config validation; obstacle/bounds input enforcement | `IMPLEMENTED` (`LOCALLY TESTED`) |
+| **Phase V.1.1**| Sensor Contract Hardening | SO(3) rotation validation ($\|RR^T - I\|_F \le 10^{-5}, |\det(R)-1| \le 10^{-4}$); positive exit ray-sphere intersection ($t_{\text{exit}} = -b+\sqrt{\Delta}$); canonical NaN invalid measurement contract; geometric point-to-range consistency ($|\|\mathbf{p}\|-r| \le 10^{-3}\text{ m}$); strict config/bounds/obstacle validation | `IMPLEMENTED` (`LOCALLY TESTED`) |
 | **Phase V.2** | 3D Obstacle Detection | Detection Precision $\ge 95\%$; Recall $\ge 90\%$; Centroid RMSE $< 0.15\text{ m}$ on isolated obstacles | `NOT IMPLEMENTED` (`PROVISIONAL TARGET`) |
 | **Phase V.3** | Dynamic Obstacle Tracking | MOTA $\ge 0.85$; Velocity RMSE $< 0.25\text{ m/s}$; Zero ID switches on linear crossing; NEES within $95\%$ bounds | `NOT IMPLEMENTED` (`PROVISIONAL TARGET`) |
 | **Phase V.4** | Sensor Fusion & Extrinsics | Projected point cloud spatial error $< 0.05\text{ m}$ under $30^\circ/\text{s}$ vehicle yaw rate | `NOT IMPLEMENTED` (`PROVISIONAL TARGET`) |

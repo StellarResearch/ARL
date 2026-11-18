@@ -24,6 +24,20 @@ The `drone-6dof` environment simulates the rigid-body flight dynamics of a quadr
 | **Observation Dimensions** | 29 dimensions | 36 dimensions (includes quat, angular velocity) |
 | **Collision Detection** | Point sphere / box check | Continuous swept-sphere & swept-box collision checking |
 | **Computational Cost** | Ultra-fast (~100,000 steps/sec) | Physics-rich (~2,000–5,000 steps/sec) |
+| **Algorithms Supported** | PPO & SAC | PPO & SAC |
+
+### 2.1 Physics Features: Default-Enabled vs. Optional
+
+To maintain full backward compatibility and predictable training dynamics, advanced aeromechanical features are optional:
+
+| Feature | Parameter | Default Value | Description |
+| :--- | :--- | :--- | :--- |
+| **RK4 Substeps** | `substeps: int` | `5` (Default) | Internal numerical integration stages per environment step ($\Delta t_{\text{sub}} = 0.01\text{ s}$). Must be a positive integer $\ge 1$. |
+| **First-Order Motor Lag** | `enable_motor_dynamics: bool` | `False` (Optional) | When `True`, couples continuous actuator response with time constant `motor_time_constant` ($\tau = 0.03\text{ s}$, finite positive float). When `False`, commanded thrusts apply instantaneously at substeps. |
+| **Cheeseman-Bennett Ground Effect** | `enable_ground_effect: bool` | `False` (Optional) | When `True`, increases effective rotor thrust when within proximity of ground plane ($z < 2L$). |
+| **Prevailing Wind Vector** | `wind_vector: Sequence[float]` | `[0.0, 0.0, 0.0]` (Optional) | Constant aerodynamic flow velocity $[v_{w,x}, v_{w,y}, v_{w,z}]$ in world frame. |
+| **Quadratic Drag** | `quadratic_drag_coeff: float` | `0.0` (Optional) | Nonlinear aerodynamic drag proportional to $\|v\| v$. |
+| **Input Validation** | Strict Contract | Enforced | Rejects non-finite (NaN, $\pm\infty$) actions and direct motor thrusts with `ValueError`. Preserves saturation clipping for finite out-of-bound inputs. |
 
 ---
 
@@ -177,6 +191,10 @@ The environment supports configurable LiDAR beam reference frames:
 * **World-Fixed (`body_frame_lidar=False`, default)**: Rays are distributed on the unit sphere in the world inertial frame.
 * **Body-Fixed (`body_frame_lidar=True`)**: Rays rotate with the quadrotor attitude matrix $R(\mathbf{q}) \mathbf{d}_{\text{ray}}$, accurately modeling an onboard gimbal-less sensor pod.
 * Both modes report active reference frame semantics in step info (`info["lidar_reference_frame"]`).
+
+> [!NOTE]
+> **Distinction from Phase V Modular Perception**:
+> The 16-ray LiDAR readings in the observation vector are a legacy range feature designed specifically for direct vector-based RL policies (PPO/SAC). In contrast, the modular Phase V perception foundation (`adaptive_rl.perception.sensors.SimulatedLiDAR3D`) produces high-density, timestamped, immutable `PointCloud3D` observations adhering to ADR-002, ADR-003, and ADR-006 with arbitrary ray configurations (e.g., 32 azimuth × 8 elevation beams), rigorous SO(3) extrinsics validation, and zero simulation ground-truth leakage.
 
 ---
 

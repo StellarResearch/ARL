@@ -71,18 +71,44 @@ AdaptiveRL is an educational reinforcement-learning project in which a PPO agent
 
 ### 3-DOF Kinematic vs. 6-DOF Rigid-Body Simulation Comparison
 
-| Property | 3-DOF | 6-DOF |
+| Property | 3-DOF Kinematic | 6-DOF Rigid-Body |
 |---|---|---|
-| Observation dimensions | 29 | 36 |
-| Action dimensions | 3 | 4 |
-| Control | Acceleration | Motor thrust |
-| Attitude | Not modeled | Quaternion |
-| Angular velocity | Not modeled | 3-axis |
-- **Proper 3D Quadrotor Geometry & Visualization**:
-  - Full geometric airframe with central fuselage, 4 arms in X configuration, 4 rotor hub assemblies, circular propeller blade paths, and labeled rotor identifiers (`R1 (FR)`, `R2 (FL)`, `R3 (RL)`, `R4 (RR)`).
+| Observation dimensions | 29 dimensions | 36 dimensions (includes quat, angular rates) |
+| Action dimensions | 3 (accelerations $[-1, 1]^3$) | 4 (motor commands $[-1, 1]^4 \to [0, F_{\max}]^4$) |
+| RL Algorithms | PPO & SAC | PPO & SAC |
+| Attitude | Not modeled (upright point mass) | Unit quaternion $\mathbf{q} \in \mathbb{R}^4, \|\mathbf{q}\|=1.0$ |
+| Angular velocity | Not modeled | 3-axis body angular velocity $\boldsymbol{\omega} \in \mathbb{R}^3$ |
+| Integration | Semi-implicit Euler ($\Delta t = 0.05\text{ s}$) | Runge-Kutta 4th-order (5 substeps, $\Delta t_{\text{sub}} = 0.01\text{ s}$) |
+| Motor Dynamics | Not modeled | Optional ($\tau_{\text{motor}} = 0.03\text{ s}$, default disabled) |
+| Ground Effect | Not modeled | Optional (Cheeseman-Bennett, default disabled) |
+| Collision Checking | Point-sphere / box check | Continuous swept-sphere & swept-box checking |
+| Legacy LiDAR Sensing | 16-ray spherical rangefinder | 16-ray spherical rangefinder (world/body-frame) |
+| Input Validation | Finite bounds | Strict (rejects NaN/Inf actions & motor thrusts) |
+
+- **Real Volumetric 3D Quadrotor Geometry & Visualization**:
+  - Full volumetric mesh geometry implemented with Plotly `go.Mesh3d` and NumPy (replacing wireframe-only lines):
+    - Central aerodynamic fuselage pod with thickness and chamfered contours.
+    - Four solid cylindrical structural arms in X configuration.
+    - Four cylindrical motor mountings and rotor hubs.
+    - Aerodynamic propeller blades with visible 3D volume, thickness, and counter-rotating dynamics.
+    - Port/starboard landing gear skids and angled struts.
+    - Forward optical sensor gimbal and rear telemetry antennas.
   - Exact physical dimensions synchronized directly with physics dynamics: `arm_span = 0.4 m` ($2 \times \text{arm\_length}$), `rotor_radius = 0.09 m`, and diagonal offset $d = 0.2 / \sqrt{2} \approx 0.1414\text{ m}$.
   - Distinct front (red) and rear (blue) arm/rotor visual identification plus forward heading nosecone pointer (+X_B direction).
-  - Exact body-to-world rigid-body coordinate transformation: $\mathbf{p}_W = \mathbf{p}_{\text{drone}} + R(\mathbf{q}) \mathbf{p}_B$.
+  - Exact body-to-world rigid-body coordinate transformation: $\mathbf{p}_W = \mathbf{p}_{\text{drone}} + R(\mathbf{q}) \mathbf{p}_B$ preserved across all roll, pitch, and yaw attitudes.
+
+### Modular Perception Architecture (Phase V Status)
+
+- **Legacy 16-Ray LiDAR vs. Modular Phase V**:
+  - **Legacy 16-Ray LiDAR**: Embedded directly within 3-DOF (29-D) and 6-DOF (36-D) Gym observation vectors for vector-based RL training (PPO & SAC).
+  - **Modular Phase V Perception**: Standalone sensor subsystem (`adaptive_rl.perception.sensors`) producing immutable, strongly typed `PointCloud3D` observations with zero simulation ground-truth leakage.
+- **Perception Implementation Status**:
+  - **Phase V.1 Simulated 3D LiDAR**: `IMPLEMENTED`. Vectorized ray-sphere and ray-box intersection, Gaussian range noise, statistical dropout, and caller-managed timing.
+  - **Phase V.1.1 Sensor Contract Hardening**: `IMPLEMENTED` & locally verified. Orthonormal SO(3) validation using explicit Frobenius norm ($\|R R^T - I\|_F \le 10^{-5}$), strictly positive exit intersections for origins inside or on the boundary of spherical obstacles ($t_{\text{exit}} = -b + \sqrt{\Delta}$), PointCloud3D validation, and non-finite input guards.
+  - **Phase V.2 3D Obstacle Detection**: `NOT IMPLEMENTED` (Planned).
+  - **Phase V.3 Dynamic Obstacle Tracking**: `NOT IMPLEMENTED` (Planned).
+  - **Phase V.4 Multi-Sensor Fusion**: `NOT IMPLEMENTED` (Planned).
+  - **Phase V.5 Perception-Aware Navigation & Planner Integration**: `NOT IMPLEMENTED` (Planned). Current motion planners and RL policies do not integrate with detected perception tracks.
 - **Reinforcement Learning (PPO & SAC)**:
   - On-policy PPO and off-policy SAC using Stable-Baselines3.
   - Unified configuration pipelines (`configs/ppo_drone_6dof.yaml`, `configs/sac_drone_6dof.yaml`, `configs/drone_6dof.yaml`).

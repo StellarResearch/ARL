@@ -117,3 +117,19 @@ src/adaptive_rl/
 - **Limitations & Feasibility Paradigms**:
   - **Dynamic Feasibility (PPO & Random Policy)**: Evaluated through closed-loop physics simulation in `DroneNavigation3DEnv`. The drone must generate continuous acceleration control commands to navigate under inertia, velocity drag, and actuation limits. Success requires dynamically executing the trajectory without colliding.
   - **Geometric Feasibility (A* Planner)**: Evaluated as open-loop 3D spatial path planning. Success denotes finding an obstacle-free, boundary-clearing geometric path from start to goal on the discretized spatial lattice. The path is not executed through drone attitude dynamics or closed-loop tracking control.
+
+### 5. Perception Subsystem & Phase V Status (`adaptive_rl.perception`)
+
+The perception subsystem models exteroceptive sensing, coordinate transformations, and sensor observations:
+
+* **Distinction Between Sensing Paradigms**:
+  - **Legacy 16-Ray LiDAR**: Embedded directly within 3-DOF (29-D) and 6-DOF (36-D) Gym observation vectors for vector-based RL training (PPO & SAC).
+  - **Modular Phase V Perception**: Autonomous sensor architecture producing immutable, timestamped 3D point clouds (`PointCloud3D`) adhering to ADR-002, ADR-003, and ADR-006 with zero simulation ground-truth leakage.
+
+* **Implementation Status**:
+  - **Phase V.1 (Simulated 3D LiDAR & PointCloud3D Foundation)**: `IMPLEMENTED`. Vectorized ray-sphere and ray-box intersection, Gaussian noise, statistical dropout, and caller-managed timing.
+  - **Phase V.1.1 (Sensor Contract Hardening)**: `IMPLEMENTED` (Verified locally). Strict SO(3) Frobenius norm validation, positive exit intersections for origins inside obstacles, and input finiteness enforcement.
+  - **Phase V.2 (3D Obstacle Detection & Clustering)**: `NOT IMPLEMENTED` (Planned).
+  - **Phase V.3 (Dynamic Obstacle Tracking & Kalman Filtering)**: `NOT IMPLEMENTED` (Planned).
+  - **Phase V.4 (Multi-Sensor Fusion & Calibration)**: `NOT IMPLEMENTED` (Planned).
+  - **Phase V.5 (Perception-Aware Planner Integration)**: `NOT IMPLEMENTED` (Planned). Navigation planners currently operate on direct ground-truth obstacles, not detected perception tracks.
