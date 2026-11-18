@@ -25,33 +25,43 @@ def validate_so3_rotation(
     Adheres to ADR-003 and Phase V.1.1 hardening standards:
     - Shape must be exactly (3, 3).
     - All elements must be finite (no NaN, no Inf).
-    - Orthonormality constraint: ||R @ R^T - I_3||_2 <= tolerance_ortho.
+    - Orthonormality constraint: ||R @ R^T - I_3||_F <= tolerance_ortho (Frobenius norm).
     - Proper rotation constraint: |det(R) - 1.0| <= tolerance_det (rejects reflections where det=-1,
       scaling, shears, or singular matrices).
 
     Args:
         rotation: 3x3 array-like rotation matrix.
-        tolerance_ortho: Maximum permissible Frobenius deviation from orthogonality.
+        tolerance_ortho: Maximum permissible Frobenius matrix norm deviation from orthogonality.
         tolerance_det: Maximum permissible deviation of determinant from +1.0.
 
     Returns:
         np.ndarray: Defensive float64 copy of the validated (3, 3) rotation matrix.
 
     Raises:
-        ValueError: If shape is not (3, 3), values are non-finite, matrix is non-orthonormal,
-                    or determinant is not +1.0.
+        ValueError: If tolerances are non-finite, non-positive, or boolean; or if shape is not (3, 3),
+                    values are non-finite, matrix Frobenius norm ||R @ R^T - I_3||_F > tolerance_ortho,
+                    or determinant is not +1.0 within tolerance_det.
     """
+    for name, tol in [("tolerance_ortho", tolerance_ortho), ("tolerance_det", tolerance_det)]:
+        if (
+            isinstance(tol, bool)
+            or not isinstance(tol, (int, float))
+            or not math.isfinite(tol)
+            or tol <= 0.0
+        ):
+            raise ValueError(f"{name} must be finite and strictly positive, got {tol!r}")
+
     rot = np.array(rotation, dtype=np.float64, copy=True)
     if rot.shape != (3, 3):
         raise ValueError(f"rotation matrix must have shape (3, 3), got {rot.shape}")
     if not np.all(np.isfinite(rot)):
         raise ValueError(f"rotation matrix must contain finite values, got {rot}")
 
-    # Enforce SO(3) orthonormality: ||R @ R.T - I_3|| <= tolerance_ortho
-    identity_err = float(np.linalg.norm(rot @ rot.T - np.eye(3)))
+    # Enforce SO(3) orthonormality using explicit Frobenius norm: ||R @ R.T - I_3||_F <= tolerance_ortho
+    identity_err = float(np.linalg.norm(rot @ rot.T - np.eye(3), ord="fro"))
     if identity_err > tolerance_ortho:
         raise ValueError(
-            f"rotation matrix must be orthonormal, ||R*R^T - I|| = {identity_err:.6e} > {tolerance_ortho:.1e}"
+            f"rotation matrix must be orthonormal, ||R*R^T - I||_F = {identity_err:.6e} > {tolerance_ortho:.1e}"
         )
 
     det = float(np.linalg.det(rot))
@@ -111,28 +121,36 @@ class SensorExtrinsics:
         pt = np.asarray(point_s, dtype=np.float64)
         if pt.shape != (3,):
             raise ValueError(f"point_s must have shape (3,), got {pt.shape}")
-        return self.translation_b + self.rotation_s_to_b @ pt
+        if not np.all(np.isfinite(pt)):
+            raise ValueError(f"point_s must contain finite values, got {pt}")
+        return np.asarray(self.translation_b + self.rotation_s_to_b @ pt, dtype=np.float64)
 
     def transform_vector_to_body(self, vector_s: np.ndarray | Sequence[float]) -> np.ndarray:
         """Transform a 3D direction vector from sensor frame to vehicle body frame: v_B = R_S^B * v_S."""
         vec = np.asarray(vector_s, dtype=np.float64)
         if vec.shape != (3,):
             raise ValueError(f"vector_s must have shape (3,), got {vec.shape}")
-        return self.rotation_s_to_b @ vec
+        if not np.all(np.isfinite(vec)):
+            raise ValueError(f"vector_s must contain finite values, got {vec}")
+        return np.asarray(self.rotation_s_to_b @ vec, dtype=np.float64)
 
     def transform_point_to_sensor(self, point_b: np.ndarray | Sequence[float]) -> np.ndarray:
         """Transform a 3D point from vehicle body frame to sensor frame: p_S = (R_S^B)^T * (p_B - t_B)."""
         pt = np.asarray(point_b, dtype=np.float64)
         if pt.shape != (3,):
             raise ValueError(f"point_b must have shape (3,), got {pt.shape}")
-        return self.rotation_s_to_b.T @ (pt - self.translation_b)
+        if not np.all(np.isfinite(pt)):
+            raise ValueError(f"point_b must contain finite values, got {pt}")
+        return np.asarray(self.rotation_s_to_b.T @ (pt - self.translation_b), dtype=np.float64)
 
     def transform_vector_to_sensor(self, vector_b: np.ndarray | Sequence[float]) -> np.ndarray:
         """Transform a 3D direction vector from body frame to sensor frame: v_S = (R_S^B)^T * v_B."""
         vec = np.asarray(vector_b, dtype=np.float64)
         if vec.shape != (3,):
             raise ValueError(f"vector_b must have shape (3,), got {vec.shape}")
-        return self.rotation_s_to_b.T @ vec
+        if not np.all(np.isfinite(vec)):
+            raise ValueError(f"vector_b must contain finite values, got {vec}")
+        return np.asarray(self.rotation_s_to_b.T @ vec, dtype=np.float64)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize extrinsics to dictionary."""
@@ -327,6 +345,15 @@ class PointCloud3D:
             or timestamp < 0.0
         ):
             raise ValueError(f"timestamp must be non-negative and finite, got {timestamp!r}")
+        if (
+            isinstance(tolerance_range_m, bool)
+            or not isinstance(tolerance_range_m, (int, float))
+            or not math.isfinite(tolerance_range_m)
+            or tolerance_range_m <= 0.0
+        ):
+            raise ValueError(
+                f"tolerance_range_m must be strictly positive and finite, got {tolerance_range_m!r}"
+            )
         if frame_id not in ("sensor", "body", "world"):
             raise ValueError(f"frame_id must be one of 'sensor', 'body', 'world', got '{frame_id}'")
         if not isinstance(sensor_id, str) or not sensor_id.strip():
@@ -348,7 +375,12 @@ class PointCloud3D:
                 f"ranges shape {rngs.shape} does not match points length ({num_points},)"
             )
 
-        mask = np.array(valid_mask, dtype=bool, copy=True)
+        mask_raw = np.asarray(valid_mask)
+        if mask_raw.dtype != bool:
+            raise ValueError(
+                f"valid_mask must contain strictly boolean values, got dtype {mask_raw.dtype}"
+            )
+        mask = np.array(mask_raw, dtype=bool, copy=True)
         if mask.shape != (num_points,):
             raise ValueError(
                 f"valid_mask shape {mask.shape} does not match points length ({num_points},)"
@@ -475,12 +507,12 @@ class PointCloud3D:
     @property
     def valid_points(self) -> np.ndarray:
         """Extract (M, 3) array of valid points."""
-        return self.points[self.valid_mask]
+        return np.asarray(self.points[self.valid_mask], dtype=np.float64)
 
     @property
     def valid_ranges(self) -> np.ndarray:
         """Extract (M,) array of valid ranges."""
-        return self.ranges[self.valid_mask]
+        return np.asarray(self.ranges[self.valid_mask], dtype=np.float32)
 
     def to_body_frame(self) -> PointCloud3D:
         """Transform point cloud from sensor frame to vehicle body frame (FLU).
@@ -538,7 +570,15 @@ class PointCloud3D:
             raise ValueError(f"drone_pos must be finite, got {pos_w}")
 
         rot_arr = np.asarray(drone_orientation, dtype=np.float64)
+        if not np.all(np.isfinite(rot_arr)):
+            raise ValueError(f"drone_orientation must contain finite values, got {rot_arr}")
+
         if rot_arr.shape == (4,):
+            q_norm = float(np.linalg.norm(rot_arr))
+            if q_norm < 1e-12:
+                raise ValueError(
+                    f"drone_orientation quaternion must have non-zero norm, got {rot_arr}"
+                )
             r_b_to_w = quaternion_to_rotation_matrix(rot_arr)
             r_b_to_w = validate_so3_rotation(r_b_to_w)
         elif rot_arr.shape == (3, 3):

@@ -195,7 +195,16 @@ class SimulatedLiDAR3D(BaseSensor3D):
             raise ValueError(f"drone_pos must be a finite 3D vector, got {drone_pos}")
 
         rot_arr = np.asarray(drone_orientation, dtype=np.float64)
+        if not np.all(np.isfinite(rot_arr)):
+            raise ValueError(
+                f"drone_orientation must contain finite values, got {drone_orientation}"
+            )
         if rot_arr.shape == (4,):
+            q_norm = float(np.linalg.norm(rot_arr))
+            if q_norm < 1e-12:
+                raise ValueError(
+                    f"drone_orientation quaternion must have non-zero norm, got {rot_arr}"
+                )
             r_b_to_w = quaternion_to_rotation_matrix(rot_arr)
             r_b_to_w = validate_so3_rotation(r_b_to_w)
         elif rot_arr.shape == (3, 3):
@@ -244,20 +253,22 @@ class SimulatedLiDAR3D(BaseSensor3D):
                 # Initialize distances matrix
                 dist_mat = np.full((num_rays, num_obs), np.inf, dtype=np.float64)
 
-                # Condition 1: Origin inside sphere (c_const <= 0)
-                inside_mask = c_const <= 0.0
-                if np.any(inside_mask):
-                    dist_mat[:, inside_mask] = 0.0
+                # Shared square-root of positive discriminant
+                sqrt_disc = np.sqrt(np.maximum(0.0, disc))
 
-                # Condition 2: Origin outside, ray points toward sphere, discriminant >= 0
-                outside_valid = (~inside_mask)[np.newaxis, :] & (b_mat <= 0.0) & (disc >= 0.0)
-                if np.any(outside_valid):
-                    # Distance to nearest entry intersection: t = -b - sqrt(disc)
-                    sqrt_disc = np.sqrt(np.maximum(0.0, disc))
-                    t_entry = -b_mat - sqrt_disc
-                    # Filter positive distances
-                    valid_t = outside_valid & (t_entry >= 0.0)
-                    dist_mat[valid_t] = t_entry[valid_t]
+                # Condition 1: Origin inside or on boundary of sphere (c_const <= 0)
+                # Nearest positive exit intersection: t_exit = -b + sqrt(Delta)
+                inside_mask_2d = (c_const <= 0.0)[np.newaxis, :]
+                t_exit = -b_mat + sqrt_disc
+                valid_inside = inside_mask_2d & (t_exit > 1e-9)
+                dist_mat = np.where(valid_inside, t_exit, dist_mat)
+
+                # Condition 2: Origin outside sphere (c_const > 0), ray points toward sphere (b <= 0), Delta >= 0
+                # Nearest positive entry intersection: t_entry = -b - sqrt(Delta)
+                outside_mask_2d = (c_const > 0.0)[np.newaxis, :]
+                t_entry = -b_mat - sqrt_disc
+                valid_outside = outside_mask_2d & (disc >= 0.0) & (b_mat <= 0.0) & (t_entry > 1e-9)
+                dist_mat = np.where(valid_outside, t_entry, dist_mat)
 
                 t_spheres = np.min(dist_mat, axis=1)
 
@@ -353,7 +364,7 @@ class SimulatedLiDAR3D(BaseSensor3D):
                 )
 
                 # Synthetic echo-strength proxy (inverse-square distance falloff normalized to (0, 1])
-                # Note: this is a normalized geometric proxy, not a calibrated material reflectivity model.
+                # Note: this is an uncalibrated normalized geometric proxy in [0.0, 1.0], not a calibrated radiometric reflectivity model.
                 norm_r = final_ranges / max_r
                 intensities[final_valid_indices] = (1.0 / (1.0 + norm_r * norm_r)).astype(
                     np.float32

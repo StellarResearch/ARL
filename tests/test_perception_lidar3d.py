@@ -104,6 +104,13 @@ def test_validate_so3_rotation_errors() -> None:
     with pytest.raises(ValueError, match="must be orthonormal"):
         validate_so3_rotation(np.zeros((3, 3)))
 
+    # Invalid tolerances: boolean, non-finite, zero, or negative
+    for bad_tol in [True, False, 0.0, -1e-5, np.nan, np.inf, -np.inf]:
+        with pytest.raises(ValueError, match="must be finite and strictly positive"):
+            validate_so3_rotation(np.eye(3), tolerance_ortho=bad_tol)
+        with pytest.raises(ValueError, match="must be finite and strictly positive"):
+            validate_so3_rotation(np.eye(3), tolerance_det=bad_tol)
+
 
 # ============================================================================
 # 2. SensorExtrinsics Tests
@@ -156,6 +163,17 @@ def test_sensor_extrinsics_validation_errors() -> None:
     non_ortho = np.eye(3) * 2.0
     with pytest.raises(ValueError, match="must be orthonormal"):
         SensorExtrinsics(np.zeros(3), non_ortho)
+
+    # Transformation input validation
+    ext = SensorExtrinsics.default_identity()
+    with pytest.raises(ValueError, match="point_s must contain finite values"):
+        ext.transform_point_to_body([1.0, np.nan, 0.0])
+    with pytest.raises(ValueError, match="vector_s must contain finite values"):
+        ext.transform_vector_to_body([np.inf, 0.0, 0.0])
+    with pytest.raises(ValueError, match="point_b must contain finite values"):
+        ext.transform_point_to_sensor([1.0, 2.0, np.nan])
+    with pytest.raises(ValueError, match="vector_b must contain finite values"):
+        ext.transform_vector_to_sensor([0.0, np.inf, 1.0])
 
     # Reflection matrix (det = -1)
     refl = np.diag([1.0, 1.0, -1.0])
@@ -456,6 +474,27 @@ def test_point_cloud_validation_rules() -> None:
     bad_rngs = np.array([np.nan], dtype=np.float32)
     with pytest.raises(ValueError, match="finite and non-negative"):
         PointCloud3D(0.0, "sensor", pts, bad_rngs, mask, "lidar", ext)
+
+    # tolerance_range_m checks: reject booleans, zero, negative, nan, inf
+    for bad_tol in [True, False, 0.0, -1e-3, np.nan, np.inf]:
+        with pytest.raises(
+            ValueError, match="tolerance_range_m must be strictly positive and finite"
+        ):
+            PointCloud3D(0.0, "sensor", pts, rngs, mask, "lidar", ext, tolerance_range_m=bad_tol)
+
+    # valid_mask checks: reject malformed non-boolean masks (e.g. ints, strings, floats)
+    for bad_mask in [[1], np.array([1]), ["True"], np.array(["True"]), [1.0]]:
+        with pytest.raises(ValueError, match="valid_mask must contain strictly boolean values"):
+            PointCloud3D(0.0, "sensor", pts, rngs, bad_mask, "lidar", ext)
+
+    # to_world_frame transformation input checks
+    cloud = PointCloud3D(0.0, "sensor", pts, rngs, mask, "lidar", ext)
+    with pytest.raises(ValueError, match="drone_pos must be finite"):
+        cloud.to_world_frame([np.nan, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0])
+    with pytest.raises(ValueError, match="drone_orientation must contain finite values"):
+        cloud.to_world_frame([0.0, 0.0, 0.0], [np.nan, 0.0, 0.0, 0.0])
+    with pytest.raises(ValueError, match="quaternion must have non-zero norm"):
+        cloud.to_world_frame([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0])
 
 
 def test_point_cloud_frame_transformations() -> None:
@@ -1008,11 +1047,29 @@ def test_ray_geometry_edge_cases() -> None:
 
     # 3. Ray origin inside sphere: center at [0.5, 0.0, 0.0], radius 1.0m
     # Sensor origin is [0, 0, 0] which is inside (dist=0.5 < 1.0)
-    # Entry distance is 0.0m which is < min_range_m (0.1m) -> rejected as blind zone (NaN)
+    # Positive exit intersection: t_exit = -b + sqrt(disc) = -(-0.5) + 1.0 = 1.5m
     obs_inside = ObstacleSphere3D(center=np.array([0.5, 0.0, 0.0]), radius=1.0)
     c_inside = lidar.capture(0.0, [0, 0, 0], drone_quat, [obs_inside])
-    assert not c_inside.valid_mask[0]
-    assert np.isnan(c_inside.ranges[0])
+    assert c_inside.valid_mask[0]
+    assert c_inside.ranges[0] == pytest.approx(1.5, abs=1e-3)
+
+    # 3b. Ray origin at exact center of sphere: center at [0, 0, 0], radius 3.0m -> exit distance = 3.0m
+    obs_concentric = ObstacleSphere3D(center=np.array([0.0, 0.0, 0.0]), radius=3.0)
+    c_concentric = lidar.capture(0.0, [0, 0, 0], drone_quat, [obs_concentric])
+    assert c_concentric.valid_mask[0]
+    assert c_concentric.ranges[0] == pytest.approx(3.0, abs=1e-3)
+
+    # 3c. Ray origin on boundary pointing inward: center at [1.0, 0, 0], radius 1.0m -> exit distance = 2.0m
+    obs_bnd_in = ObstacleSphere3D(center=np.array([1.0, 0.0, 0.0]), radius=1.0)
+    c_bnd_in = lidar.capture(0.0, [0, 0, 0], drone_quat, [obs_bnd_in])
+    assert c_bnd_in.valid_mask[0]
+    assert c_bnd_in.ranges[0] == pytest.approx(2.0, abs=1e-3)
+
+    # 3d. Ray origin on boundary pointing outward: center at [-1.0, 0, 0], radius 1.0m -> Miss (NaN)
+    obs_bnd_out = ObstacleSphere3D(center=np.array([-1.0, 0.0, 0.0]), radius=1.0)
+    c_bnd_out = lidar.capture(0.0, [0, 0, 0], drone_quat, [obs_bnd_out])
+    assert not c_bnd_out.valid_mask[0]
+    assert np.isnan(c_bnd_out.ranges[0])
 
     # 4. Overlapping spheres: Near obstacle at [4.0, 0, 0] (r=1, dist=3m)
     # Far obstacle at [6.0, 0, 0] (r=1.5, dist=4.5m)
