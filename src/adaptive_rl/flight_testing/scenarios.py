@@ -1887,9 +1887,8 @@ class FlightScenarioRunner:
             is_vel_settled = curr_speed <= scenario.settling_velocity_threshold
 
             if mission_manager is not None and is_pos_settled:
-                while (
-                    mission_manager.current_mission_waypoint_idx
-                    < len(mission_manager.mission_waypoints)
+                while mission_manager.current_mission_waypoint_idx < len(
+                    mission_manager.mission_waypoints
                 ):
                     dist_to_mwp = float(
                         np.linalg.norm(
@@ -1903,9 +1902,8 @@ class FlightScenarioRunner:
                         mission_manager.current_mission_waypoint_idx += 1
                     else:
                         break
-                if (
-                    mission_manager.current_mission_waypoint_idx
-                    >= len(mission_manager.mission_waypoints)
+                if mission_manager.current_mission_waypoint_idx >= len(
+                    mission_manager.mission_waypoints
                 ):
                     mission_manager.state = MissionState.ARRIVED
 
@@ -2015,9 +2013,8 @@ class FlightScenarioRunner:
         is_vel_settled = final_speed <= scenario.settling_velocity_threshold
 
         if mission_manager is not None and is_pos_settled:
-            while (
-                mission_manager.current_mission_waypoint_idx
-                < len(mission_manager.mission_waypoints)
+            while mission_manager.current_mission_waypoint_idx < len(
+                mission_manager.mission_waypoints
             ):
                 dist_to_mwp = float(
                     np.linalg.norm(
@@ -2031,9 +2028,8 @@ class FlightScenarioRunner:
                     mission_manager.current_mission_waypoint_idx += 1
                 else:
                     break
-            if (
-                mission_manager.current_mission_waypoint_idx
-                >= len(mission_manager.mission_waypoints)
+            if mission_manager.current_mission_waypoint_idx >= len(
+                mission_manager.mission_waypoints
             ):
                 mission_manager.state = MissionState.ARRIVED
 

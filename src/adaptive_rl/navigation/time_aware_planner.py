@@ -264,9 +264,7 @@ class RouteEvaluator:
                     # (Strictly valid for piecewise-linear trajectories; oscillating trajectories are evaluated via continuous temporal sampling below)
                     if dt_seg > 1e-9 and getattr(do, "motion_type", "constant") != "oscillate":
                         bounces = (
-                            do.get_bounce_times(t_a, t_b)
-                            if hasattr(do, "get_bounce_times")
-                            else []
+                            do.get_bounce_times(t_a, t_b) if hasattr(do, "get_bounce_times") else []
                         )
                         splits = [t_a] + bounces + [t_b]
                         for m in range(len(splits) - 1):

@@ -135,10 +135,10 @@ def test_scenario_27_prediction_divergence_recovery() -> None:
     assert res.metrics.collision_count == 0, f"Collision occurred in scenario 27: {res.metrics}"
     assert res.metrics.success is True
     assert res.metrics.final_position_error <= sc.target_radius
-    assert res.metrics.replan_count > 0, "Expected dynamic obstacle divergence to trigger replanning"
-    div_events = [
-        t for t in res.telemetry if t.replan_reason == "obstacle_prediction_divergence"
-    ]
+    assert res.metrics.replan_count > 0, (
+        "Expected dynamic obstacle divergence to trigger replanning"
+    )
+    div_events = [t for t in res.telemetry if t.replan_reason == "obstacle_prediction_divergence"]
     assert len(div_events) > 0, (
         "Telemetry did not record replan_reason='obstacle_prediction_divergence'"
     )

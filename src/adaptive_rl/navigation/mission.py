@@ -639,9 +639,7 @@ class MissionManager:
         self._update_target_velocity(pos=pos, time_sec=time_sec)
         return current_target, self.get_telemetry(drone_state)
 
-    def get_time_parameterized_reference(
-        self, time_sec: float
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    def get_time_parameterized_reference(self, time_sec: float) -> Tuple[np.ndarray, np.ndarray]:
         """Compute continuous space-time reference position and velocity from active timed waypoints.
 
         Respects scheduled waiting intervals (v_ref = 0), kinematic speed clamping,

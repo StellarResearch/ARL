@@ -224,4 +224,3 @@ def test_continuous_clearance_between_samples_adversarial() -> None:
         f"Expected exact analytical clearance -0.05, got {metrics.min_clearance}"
     )
     assert metrics.is_collision_free is False
-
