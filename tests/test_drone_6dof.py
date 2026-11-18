@@ -367,3 +367,86 @@ def test_drone_6dof_lidar_frame_semantics() -> None:
 
     env_world.close()
     env_body.close()
+
+
+def test_drone_6dof_action_validation_rejects_non_finite() -> None:
+    """Verify that NaN and infinite actions are rejected with ValueError, preserving clipping for finite inputs."""
+    env = Drone6DOFEnv()
+    env.reset(seed=42)
+
+    # 1. Reject NaN actions
+    with pytest.raises(ValueError, match="Action must contain finite values"):
+        env.step(np.array([np.nan, 0.0, 0.0, 0.0]))
+
+    # 2. Reject positive and negative infinite actions
+    with pytest.raises(ValueError, match="Action must contain finite values"):
+        env.step(np.array([1.0, np.inf, 0.0, 0.0]))
+    with pytest.raises(ValueError, match="Action must contain finite values"):
+        env.step(np.array([0.0, 0.0, -np.inf, 0.0]))
+
+    # 3. Preserve clipping for finite actions outside [-1, 1]
+    obs, reward, term, trunc, info = env.step(np.array([2.5, -3.0, 1.2, -1.5]))
+    assert np.all(np.isfinite(obs))
+    env.close()
+
+
+def test_drone_6dof_direct_motor_thrust_validation() -> None:
+    """Verify that DroneDynamics6DOF.step_rk4 rejects non-finite and malformed motor thrusts."""
+    from adaptive_rl.environments.drone_6dof import DroneDynamics6DOF
+
+    dyn = DroneDynamics6DOF()
+
+    # Reject non-finite direct motor thrusts
+    with pytest.raises(ValueError, match="motor_thrusts must contain finite values"):
+        dyn.step_rk4(np.array([np.nan, 2.5, 2.5, 2.5]))
+    with pytest.raises(ValueError, match="motor_thrusts must contain finite values"):
+        dyn.step_rk4(np.array([2.5, np.inf, 2.5, 2.5]))
+
+    # Reject wrong shape
+    with pytest.raises(ValueError, match="motor_thrusts must have shape \\(4,\\)"):
+        dyn.step_rk4(np.array([2.5, 2.5, 2.5]))
+
+    # Finite thrusts outside [0, max_thrust] are clipped and succeed
+    state = dyn.step_rk4(np.array([10.0, -2.0, 3.0, 4.0]))
+    assert np.all(np.isfinite(state.position))
+    assert np.all(np.isfinite(state.velocity))
+
+
+def test_drone_6dof_substeps_and_motor_dynamics_validation() -> None:
+    """Verify substeps, enable_motor_dynamics, and motor_time_constant validation."""
+    from adaptive_rl.environments.drone_6dof import DroneDynamics6DOF
+
+    # 1. substeps validation in dynamics
+    for bad_substeps in [0, -1, True, False, 2.5]:
+        with pytest.raises(ValueError, match="substeps must be a positive integer >= 1"):
+            DroneDynamics6DOF(substeps=bad_substeps)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="substeps must be a positive integer >= 1"):
+            Drone6DOFEnv(substeps=bad_substeps)  # type: ignore[arg-type]
+
+    # 2. enable_motor_dynamics validation: must be bool
+    for bad_flag in [1, 0, "true", "false", None, [True]]:
+        with pytest.raises(TypeError, match="enable_motor_dynamics must be a bool"):
+            DroneDynamics6DOF(enable_motor_dynamics=bad_flag)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="enable_motor_dynamics must be a bool"):
+            Drone6DOFEnv(enable_motor_dynamics=bad_flag)  # type: ignore[arg-type]
+
+    # 3. motor_time_constant validation: finite positive float
+    for bad_tau in [True, False, 0.0, -0.01, np.nan, np.inf]:
+        with pytest.raises(
+            ValueError, match="motor_time_constant must be finite and strictly positive"
+        ):
+            DroneDynamics6DOF(motor_time_constant=bad_tau)  # type: ignore[arg-type]
+        with pytest.raises(
+            ValueError, match="motor_time_constant must be finite and strictly positive"
+        ):
+            Drone6DOFEnv(motor_time_constant=bad_tau)  # type: ignore[arg-type]
+
+    # 4. Verify defaults: motor dynamics is optional (False by default), default tau = 0.03
+    default_dyn = DroneDynamics6DOF()
+    assert default_dyn.enable_motor_dynamics is False
+    assert math.isclose(default_dyn.motor_time_constant, 0.03)
+
+    default_env = Drone6DOFEnv()
+    assert default_env.enable_motor_dynamics is False
+    assert math.isclose(default_env.motor_time_constant, 0.03)
+    default_env.close()

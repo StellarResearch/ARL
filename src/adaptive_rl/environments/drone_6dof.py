@@ -337,8 +337,23 @@ class DroneDynamics6DOF:
             if not math.isfinite(val) or val < 0.0:
                 raise ValueError(f"{name} must be a non-negative finite float, got {val}")
 
-        if substeps < 1:
-            raise ValueError(f"substeps must be >= 1, got {substeps}")
+        if isinstance(substeps, bool) or not isinstance(substeps, int) or substeps < 1:
+            raise ValueError(f"substeps must be a positive integer >= 1, got {substeps!r}")
+
+        if not isinstance(enable_motor_dynamics, bool):
+            raise TypeError(
+                f"enable_motor_dynamics must be a bool, got {type(enable_motor_dynamics).__name__}"
+            )
+
+        if (
+            isinstance(motor_time_constant, bool)
+            or not isinstance(motor_time_constant, (int, float))
+            or not math.isfinite(motor_time_constant)
+            or motor_time_constant <= 0.0
+        ):
+            raise ValueError(
+                f"motor_time_constant must be finite and strictly positive, got {motor_time_constant!r}"
+            )
 
         self.mass = float(mass)
         self.arm_length = float(arm_length)
@@ -371,9 +386,9 @@ class DroneDynamics6DOF:
         self.inv_inertia = 1.0 / self.inertia_diag
         self.hover_thrust_per_motor = (self.mass * self.gravity) / 4.0
 
-        # Actuator first-order response dynamics
-        self.enable_motor_dynamics = bool(enable_motor_dynamics)
-        self.motor_time_constant = max(1e-4, float(motor_time_constant))
+        # Actuator first-order response dynamics (optional, default False)
+        self.enable_motor_dynamics = enable_motor_dynamics
+        self.motor_time_constant = float(motor_time_constant)
         self.actual_motor_thrusts = np.full(4, self.hover_thrust_per_motor, dtype=np.float64)
 
         # Continuous aerodynamic wind vector [vx, vy, vz] in world frame
@@ -652,6 +667,10 @@ class DroneDynamics6DOF:
         """Advance physical state by dt using Runge-Kutta 4th-order integration over substeps."""
         h = self.substep_dt
         f_cmd = np.asarray(motor_thrusts, dtype=np.float64)
+        if f_cmd.shape != (4,):
+            raise ValueError(f"motor_thrusts must have shape (4,), got {f_cmd.shape}")
+        if not np.all(np.isfinite(f_cmd)):
+            raise ValueError(f"motor_thrusts must contain finite values, got {motor_thrusts}")
 
         pos = self.state.position.copy()
         vel = self.state.velocity.copy()
@@ -961,7 +980,25 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         self.max_velocity = 10.0  # normalization scale for velocity
         self.max_angular_velocity = 10.0  # normalization scale for angular velocity
 
-        self.enable_motor_dynamics = bool(enable_motor_dynamics)
+        if isinstance(substeps, bool) or not isinstance(substeps, int) or substeps < 1:
+            raise ValueError(f"substeps must be a positive integer >= 1, got {substeps!r}")
+
+        if not isinstance(enable_motor_dynamics, bool):
+            raise TypeError(
+                f"enable_motor_dynamics must be a bool, got {type(enable_motor_dynamics).__name__}"
+            )
+
+        if (
+            isinstance(motor_time_constant, bool)
+            or not isinstance(motor_time_constant, (int, float))
+            or not math.isfinite(motor_time_constant)
+            or motor_time_constant <= 0.0
+        ):
+            raise ValueError(
+                f"motor_time_constant must be finite and strictly positive, got {motor_time_constant!r}"
+            )
+
+        self.enable_motor_dynamics = enable_motor_dynamics
         self.motor_time_constant = float(motor_time_constant)
         self.wind_vector = (
             np.asarray(wind_vector, dtype=np.float64)
@@ -1423,7 +1460,7 @@ class Drone6DOFEnv(AdaptiveRLEnv[np.ndarray, np.ndarray]):
         if act_arr.shape != (4,):
             raise ValueError(f"Action must have shape (4,), got {act_arr.shape}")
         if not np.all(np.isfinite(act_arr)):
-            act_arr = np.nan_to_num(act_arr, nan=0.0, posinf=1.0, neginf=-1.0)
+            raise ValueError(f"Action must contain finite values, got {act_arr}")
         if not self.action_space.contains(act_arr):
             act_arr = np.clip(act_arr, -1.0, 1.0)
 
