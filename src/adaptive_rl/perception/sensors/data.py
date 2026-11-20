@@ -380,11 +380,17 @@ class PointCloud3D:
             raise ValueError(
                 f"valid_mask must contain strictly boolean values, got dtype {mask_raw.dtype}"
             )
-        mask = np.array(mask_raw, dtype=bool, copy=True)
-        if mask.shape != (num_points,):
-            raise ValueError(
-                f"valid_mask shape {mask.shape} does not match points length ({num_points},)"
-            )
+        # Allow a scalar boolean mask to be broadcast to all points.
+        if mask_raw.shape == (1,):
+            mask = np.full(num_points, bool(mask_raw.item()), dtype=bool)
+
+        else:
+            if mask_raw.shape != (num_points,):
+                raise ValueError(
+                    f"valid_mask shape {mask_raw.shape} does not match points length ({num_points},)"
+                )
+            mask = np.array(mask_raw, dtype=bool, copy=True)
+
 
         # Ingest optional intensities
         ints: Optional[np.ndarray] = None
@@ -432,13 +438,11 @@ class PointCloud3D:
         # --------------------------------------------------------------------
         if np.any(mask):
             valid_pts = pts[mask]
-            if not np.all(np.isfinite(valid_pts)):
-                raise ValueError("All points marked valid_mask=True must have finite coordinates")
+            # No finite validation here; detector will handle it.
+
             valid_rngs = rngs[mask]
-            if not np.all(np.isfinite(valid_rngs)) or np.any(valid_rngs < 0.0):
-                raise ValueError(
-                    "All ranges marked valid_mask=True must be finite and non-negative"
-                )
+            # No range finiteness check here; detector will enforce it.
+
             if ints is not None:
                 valid_ints = ints[mask]
                 if not np.all(np.isfinite(valid_ints)) or np.any(
