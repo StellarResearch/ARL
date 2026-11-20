@@ -47,6 +47,7 @@ from adaptive_rl.gui import (
     get_available_models,
     run_drone_simulation_episode,
 )
+from adaptive_rl.gui.player3d import build_flight_payload, render_flight_player
 from adaptive_rl.training import RLTrainer, TrainingProgressCallback
 
 # Configure Streamlit Page
@@ -735,257 +736,280 @@ def main() -> None:
             )
             st.markdown(banner_html, unsafe_allow_html=True)
 
-            # Scrubber & Viewport Control Bar
-            vp_col1, vp_col2, vp_col3, vp_col4, vp_col5, vp_col6 = st.columns(
-                [2.4, 0.7, 1.4, 0.7, 0.7, 0.7]
+            # Viewport Mode Selection (Continuous Three.js Flight Playback vs Static Plotly Frame Inspection)
+            sim_view_mode = st.radio(
+                "3D Flight Viewport Engine:",
+                options=[
+                    "🎬 Continuous 3D Flight Playback (Three.js WebGL)",
+                    "📐 Static Step Inspection (Plotly)",
+                ],
+                index=0,
+                horizontal=True,
+                help="Continuous 3D Flight Playback animates the drone visibly moving through the actual recorded rollout intermediate states.",
             )
-            with vp_col1:
-                selected_step = st.slider(
-                    "Flight Step Playback Scrubber:",
-                    min_value=0,
-                    max_value=total_steps,
-                    value=total_steps,
-                    step=1,
-                    help="Scrub through recorded flight timesteps to inspect 3D drone attitude, position, speed, and sensor range.",
-                )
-            with vp_col2:
-                step_pct = (selected_step / max(1, total_steps)) * 100.0
-                dt_step = 0.05
-                sim_time_sec = selected_step * dt_step
-                st.markdown(
-                    f"""
-                    <div style="padding-top: 26px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #94a3b8; line-height: 1.2;">
-                        <b style="color: #00f2fe;">{selected_step}</b>/{total_steps} ({step_pct:.0f}%)<br>
-                        <b style="color: #38bdf8;">{sim_time_sec:.2f}s</b>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            with vp_col3:
-                camera_preset = st.selectbox(
-                    "Camera Perspective / Preset:",
-                    options=[
-                        "Arena Overview",
-                        "Drone Follow",
-                        "Drone Inspection",
-                        "Target View",
-                        "Free Orbit",
-                        "Reset Camera",
-                    ],
-                    index=0,
-                    help="Select 3D viewport camera perspective. Use 'Drone Inspection' for detailed close-up examination of quadrotor airframe.",
-                )
-            with vp_col4:
-                st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-                show_floor = st.checkbox(
-                    "Floor", value=True, help="Render 3D flight test chamber floor and grid."
-                )
-            with vp_col5:
-                st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-                show_safety = st.checkbox(
-                    "Safety", value=True, help="Render obstacle safety proximity zones."
-                )
-            with vp_col6:
-                st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-                show_traj = st.checkbox(
-                    "Path", value=True, help="Render recorded 3D flight trajectory."
-                )
 
-            step_info = steps[selected_step]
-            cur_pos = step_info["position"]
-            cur_vel = step_info["velocity"]
-            cur_lidar = step_info["lidar_ranges"]
-            cur_quat = step_info.get("quaternion")
-
-            # Telemetry calculations
-            if cur_quat is not None and len(cur_quat) == 4:
-                roll_rad, pitch_rad, yaw_rad = quaternion_to_euler_angles(np.asarray(cur_quat))
-                roll_deg = math.degrees(roll_rad)
-                pitch_deg = math.degrees(pitch_rad)
-                yaw_deg = math.degrees(yaw_rad)
+            if sim_view_mode.startswith("🎬 Continuous 3D Flight Playback"):
+                player_payload = build_flight_payload(
+                    flight_data=flight_data,
+                    algorithm=selected_policy.split(": ")[0].replace("Trained ", ""),
+                    checkpoint=selected_policy.split(": ")[-1] if ":" in selected_policy else "baseline",
+                    environment="Drone6DOFEnv" if is_6dof else "DroneNavigation3DEnv",
+                    dynamics_mode="6-DOF" if is_6dof else "3-DOF",
+                    dt=0.05 if is_6dof else 0.1,
+                )
+                render_flight_player(player_payload, height=760)
             else:
-                roll_deg, pitch_deg, yaw_deg = 0.0, 0.0, 0.0
-
-            omega_mag = step_info.get("angular_speed", 0.0)
-            ang_vel = step_info.get("angular_velocity")
-            if ang_vel is not None and len(ang_vel) == 3:
-                p_val, q_val, r_val = ang_vel
-            else:
-                p_val, q_val, r_val = 0.0, 0.0, 0.0
-
-            # Two-Column Master View: 3D Viewport on Left (dominant), Telemetry Console on Right
-            col_viewport, col_telemetry = st.columns([2.5, 1.0])
-
-            with col_viewport:
-                # Build Interactive 3D Plotly Arena
-                fig = build_arena_3d_figure(
-                    bounds=flight_data["bounds"],
-                    obstacles=flight_data["obstacles"],
-                    target=flight_data["target"],
-                    start_pos=flight_data["start_pos"],
-                    trajectory=[s["position"] for s in steps[: selected_step + 1]],
-                    current_pos=cur_pos,
-                    current_vel=cur_vel,
-                    attitude_quaternion=cur_quat,
-                    lidar_rays=flight_data["lidar_rays"],
-                    lidar_ranges=cur_lidar,
-                    show_lidar=show_lidar_rays,
-                    title=f"3D Flight Arena ({env_choice}) — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
-                    camera_preset=camera_preset,
-                    show_floor=show_floor,
-                    show_safety_zones=show_safety,
-                    show_trajectory=show_traj,
-                    propeller_phase=selected_step * 0.45,
-                    arm_span=flight_data.get("arm_span", 0.4),
-                    arm_length=flight_data.get("arm_length", 0.2),
-                    rotor_radius=flight_data.get("rotor_radius", 0.09),
-                    target_radius=flight_data.get("target_radius", 1.5),
-                    body_frame_lidar=flight_data.get("body_frame_lidar", False),
+                # Scrubber & Viewport Control Bar
+                vp_col1, vp_col2, vp_col3, vp_col4, vp_col5, vp_col6 = st.columns(
+                    [2.4, 0.7, 1.4, 0.7, 0.7, 0.7]
                 )
-                # Give viewport substantial height for dominance
-                fig.update_layout(height=660)
-                st.plotly_chart(fig, width="stretch")
-
-            with col_telemetry:
-                # 1. NAVIGATION TELEMETRY
-                rel_target = flight_data["target"] - cur_pos
-                st.markdown(
-                    f"""
-                    <div class="telemetry-card">
-                        <div class="telemetry-header">📍 Navigation & Position</div>
-                        <div class="telemetry-grid">
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Altitude (Z)</span>
-                                <span class="telemetry-stat-val cyan">{cur_pos[2]:.2f}<span class="unit">m</span></span>
-                            </div>
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Range to Goal</span>
-                                <span class="telemetry-stat-val green">{step_info["distance_to_goal"]:.2f}<span class="unit">m</span></span>
-                            </div>
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Nearest Obstacle</span>
-                                <span class="telemetry-stat-val {"red" if step_info["min_obstacle_distance"] < 1.0 else "amber"}">{step_info["min_obstacle_distance"]:.2f}<span class="unit">m</span></span>
-                            </div>
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Rel Target [X,Y]</span>
-                                <span class="telemetry-stat-val">[{rel_target[0]:.1f}, {rel_target[1]:.1f}]</span>
-                            </div>
+                with vp_col1:
+                    selected_step = st.slider(
+                        "Flight Step Playback Scrubber:",
+                        min_value=0,
+                        max_value=total_steps,
+                        value=total_steps,
+                        step=1,
+                        help="Scrub through recorded flight timesteps to inspect 3D drone attitude, position, speed, and sensor range.",
+                    )
+                with vp_col2:
+                    step_pct = (selected_step / max(1, total_steps)) * 100.0
+                    dt_step = 0.05
+                    sim_time_sec = selected_step * dt_step
+                    st.markdown(
+                        f"""
+                        <div style="padding-top: 26px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #94a3b8; line-height: 1.2;">
+                            <b style="color: #00f2fe;">{selected_step}</b>/{total_steps} ({step_pct:.0f}%)<br>
+                            <b style="color: #38bdf8;">{sim_time_sec:.2f}s</b>
                         </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                # 2. FLIGHT DYNAMICS
-                st.markdown(
-                    f"""
-                    <div class="telemetry-card">
-                        <div class="telemetry-header">⚡ Flight Dynamics</div>
-                        <div class="telemetry-grid">
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Linear Speed</span>
-                                <span class="telemetry-stat-val cyan">{step_info["speed"]:.2f}<span class="unit">m/s</span></span>
-                            </div>
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Angular Speed</span>
-                                <span class="telemetry-stat-val">{omega_mag:.2f}<span class="unit">rad/s</span></span>
-                            </div>
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Velocity [Vx, Vy]</span>
-                                <span class="telemetry-stat-val">[{cur_vel[0]:.1f}, {cur_vel[1]:.1f}]</span>
-                            </div>
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Climb Rate (Vz)</span>
-                                <span class="telemetry-stat-val">{cur_vel[2]:+.2f}<span class="unit">m/s</span></span>
-                            </div>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                # 3. ATTITUDE & ORIENTATION (6-DOF) / KINEMATICS (3-DOF)
-                if is_6dof and cur_quat is not None:
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with vp_col3:
+                    camera_preset = st.selectbox(
+                        "Camera Perspective / Preset:",
+                        options=[
+                            "Arena Overview",
+                            "Drone Follow",
+                            "Drone Inspection",
+                            "Target View",
+                            "Free Orbit",
+                            "Reset Camera",
+                        ],
+                        index=0,
+                        help="Select 3D viewport camera perspective. Use 'Drone Inspection' for detailed close-up examination of quadrotor airframe.",
+                    )
+                with vp_col4:
+                    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+                    show_floor = st.checkbox(
+                        "Floor", value=True, help="Render 3D flight test chamber floor and grid."
+                    )
+                with vp_col5:
+                    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+                    show_safety = st.checkbox(
+                        "Safety", value=True, help="Render obstacle safety proximity zones."
+                    )
+                with vp_col6:
+                    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+                    show_traj = st.checkbox(
+                        "Path", value=True, help="Render recorded 3D flight trajectory."
+                    )
+    
+                step_info = steps[selected_step]
+                cur_pos = step_info["position"]
+                cur_vel = step_info["velocity"]
+                cur_lidar = step_info["lidar_ranges"]
+                cur_quat = step_info.get("quaternion")
+    
+                # Telemetry calculations
+                if cur_quat is not None and len(cur_quat) == 4:
+                    roll_rad, pitch_rad, yaw_rad = quaternion_to_euler_angles(np.asarray(cur_quat))
+                    roll_deg = math.degrees(roll_rad)
+                    pitch_deg = math.degrees(pitch_rad)
+                    yaw_deg = math.degrees(yaw_rad)
+                else:
+                    roll_deg, pitch_deg, yaw_deg = 0.0, 0.0, 0.0
+    
+                omega_mag = step_info.get("angular_speed", 0.0)
+                ang_vel = step_info.get("angular_velocity")
+                if ang_vel is not None and len(ang_vel) == 3:
+                    p_val, q_val, r_val = ang_vel
+                else:
+                    p_val, q_val, r_val = 0.0, 0.0, 0.0
+    
+                # Two-Column Master View: 3D Viewport on Left (dominant), Telemetry Console on Right
+                col_viewport, col_telemetry = st.columns([2.5, 1.0])
+    
+                with col_viewport:
+                    # Build Interactive 3D Plotly Arena
+                    fig = build_arena_3d_figure(
+                        bounds=flight_data["bounds"],
+                        obstacles=flight_data["obstacles"],
+                        target=flight_data["target"],
+                        start_pos=flight_data["start_pos"],
+                        trajectory=[s["position"] for s in steps[: selected_step + 1]],
+                        current_pos=cur_pos,
+                        current_vel=cur_vel,
+                        attitude_quaternion=cur_quat,
+                        lidar_rays=flight_data["lidar_rays"],
+                        lidar_ranges=cur_lidar,
+                        show_lidar=show_lidar_rays,
+                        title=f"3D Flight Arena ({env_choice}) — Step {selected_step}/{total_steps} (Distance to Goal: {step_info['distance_to_goal']:.2f}m)",
+                        camera_preset=camera_preset,
+                        show_floor=show_floor,
+                        show_safety_zones=show_safety,
+                        show_trajectory=show_traj,
+                        propeller_phase=selected_step * 0.45,
+                        arm_span=flight_data.get("arm_span", 0.4),
+                        arm_length=flight_data.get("arm_length", 0.2),
+                        rotor_radius=flight_data.get("rotor_radius", 0.09),
+                        target_radius=flight_data.get("target_radius", 1.5),
+                        body_frame_lidar=flight_data.get("body_frame_lidar", False),
+                    )
+                    # Give viewport substantial height for dominance
+                    fig.update_layout(height=660)
+                    st.plotly_chart(fig, width="stretch")
+    
+                with col_telemetry:
+                    # 1. NAVIGATION TELEMETRY
+                    rel_target = flight_data["target"] - cur_pos
                     st.markdown(
                         f"""
                         <div class="telemetry-card">
-                            <div class="telemetry-header">🧭 Attitude & Orientation (6-DOF)</div>
+                            <div class="telemetry-header">📍 Navigation & Position</div>
                             <div class="telemetry-grid">
                                 <div class="telemetry-stat">
-                                    <span class="telemetry-stat-label">Roll (φ)</span>
-                                    <span class="telemetry-stat-val">{roll_deg:+.1f}<span class="unit">°</span></span>
+                                    <span class="telemetry-stat-label">Altitude (Z)</span>
+                                    <span class="telemetry-stat-val cyan">{cur_pos[2]:.2f}<span class="unit">m</span></span>
                                 </div>
                                 <div class="telemetry-stat">
-                                    <span class="telemetry-stat-label">Pitch (θ)</span>
-                                    <span class="telemetry-stat-val">{pitch_deg:+.1f}<span class="unit">°</span></span>
+                                    <span class="telemetry-stat-label">Range to Goal</span>
+                                    <span class="telemetry-stat-val green">{step_info["distance_to_goal"]:.2f}<span class="unit">m</span></span>
                                 </div>
                                 <div class="telemetry-stat">
-                                    <span class="telemetry-stat-label">Yaw (ψ)</span>
-                                    <span class="telemetry-stat-val">{yaw_deg:+.1f}<span class="unit">°</span></span>
+                                    <span class="telemetry-stat-label">Nearest Obstacle</span>
+                                    <span class="telemetry-stat-val {"red" if step_info["min_obstacle_distance"] < 1.0 else "amber"}">{step_info["min_obstacle_distance"]:.2f}<span class="unit">m</span></span>
                                 </div>
                                 <div class="telemetry-stat">
-                                    <span class="telemetry-stat-label">Body Rates [p,q,r]</span>
-                                    <span class="telemetry-stat-val">[{p_val:.1f}, {q_val:.1f}, {r_val:.1f}]</span>
+                                    <span class="telemetry-stat-label">Rel Target [X,Y]</span>
+                                    <span class="telemetry-stat-val">[{rel_target[0]:.1f}, {rel_target[1]:.1f}]</span>
                                 </div>
                             </div>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
-                else:
+    
+                    # 2. FLIGHT DYNAMICS
                     st.markdown(
-                        """
+                        f"""
                         <div class="telemetry-card">
-                            <div class="telemetry-header">🧭 Kinematic State (3-DOF)</div>
-                            <div style="font-size: 11px; color: #94a3b8; line-height: 1.4;">
-                                <b>Point-Mass Kinematics:</b> Continuous 3D acceleration control. Rotational torque and attitude dynamics are not simulated in 3-DOF mode.
+                            <div class="telemetry-header">⚡ Flight Dynamics</div>
+                            <div class="telemetry-grid">
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Linear Speed</span>
+                                    <span class="telemetry-stat-val cyan">{step_info["speed"]:.2f}<span class="unit">m/s</span></span>
+                                </div>
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Angular Speed</span>
+                                    <span class="telemetry-stat-val">{omega_mag:.2f}<span class="unit">rad/s</span></span>
+                                </div>
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Velocity [Vx, Vy]</span>
+                                    <span class="telemetry-stat-val">[{cur_vel[0]:.1f}, {cur_vel[1]:.1f}]</span>
+                                </div>
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Climb Rate (Vz)</span>
+                                    <span class="telemetry-stat-val">{cur_vel[2]:+.2f}<span class="unit">m/s</span></span>
+                                </div>
                             </div>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
-
-                # 4. SENSORS & LIDAR
-                min_lidar = float(np.min(cur_lidar)) if len(cur_lidar) > 0 else 0.0
-                st.markdown(
-                    f"""
-                    <div class="telemetry-card">
-                        <div class="telemetry-header">📡 Sensors & Perception</div>
-                        <div class="telemetry-grid">
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">LiDAR Rays</span>
-                                <span class="telemetry-stat-val cyan">16 <span class="unit">Beams</span></span>
+    
+                    # 3. ATTITUDE & ORIENTATION (6-DOF) / KINEMATICS (3-DOF)
+                    if is_6dof and cur_quat is not None:
+                        st.markdown(
+                            f"""
+                            <div class="telemetry-card">
+                                <div class="telemetry-header">🧭 Attitude & Orientation (6-DOF)</div>
+                                <div class="telemetry-grid">
+                                    <div class="telemetry-stat">
+                                        <span class="telemetry-stat-label">Roll (φ)</span>
+                                        <span class="telemetry-stat-val">{roll_deg:+.1f}<span class="unit">°</span></span>
+                                    </div>
+                                    <div class="telemetry-stat">
+                                        <span class="telemetry-stat-label">Pitch (θ)</span>
+                                        <span class="telemetry-stat-val">{pitch_deg:+.1f}<span class="unit">°</span></span>
+                                    </div>
+                                    <div class="telemetry-stat">
+                                        <span class="telemetry-stat-label">Yaw (ψ)</span>
+                                        <span class="telemetry-stat-val">{yaw_deg:+.1f}<span class="unit">°</span></span>
+                                    </div>
+                                    <div class="telemetry-stat">
+                                        <span class="telemetry-stat-label">Body Rates [p,q,r]</span>
+                                        <span class="telemetry-stat-val">[{p_val:.1f}, {q_val:.1f}, {r_val:.1f}]</span>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Closest Return</span>
-                                <span class="telemetry-stat-val {"red" if min_lidar < 1.5 else "green"}">{min_lidar:.2f}<span class="unit">m</span></span>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            """
+                            <div class="telemetry-card">
+                                <div class="telemetry-header">🧭 Kinematic State (3-DOF)</div>
+                                <div style="font-size: 11px; color: #94a3b8; line-height: 1.4;">
+                                    <b>Point-Mass Kinematics:</b> Continuous 3D acceleration control. Rotational torque and attitude dynamics are not simulated in 3-DOF mode.
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+    
+                    # 4. SENSORS & LIDAR
+                    min_lidar = float(np.min(cur_lidar)) if len(cur_lidar) > 0 else 0.0
+                    st.markdown(
+                        f"""
+                        <div class="telemetry-card">
+                            <div class="telemetry-header">📡 Sensors & Perception</div>
+                            <div class="telemetry-grid">
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">LiDAR Rays</span>
+                                    <span class="telemetry-stat-val cyan">16 <span class="unit">Beams</span></span>
+                                </div>
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Closest Return</span>
+                                    <span class="telemetry-stat-val {"red" if min_lidar < 1.5 else "green"}">{min_lidar:.2f}<span class="unit">m</span></span>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                # 5. REWARDS & PERFORMANCE
-                st.markdown(
-                    f"""
-                    <div class="telemetry-card">
-                        <div class="telemetry-header">🎯 Performance & Rewards</div>
-                        <div class="telemetry-grid">
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Step Reward</span>
-                                <span class="telemetry-stat-val">{step_info["reward"]:+.2f}</span>
-                            </div>
-                            <div class="telemetry-stat">
-                                <span class="telemetry-stat-label">Cumulative Return</span>
-                                <span class="telemetry-stat-val green">{step_info["cumulative_reward"]:+.2f}</span>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+    
+                    # 5. REWARDS & PERFORMANCE
+                    st.markdown(
+                        f"""
+                        <div class="telemetry-card">
+                            <div class="telemetry-header">🎯 Performance & Rewards</div>
+                            <div class="telemetry-grid">
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Step Reward</span>
+                                    <span class="telemetry-stat-val">{step_info["reward"]:+.2f}</span>
+                                </div>
+                                <div class="telemetry-stat">
+                                    <span class="telemetry-stat-label">Cumulative Return</span>
+                                    <span class="telemetry-stat-val green">{step_info["cumulative_reward"]:+.2f}</span>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
+                        """,
+                        unsafe_allow_html=True,
+                    )
+    
             # Expandable Simulation Diagnostics Section
             with st.expander("🔍 Simulation Diagnostics & Physics Specifications"):
                 diag_col1, diag_col2 = st.columns(2)
