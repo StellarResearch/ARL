@@ -259,7 +259,7 @@ def world_to_body_vector(
     if not np.all(np.isfinite(v)):
         raise ValueError(f"vector_w must have finite coordinates, got {vector_w}")
     r_mat = quaternion_to_rotation_matrix(q)
-    return r_mat.T @ v
+    return np.asarray(r_mat.T @ v, dtype=np.float64)
 
 
 def quaternion_derivative(q: np.ndarray, omega: np.ndarray) -> np.ndarray:

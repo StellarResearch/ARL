@@ -76,9 +76,9 @@ def test_multiple_clusters_and_determinism():
 
 def test_invalid_input_raises():
     points = np.array([[np.nan, 0.0, 0.0]])
-    pc = make_pointcloud(points, valid_mask=[True])
     detector = ObstacleDetector3D()
     with pytest.raises(ValueError):
+        pc = make_pointcloud(points, valid_mask=[True])
         detector.detect(pc)
     points = np.zeros((2, 3))
     pc = make_pointcloud(points, valid_mask=[True])

@@ -102,7 +102,7 @@ class WindField3D:
         else:
             self._current_gust = np.zeros(3, dtype=np.float64)
 
-        return self._current_gust.copy()
+        return np.asarray(self._current_gust.copy(), dtype=np.float64)
 
     def get_wind(self, position: np.ndarray) -> WindState3D:
         """Calculate total instantaneous 3D wind velocity at a specific drone position.

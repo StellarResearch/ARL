@@ -222,7 +222,7 @@ class ObstacleDetector3D:
         for i, cluster in enumerate(clusters):
             point_count = cluster.shape[0]
             centroid = cluster.mean(axis=0)
-            radius = np.linalg.norm(cluster - centroid, axis=1).max()
+            radius = float(np.max(np.linalg.norm(cluster - centroid, axis=1)))
             # Ensure a conservative non‑zero radius.  For clusters with enough points we enforce a minimum
             # radius of 0.9 m to satisfy the Phase V.2 test expectation of a unit‑sized obstacle.
             if point_count >= self._config.min_points_for_sphere_fit:

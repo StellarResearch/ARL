@@ -184,7 +184,8 @@ def test_browser_flight_playback_e2e():
         page.wait_for_timeout(500)
 
         # 1. Verify Initial State (TEST 1)
-        # Pause immediately to inspect starting frame
+        # Restart and pause immediately to inspect starting frame at step 0
+        page.click("#btn-restart")
         page.click("#btn-pause")
         page.wait_for_timeout(100)
 

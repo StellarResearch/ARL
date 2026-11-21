@@ -965,7 +965,7 @@ def get_standard_flight_scenarios() -> List[FlightScenarioDefinition]:
         if step >= 40:
             degraded = thrusts.copy()
             degraded[0] *= 0.5  # Canonical 50% thrust reduction on front-right motor
-            return degraded
+            return np.asarray(degraded, dtype=np.float64)
         return thrusts
 
     scenarios.append(
