@@ -10,7 +10,11 @@ The implementation follows the architecture described in
 """
 
 from .obstacle_detection import (
-    ObstacleDetection3D,
-    ObstacleDetectorConfig,
-    ObstacleDetector3D,
+    ObstacleDetection3D as ObstacleDetection3D,
+)
+from .obstacle_detection import (
+    ObstacleDetector3D as ObstacleDetector3D,
+)
+from .obstacle_detection import (
+    ObstacleDetectorConfig as ObstacleDetectorConfig,
 )

@@ -18,28 +18,37 @@ We define standard sensor observation contracts for future implementation in `ad
 @dataclass(frozen=True)
 class SensorExtrinsics:
     """Rigid-body pose of the sensor relative to the vehicle body frame (FLU)."""
-    translation_b: np.ndarray   # [x, y, z] in meters: sensor origin relative to vehicle CoM in body frame
-    rotation_s_to_b: np.ndarray # 3x3 rotation matrix R_S^B (maps sensor vectors to body: v_B = R_S^B * v_S)
+
+    translation_b: (
+        np.ndarray
+    )  # [x, y, z] in meters: sensor origin relative to vehicle CoM in body frame
+    rotation_s_to_b: (
+        np.ndarray
+    )  # 3x3 rotation matrix R_S^B (maps sensor vectors to body: v_B = R_S^B * v_S)
+
 
 @dataclass(frozen=True)
 class PointCloud3D:
     """3D point cloud observation produced by an active range sensor."""
-    timestamp: float                    # Elapsed simulation time in seconds (measurement epoch)
-    frame_id: str                       # Coordinate frame ("sensor", "body", or "world")
-    points: np.ndarray                  # (N, 3) float64 array of 3D Cartesian coordinates [x, y, z]
-    intensities: Optional[np.ndarray]   # (N,) float32 array in [0, 1] (optional echo strength)
-    ranges: Optional[np.ndarray]        # (N,) float32 array of radial distances
-    valid_mask: np.ndarray              # (N,) bool array (True = valid echo, False = dropped/out-of-range)
+
+    timestamp: float  # Elapsed simulation time in seconds (measurement epoch)
+    frame_id: str  # Coordinate frame ("sensor", "body", or "world")
+    points: np.ndarray  # (N, 3) float64 array of 3D Cartesian coordinates [x, y, z]
+    intensities: Optional[np.ndarray]  # (N,) float32 array in [0, 1] (optional echo strength)
+    ranges: Optional[np.ndarray]  # (N,) float32 array of radial distances
+    valid_mask: np.ndarray  # (N,) bool array (True = valid echo, False = dropped/out-of-range)
     sensor_id: str
     extrinsics: SensorExtrinsics
-    sensor_origin_w: Optional[np.ndarray] = None # Sensor origin in world frame at capture epoch
+    sensor_origin_w: Optional[np.ndarray] = None  # Sensor origin in world frame at capture epoch
+
 
 @dataclass(frozen=True)
 class DepthFrame3D:
     """2D depth map observation produced by an optical depth camera."""
+
     timestamp: float
     frame_id: str
-    depth_image: np.ndarray             # (H, W) float32 array in meters
+    depth_image: np.ndarray  # (H, W) float32 array in meters
     horizontal_fov_rad: float
     vertical_fov_rad: float
     min_range: float

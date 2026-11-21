@@ -36,6 +36,7 @@ class OccupancyState(Enum):
     OCCUPIED = "occupied"
     UNKNOWN = "unknown"
 
+
 class WorldModelInterface(ABC):
     """Abstract spatial and spatiotemporal environment query interface for planners."""
 
@@ -48,7 +49,7 @@ class WorldModelInterface(ABC):
         confidence_k: float = 3.0,
     ) -> float:
         """Compute signed minimum distance to nearest obstacle boundary at time_sec.
-        
+
         Returns negative value if inside obstacle, positive if clear.
         confidence_k: Mahalanobis radius multiplier (k=3.0 yields 97.07% containment under chi^2_3).
         Incorporates covariance-based uncertainty inflation.
@@ -66,7 +67,7 @@ class WorldModelInterface(ABC):
         confidence_k: float = 3.0,
     ) -> Tuple[bool, float]:
         """Continuous swept clearance check across space-time segment.
-        
+
         confidence_k: Mahalanobis radius multiplier (k=3.0 yields 97.07% containment under chi^2_3).
         Returns:
             (is_valid, min_clearance_along_segment)

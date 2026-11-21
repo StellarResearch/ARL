@@ -16,7 +16,7 @@ import json
 import math
 import pathlib
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -240,9 +240,7 @@ def run_deterministic_rollout(
             round(sum(policy_times_ms) / len(policy_times_ms), 4) if policy_times_ms else 0.0
         ),
         "avg_env_step_time_ms": (
-            round(sum(env_step_times_ms) / len(env_step_times_ms), 4)
-            if env_step_times_ms
-            else 0.0
+            round(sum(env_step_times_ms) / len(env_step_times_ms), 4) if env_step_times_ms else 0.0
         ),
         "trajectory": trajectory,
     }
@@ -294,4 +292,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

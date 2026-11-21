@@ -23,15 +23,15 @@ Generated independently on each sensor frame without temporal memory:
 ```python
 @dataclass(frozen=True)
 class ObstacleDetection3D:
-    detection_id: str                   # Ephemeral UUID for this frame
-    timestamp: float                    # Sensor measurement epoch
-    frame_id: str                       # Typically "world" after projection
-    centroid: np.ndarray                # [x, y, z] center of detected cluster
-    bounding_radius: float              # Enclosing spherical radius
-    covariance_position: np.ndarray     # 3x3 position uncertainty matrix
-    point_count: int                    # Number of sensor returns supporting this detection
-    confidence: float                   # Detection confidence score in [0.0, 1.0]
-    sensor_id: str                      # Originating sensor
+    detection_id: str  # Ephemeral UUID for this frame
+    timestamp: float  # Sensor measurement epoch
+    frame_id: str  # Typically "world" after projection
+    centroid: np.ndarray  # [x, y, z] center of detected cluster
+    bounding_radius: float  # Enclosing spherical radius
+    covariance_position: np.ndarray  # 3x3 position uncertainty matrix
+    point_count: int  # Number of sensor returns supporting this detection
+    confidence: float  # Detection confidence score in [0.0, 1.0]
+    sensor_id: str  # Originating sensor
 ```
 *Note on Array Immutability:* In Phase V.2 implementations, factory methods will set `covariance_position.flags.writeable = False` and `centroid.flags.writeable = False` to prevent in-place mutation.
 
@@ -39,18 +39,19 @@ class ObstacleDetection3D:
 Maintained over time by `DynamicObstacleTracker3D`:
 ```python
 class TrackState(Enum):
-    TENTATIVE = "tentative"    # Newly observed, unconfirmed
-    CONFIRMED = "confirmed"    # Statistically verified, passed to planner
-    COASTED = "coasted"        # Temporarily missed, forward-predicted
-    DELETED = "deleted"        # Dead track, purged from memory
+    TENTATIVE = "tentative"  # Newly observed, unconfirmed
+    CONFIRMED = "confirmed"  # Statistically verified, passed to planner
+    COASTED = "coasted"  # Temporarily missed, forward-predicted
+    DELETED = "deleted"  # Dead track, purged from memory
+
 
 @dataclass
 class TrackedObstacle3D:
-    track_id: int              # Persistent unique integer ID across time
+    track_id: int  # Persistent unique integer ID across time
     state: TrackState
-    state_vector: np.ndarray   # [x, y, z, vx, vy, vz]^T (6D state)
-    covariance: np.ndarray     # 6x6 state covariance matrix P
-    bounding_radius: float     # Estimated physical obstacle radius
+    state_vector: np.ndarray  # [x, y, z, vx, vy, vz]^T (6D state)
+    covariance: np.ndarray  # 6x6 state covariance matrix P
+    bounding_radius: float  # Estimated physical obstacle radius
     first_observed_time: float
     last_observed_time: float
     consecutive_hits: int

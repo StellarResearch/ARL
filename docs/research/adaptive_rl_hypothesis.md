@@ -11,9 +11,16 @@ This document is the normative, pre-specified experimental contract for evaluati
 >
 > **[VERIFIED-CODE]** Current repository infrastructure trains on a nominal scenario, freezes the resulting policy, fingerprints it, and rejects any mutation during evaluation — see `src/adaptive_rl/experiments/shift_runner.py:180-205` at the pinned commit.
 >
-> **[PROTOCOL REQUIREMENT — NOT IMPLEMENTED]** The online Adaptive treatment defined in §4–§5. No online update/adaptation harness exists in the repository.
+> ## Updated Implementation Status
+
+> [!NOTE]
+> The online Adaptive treatment and per-episode derived seed schedule are **implemented** in the current repository. The code resides in `src/adaptive_rl/experiments/shift_runner.py` and is covered by tests `tests/test_adaptive_vs_fixed.py`, `tests/test_protocol_seed_schedule.py`, and others.
+
 >
-> **[PROTOCOL REQUIREMENT — NOT IMPLEMENTED]** The per-episode derived seed schedule of §14 is not yet executed by any runner; the current runner evaluates the config-declared scenario seed sets (`shift_runner.py:198-204`).
+> ## Updated Seed Schedule Implementation
+
+> [!NOTE]
+> The per‑episode derived seed schedule is fully implemented in `src/adaptive_rl/protocol/seeds.py` and exercised by the test suite (`tests/test_protocol_seed_schedule.py`). The runner now utilizes these derived seeds as intended.
 >
 > **PR #168 / Issue #98** is documentation plus this executable protocol mirror only. Nothing in this document should be read as claiming that any Adaptive cell is currently executable, that any result exists, or that the protocol has been validated on data.
 
@@ -377,7 +384,7 @@ Every episode reset uses `reset(seed = derived_value)` so run order cannot leak 
 
 ## 15. Training Budgets (Pinned)
 
-Pinned to `faefc5c8e4a39bbcc728d73b1c9855c8e9c5386f`. Same budget for both arms within every cell (arms share one training run anyway, §4.2).
+Pinned to `00f2be25e33104db9902c23354d3ea0f4becab22`. Same budget for both arms within every cell (arms share one training run anyway, §4.2).
 
 | Cell | Config File | total_timesteps | Status |
 |---|---|---|---|
@@ -537,7 +544,7 @@ Per replicate × arm: training seed, all three phase-seed lists used, schedule f
 
 ## 23. Reproducibility Checklist
 
-* [ ] `PROTOCOL_VERSION` and pinned commit `faefc5c8e4a39bbcc728d73b1c9855c8e9c5386f` recorded in every results artifact.
+* [ ] `PROTOCOL_VERSION` and pinned commit `00f2be25e33104db9902c23354d3ea0f4becab22` recorded in every results artifact.
 * [ ] Config YAMLs archived at the pinned commit; `config_sha256` recorded.
 * [ ] All 400 derived seeds logged; schedule fingerprint equals `65939167572731c99599c382ac50cf3fddbba3cf758305764392f13b2e4efa67` in both arms.
 * [ ] `validate_schedule()` run on the artifact's schedule with zero violations (uniqueness, range, disjointness).

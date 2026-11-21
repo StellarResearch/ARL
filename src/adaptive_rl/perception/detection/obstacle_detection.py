@@ -16,10 +16,8 @@ for efficient Euclidean clustering.
 
 from __future__ import annotations
 
-import itertools
-import uuid
 from dataclasses import dataclass, field
-from typing import List, Sequence
+from typing import List
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -40,17 +38,21 @@ __all__ = [
 # Helper validation utilities
 # ---------------------------------------------------------------------------
 
+
 def _ensure_finite(arr: np.ndarray, name: str) -> None:
     if not np.isfinite(arr).all():
         raise ValueError(f"{name} must contain only finite values")
+
 
 def _ensure_positive_scalar(value: float, name: str) -> None:
     if not (np.isfinite(value) and value > 0):
         raise ValueError(f"{name} must be a finite positive scalar")
 
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class ObstacleDetection3D:
@@ -137,9 +139,14 @@ class ObstacleDetectorConfig:
         _ensure_positive_scalar(self.clustering_tolerance, "clustering_tolerance")
         if not (isinstance(self.min_cluster_size, int) and self.min_cluster_size > 0):
             raise ValueError("min_cluster_size must be a positive integer")
-        if not (isinstance(self.max_cluster_size, int) and self.max_cluster_size >= self.min_cluster_size):
+        if not (
+            isinstance(self.max_cluster_size, int)
+            and self.max_cluster_size >= self.min_cluster_size
+        ):
             raise ValueError("max_cluster_size must be >= min_cluster_size and an integer")
-        if not (isinstance(self.min_points_for_sphere_fit, int) and self.min_points_for_sphere_fit > 0):
+        if not (
+            isinstance(self.min_points_for_sphere_fit, int) and self.min_points_for_sphere_fit > 0
+        ):
             raise ValueError("min_points_for_sphere_fit must be a positive integer")
         _ensure_positive_scalar(self.sphere_fit_residual_threshold, "sphere_fit_residual_threshold")
         _ensure_positive_scalar(self.expected_max_cluster_size, "expected_max_cluster_size")
@@ -257,7 +264,7 @@ def _fit_sphere_least_squares(points: np.ndarray) -> tuple[np.ndarray, float, fl
     error of the fit.
     """
     A = np.hstack((2 * points, np.ones((points.shape[0], 1))))
-    b = np.sum(points ** 2, axis=1)
+    b = np.sum(points**2, axis=1)
     X, residuals, rank, s = np.linalg.lstsq(A, b, rcond=None)
     center = X[:3]
     r_sq = np.dot(center, center) - X[3]

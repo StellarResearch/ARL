@@ -14,20 +14,19 @@ from __future__ import annotations
 import json
 import math
 import pathlib
-import subprocess
 import sys
+
 import numpy as np
-import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from adaptive_rl.gui.player3d import build_flight_payload, _build_player_html
+from adaptive_rl.gui.player3d import _build_player_html
 from scripts.export_flight import run_deterministic_rollout
-
 
 # ---------------------------------------------------------------------------
 # Unit Tests: Payload & Rollout Generation
 # ---------------------------------------------------------------------------
+
 
 def test_checkpoint_compatibility_and_export():
     """Verify that real trained checkpoints export valid flight replays."""
@@ -134,6 +133,7 @@ def test_player_html_generation():
 # ---------------------------------------------------------------------------
 # Browser End-to-End Automated Acceptance Tests (Playwright)
 # ---------------------------------------------------------------------------
+
 
 def test_browser_flight_playback_e2e():
     """Automate Playwright headless browser to verify continuous drone movement.

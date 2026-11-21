@@ -1,12 +1,13 @@
 import numpy as np
 import pytest
+
 from adaptive_rl.perception.detection.obstacle_detection import (
-    ObstacleDetection3D,
-    ObstacleDetectorConfig,
     ObstacleDetector3D,
+    ObstacleDetectorConfig,
 )
-from adaptive_rl.perception.sensors.lidar3d import PointCloud3D
 from adaptive_rl.perception.sensors.data import SensorExtrinsics
+from adaptive_rl.perception.sensors.lidar3d import PointCloud3D
+
 
 def make_pointcloud(points, valid_mask=None, sensor_id="lidar_primary", timestamp=0.0):
     points = np.asarray(points, dtype=np.float32)
@@ -29,11 +30,13 @@ def make_pointcloud(points, valid_mask=None, sensor_id="lidar_primary", timestam
         intensities=intensities,
     )
 
+
 def test_empty_pointcloud_returns_no_detections():
     pc = make_pointcloud(points=np.empty((0, 3)), valid_mask=np.empty((0,), dtype=bool))
     detector = ObstacleDetector3D()
     detections = detector.detect(pc)
     assert detections == []
+
 
 def test_single_obstacle_detection():
     center = np.array([5.0, 0.0, 0.0])
@@ -50,6 +53,7 @@ def test_single_obstacle_detection():
     assert det.is_valid
     with pytest.raises(AttributeError):
         det.centroid = np.zeros(3)
+
 
 def test_multiple_clusters_and_determinism():
     rng = np.random.default_rng(1)
@@ -69,6 +73,7 @@ def test_multiple_clusters_and_determinism():
     assert any(np.linalg.norm(centroids - np.array([0.0, 0.0, 0.0]), axis=1) < 0.2)
     assert any(np.linalg.norm(centroids - np.array([3.0, 3.0, 3.0]), axis=1) < 0.2)
 
+
 def test_invalid_input_raises():
     points = np.array([[np.nan, 0.0, 0.0]])
     pc = make_pointcloud(points, valid_mask=[True])
@@ -80,8 +85,11 @@ def test_invalid_input_raises():
     with pytest.raises(ValueError):
         detector.detect(pc)
 
+
 def test_ground_truth_isolation():
-    import inspect, re
+    import inspect
+    import re
+
     src = inspect.getsource(ObstacleDetector3D)
     forbidden = ["ObstacleSphere3D", "DynamicObstacleSphere3D"]
     for name in forbidden:

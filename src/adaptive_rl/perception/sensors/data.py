@@ -383,16 +383,19 @@ class PointCloud3D:
         # Allow a scalar boolean mask to be broadcast to all points.
         if mask_raw.shape == (1,):
             mask = np.full(num_points, bool(mask_raw.item()), dtype=bool)
-
         else:
             if mask_raw.shape != (num_points,):
                 raise ValueError(
                     f"valid_mask shape {mask_raw.shape} does not match points length ({num_points},)"
                 )
             mask = np.array(mask_raw, dtype=bool, copy=True)
+        # Validate finiteness of coordinates for valid points (regardless of how mask was formed)
+        if np.any(mask) and not np.all(np.isfinite(pts[mask])):
+            raise ValueError("finite coordinates required for valid points")
+        # Validate ranges for valid points: must be finite and non-negative
+        if np.any(mask) and (not np.all(np.isfinite(rngs[mask])) or np.any(rngs[mask] < 0.0)):
+            raise ValueError("ranges must be finite and non-negative for valid measurements")
 
-
-        # Ingest optional intensities
         ints: Optional[np.ndarray] = None
         if intensities is not None:
             ints = np.array(intensities, dtype=np.float32, copy=True)

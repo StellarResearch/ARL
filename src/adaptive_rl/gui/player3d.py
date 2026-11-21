@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import math
 import pathlib
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Union
 
 import streamlit as st
 
@@ -1007,26 +1007,28 @@ def build_flight_payload(
         if math.isinf(min_obs):
             min_obs = 999.0
 
-        traj_records.append({
-            "step": int(s.get("step", 0)),
-            "time": round(float(s.get("step", 0)) * dt, 4),
-            "position": pos,
-            "velocity": vel,
-            "speed": round(float(s.get("speed", 0.0)), 4),
-            "quaternion": quat,
-            "angular_velocity": omega,
-            "distance_to_goal": round(float(s.get("distance_to_goal", 0.0)), 4),
-            "min_obstacle_distance": round(min_obs, 4),
-            "reward": round(float(s.get("reward", 0.0)), 4),
-            "cumulative_reward": round(float(s.get("cumulative_reward", 0.0)), 4),
-            "collision": bool(s.get("collision", False)),
-            "success": bool(s.get("success", False)),
-            "terminated": bool(s.get("terminated", False)),
-            "truncated": bool(s.get("truncated", False)),
-            "lidar": lidar or [],
-            "policy_time_ms": 0.45,
-            "env_step_time_ms": 1.25,
-        })
+        traj_records.append(
+            {
+                "step": int(s.get("step", 0)),
+                "time": round(float(s.get("step", 0)) * dt, 4),
+                "position": pos,
+                "velocity": vel,
+                "speed": round(float(s.get("speed", 0.0)), 4),
+                "quaternion": quat,
+                "angular_velocity": omega,
+                "distance_to_goal": round(float(s.get("distance_to_goal", 0.0)), 4),
+                "min_obstacle_distance": round(min_obs, 4),
+                "reward": round(float(s.get("reward", 0.0)), 4),
+                "cumulative_reward": round(float(s.get("cumulative_reward", 0.0)), 4),
+                "collision": bool(s.get("collision", False)),
+                "success": bool(s.get("success", False)),
+                "terminated": bool(s.get("terminated", False)),
+                "truncated": bool(s.get("truncated", False)),
+                "lidar": lidar or [],
+                "policy_time_ms": 0.45,
+                "env_step_time_ms": 1.25,
+            }
+        )
 
     obstacles = []
     for obs in flight_data.get("obstacles", []):
@@ -1034,10 +1036,18 @@ def build_flight_payload(
         obstacles.append({"position": center, "radius": float(obs.radius)})
 
     target = flight_data.get("target")
-    target_pos = target.tolist() if (target is not None and hasattr(target, "tolist")) else (list(target) if target is not None else [25.0, 25.0, 10.0])
+    target_pos = (
+        target.tolist()
+        if (target is not None and hasattr(target, "tolist"))
+        else (list(target) if target is not None else [25.0, 25.0, 10.0])
+    )
 
     start_pos = flight_data.get("start_pos")
-    start_pos_list = start_pos.tolist() if (start_pos is not None and hasattr(start_pos, "tolist")) else (list(start_pos) if start_pos is not None else [5.0, 5.0, 5.0])
+    start_pos_list = (
+        start_pos.tolist()
+        if (start_pos is not None and hasattr(start_pos, "tolist"))
+        else (list(start_pos) if start_pos is not None else [5.0, 5.0, 5.0])
+    )
 
     bounds = flight_data.get("bounds", (30.0, 30.0, 15.0))
     bounds_list = bounds.tolist() if hasattr(bounds, "tolist") else list(bounds)

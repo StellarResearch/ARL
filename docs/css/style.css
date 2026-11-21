@@ -1,4 +1,98 @@
 :root {
+  --bg-primary: #0a0e14; /* dark graphite */
+  --bg-secondary: #11151e;
+  --bg-card: #151a23;
+  --bg-card-hover: #1a1f2a;
+  --border-color: rgba(255,255,255,0.1);
+  --accent-primary: #2563eb; /* main accent */
+  --accent-warning: #ef4444; /* warning */
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", Consolas, monospace;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --transition-smooth: all 0.2s ease;
+}
+
+/* Remove glass effects */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 1rem;
+}
+
+/* Navbar */
+.navbar {
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Brand logo */
+.brand-logo {
+  background: var(--accent-primary);
+  border-radius: var(--radius-sm);
+  color: #0a0e14;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  box-shadow: none;
+}
+
+/* Links */
+a {
+  color: var(--accent-primary);
+}
+
+a:hover {
+  color: #3b82f6;
+}
+
+/* Buttons */
+.btn {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-main);
+}
+
+.btn-primary {
+  background: var(--accent-primary);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #3b82f6;
+}
+
+/* Hero Section */
+.hero-section {
+  background: var(--bg-primary);
+  color: var(--text-main);
+  padding: 4rem 0;
+}
+
+.hero-title {
+  font-size: clamp(2rem,5vw,3rem);
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.gradient-text {
+  background: none;
+  -webkit-background-clip: unset;
+  -webkit-text-fill-color: unset;
+  color: var(--accent-primary);
+}
+
+/* Remove radial gradients from body */
+body {
+  background-image: none;
+}
+
   --bg-primary: #070b14;
   --bg-secondary: #0d1424;
   --bg-card: #111a30;
@@ -135,7 +229,13 @@ code, pre {
 }
 
 /* Glass Card */
-.glass-panel {
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 1rem;
+}
+
   background: var(--bg-glass);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
